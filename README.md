@@ -1,6 +1,8 @@
 # AnsFlow Backend
 
 企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。
+demo: https://ansflow.cyfee.com:10443
+admin/ansflow
 
 ## 技术栈
 
