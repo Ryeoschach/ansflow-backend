@@ -1,0 +1,18 @@
+services:
+  ansflow-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=postgres://...
+      - REDIS_URL=redis://ansflow-redis:6379/0
+      - SECRET_KEY=your_secret_key
+    volumes:
+      # 挂载临时工作目录，保证多个 Node 之间能共享 Git 源码
+      - /tmp/ansflow_workspaces:/tmp/ansflow_workspaces
+      # 挂载 Helm 的持久化目录
+      - ./backend/helm_charts:/tmp/helm_charts
+    depends_on:
+      - ansflow-redis
+      - ansflow-db
+

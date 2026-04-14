@@ -1,0 +1,74 @@
+# ============================
+# Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.manifest
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env.local
+.venv37/
+
+# ============================
+# Django
+# ============================
+*.log
+local_settings.py
+db.sqlite3
+*.sqlite3
+/media
+/staticfiles
+
+# ============================
+# IDE
+# ============================
+.idea/
+.vscode/
+*.sw?
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+.DS_Store
+
+# ============================
+# Testing / Debug scripts
+# ============================
+test.js
+check_pipeline.py
+test_helm.py
+ AnsFlow/settings.py
+ AnsFlow/wsgi.py
+ AnsFlow/asgi.py
+ AnsFlow/config/
+ AnsFlow/apps/
+ AnsFlow/utils/
+ AnsFlow/manage.py
+
+# ============================
+# Ruff linter
+# ============================
+.ruff_cache/
+
+# ============================
+# Node (if any)
+# ============================
+node_modules/
+
+# ============================
+# Misc
+# ============================
+*.bak
+*.tmp
+*.temp

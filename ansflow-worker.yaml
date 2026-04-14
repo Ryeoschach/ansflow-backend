@@ -1,0 +1,51 @@
+# 定义一个共享持久化卷
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ansflow-data-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# Celery Worker 部署
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ansflow-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ansflow-worker
+  template:
+    metadata:
+      labels:
+        app: ansflow-worker
+    spec:
+      containers:
+      - name: worker
+        image: docker.io/library/ansflow-worker:v1
+        command: ["celery", "-A", "config", "worker", "-l", "info"]
+        env:
+        - name: DATABASE_URL
+          value: "sqlite:////app/data/db.sqlite3"
+        - name: CELERY_BROKER_URL
+          value: "redis://ansflow-redis:6379/6"
+        - name: SECRET_KEY
+          value: "django-insecure-(&)t3&2pj^t-%kak)ym-+cqw3sw^+ce8ep@#43&i@h=i8p31@c"
+        volumeMounts:
+        - name: shared-data
+          mountPath: /app/data
+        - name: workspace
+          mountPath: /tmp/ansflow_workspaces
+      volumes:
+      - name: shared-data
+        persistentVolumeClaim:
+          claimName: ansflow-data-pvc
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: ansflow-data-pvc

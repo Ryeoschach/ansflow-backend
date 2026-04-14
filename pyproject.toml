@@ -1,0 +1,39 @@
+[project]
+name = "ansflow"
+version = "0.1.0"
+description = "ansflow运维平台"
+requires-python = ">=3.12"
+dependencies = [
+    "django==5.2",
+    "django-environ>=0.13.0",
+    "celery-types>=0.24.0",
+    "django-celery-beat>=2.9.0",
+    "django-celery-results>=2.6.0",
+    "django-filter>=25.2",
+    "django-redis>=6.0.0",
+    "djangorestframework>=3.16.1",
+    "djangorestframework-simplejwt>=5.5.1",
+    "drf-spectacular>=0.29.0",
+    "redis>=7.2.1",
+    "flower>=2.0.1",
+    "django-cors-headers>=4.9.0",
+    "resource>=0.2.1",
+    "aliyun-python-sdk-core>=2.16.0",
+    "aliyun-python-sdk-ecs>=4.24.82",
+    "boto3>=1.42.69",
+    "ansible-runner>=2.4.3",
+    "paramiko>=4.0.0",
+    "cryptography>=46.0.5",
+    "kubernetes>=35.0.0",
+    "pyyaml>=6.0.3",
+    "channels>=4.3.2",
+    "channels-redis>=4.3.0",
+    "daphne>=4.2.1",
+]
+
+[dependency-groups]
+dev = [
+    "django-stubs>=5.2.9",
+    "django-types>=0.23.0",
+    "djangorestframework-stubs>=3.16.8",
+]
