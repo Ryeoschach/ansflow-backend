@@ -39,8 +39,10 @@ def run_ansible_task(self, execution_id, extra_vars=None):
             for host, vars in hosts_dict.items():
                 if vars.get("_auth_type") == "key" and vars.get("_private_key"):
                     key_path = os.path.join(private_data_dir, f"key_{host}")
+                    # OpenSSH 非常严格要求私钥必须以换行符结尾，且最好不包含 Windows 的 \r
+                    clean_key = vars["_private_key"].replace('\r\n', '\n').strip() + '\n'
                     with open(key_path, "w") as f:
-                        f.write(vars["_private_key"])
+                        f.write(clean_key)
                     os.chmod(key_path, 0o600)
                     vars["ansible_ssh_private_key_file"] = key_path
                     vars.pop("_private_key", None)
