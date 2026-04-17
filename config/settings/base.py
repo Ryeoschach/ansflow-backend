@@ -324,16 +324,9 @@ from pythonjsonlogger import jsonlogger
 # 日志级别（默认 INFO，可通过环境变量覆盖）
 LOG_LEVEL = env('ANSFLOW_LOG_LEVEL', default='INFO').upper()
 
-# 日志目录
-ANSFLOW_LOG_DIR_DEFAULT = '/var/log/ansflow'
-LOG_DIR = env('ANSFLOW_LOG_DIR', default=ANSFLOW_LOG_DIR_DEFAULT)
-# 确保日志目录存在，如果无权限则使用本地目录
-try:
-    os.makedirs(LOG_DIR, exist_ok=True)
-except PermissionError:
-    # 开发环境无权限时使用本地目录
-    LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
-    os.makedirs(LOG_DIR, exist_ok=True)
+# 日志目录（默认使用项目内的 logs 目录，避免权限问题）
+LOG_DIR = env('ANSFLOW_LOG_DIR', default=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs'))
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # 是否使用 JSON 格式
 LOG_JSON = env.bool('ANSFLOW_LOG_JSON', default=True)
