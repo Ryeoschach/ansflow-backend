@@ -75,11 +75,27 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
 
     def _notify_config_changed(self, category, key):
         """通知配置变更"""
+        # 1. 清除缓存
+        from utils.config_manager import ConfigCache
+        ConfigCache.invalidate(category, key)
+
+        # 2. 通知订阅者
+        from utils.config_manager import ConfigNotifier
+        from apps.config_center.models import ConfigItem
+        try:
+            item = ConfigItem.objects.get(category__name=category, key=key, is_active=True)
+            value = item.get_value()
+        except ConfigItem.DoesNotExist:
+            value = None
+        ConfigNotifier.notify(category, key, value)
+
+        # 3. 发送 Django 信号（用于外部系统监听）
         from utils.signals import config_changed
         config_changed.send(
             sender=self.__class__,
             category=category,
-            key=key
+            key=key,
+            value=value
         )
 
     @action(detail=False, methods=['get'])
