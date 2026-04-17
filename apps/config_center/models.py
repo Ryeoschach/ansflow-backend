@@ -73,3 +73,46 @@ class ConfigItem(BaseModel):
             self.value = encrypt_string(value)
         else:
             self.value = value
+
+
+class ConfigChangeLog(BaseModel):
+    """
+    配置变更日志：记录所有配置项的变更历史
+    """
+    ACTION_CHOICES = [
+        ('create', '创建'),
+        ('update', '更新'),
+        ('delete', '删除'),
+        ('rollback', '回滚'),
+    ]
+
+    item = models.ForeignKey(
+        ConfigItem,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='change_logs',
+        verbose_name="配置项"
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES, verbose_name="操作类型")
+    old_value = models.JSONField(null=True, blank=True, verbose_name="旧值")
+    new_value = models.JSONField(null=True, blank=True, verbose_name="新值")
+    operator = models.ForeignKey(
+        'rbac_permission.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="操作人"
+    )
+    operator_username = models.CharField(max_length=150, blank=True, verbose_name="操作人用户名")
+    ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name="操作IP")
+    reason = models.CharField(max_length=500, blank=True, verbose_name="变更原因")
+
+    class Meta:
+        db_table = 'config_center_change_log'
+        verbose_name = '配置变更日志'
+        verbose_name_plural = '配置变更日志'
+        ordering = ['-create_time']
+
+    def __str__(self):
+        return f"{self.item} - {self.action} at {self.create_time}"
+

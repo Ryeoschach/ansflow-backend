@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ConfigCategory, ConfigItem
+from .models import ConfigCategory, ConfigItem, ConfigChangeLog
 
 
 class ConfigItemSerializer(serializers.ModelSerializer):
@@ -70,3 +70,38 @@ class ConfigCategorySimpleSerializer(serializers.ModelSerializer):
 
     def get_item_count(self, obj):
         return obj.items.filter(is_active=True).count()
+
+
+class ConfigChangeLogSerializer(serializers.ModelSerializer):
+    """配置变更日志序列化器"""
+    item_key = serializers.CharField(source='item.key', read_only=True)
+    item_category = serializers.CharField(source='item.category.name', read_only=True)
+    old_value_display = serializers.SerializerMethodField()
+    new_value_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ConfigChangeLog
+        fields = [
+            'id', 'item', 'item_key', 'item_category',
+            'action', 'old_value', 'new_value',
+            'old_value_display', 'new_value_display',
+            'operator', 'operator_username', 'ip_address',
+            'reason', 'create_time'
+        ]
+        read_only_fields = ['id', 'create_time']
+
+    def get_old_value_display(self, obj):
+        if obj.old_value and isinstance(obj.old_value, str) and obj.old_value.startswith('enc:'):
+            return '******'
+        return obj.old_value
+
+    def get_new_value_display(self, obj):
+        if obj.new_value and isinstance(obj.new_value, str) and obj.new_value.startswith('enc:'):
+            return '******'
+        return obj.new_value
+
+
+class ConfigRollbackSerializer(serializers.Serializer):
+    """配置回滚序列化器"""
+    change_log_id = serializers.IntegerField(required=True, help_text="变更日志ID")
+    reason = serializers.CharField(max_length=500, required=False, default='', help_text="回滚原因")
