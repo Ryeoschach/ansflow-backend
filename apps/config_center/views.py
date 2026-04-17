@@ -188,6 +188,10 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
         except ConfigChangeLog.DoesNotExist:
             return Response({'error': '变更记录不存在'}, status=404)
 
+        # 不能回滚到 null（创建操作没有旧值）
+        if change_log.old_value is None:
+            return Response({'error': '无法回滚：创建操作没有旧值可回滚'}, status=400)
+
         # 执行回滚
         old_value = item.value
         item.value = change_log.old_value
