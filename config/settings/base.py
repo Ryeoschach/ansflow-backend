@@ -416,29 +416,13 @@ LOGGING = {
 
     'handlers': {
         'console': {
-            'level': 'DEBUG',
-            'class': 'logging.StreamHandler',
-            'formatter': 'json' if LOG_JSON else 'standard',
+            '()': get_console_handler,
         },
         'file': {
-            'level': LOG_LEVEL,
-            'class': 'logging.handlers.RotatingFileHandler' if LOG_ROTATION == 'size' else 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'ansflow.log'),
-            'maxBytes': LOG_MAX_SIZE * 1024 * 1024 if LOG_ROTATION == 'size' else None,
-            'backupCount': LOG_RETENTION_DAYS if LOG_ROTATION == 'size' else None,
-            'when': 'midnight' if LOG_ROTATION == 'daily' else None,
-            'interval': 1 if LOG_ROTATION == 'daily' else None,
-            'formatter': 'json' if LOG_JSON else 'standard',
+            '()': lambda: get_file_handler('ansflow.log'),
         },
         'error_file': {
-            'level': 'ERROR',
-            'class': 'logging.handlers.RotatingFileHandler' if LOG_ROTATION == 'size' else 'logging.handlers.TimedRotatingFileHandler',
-            'filename': os.path.join(LOG_DIR, 'ansflow-error.log'),
-            'maxBytes': LOG_MAX_SIZE * 1024 * 1024 if LOG_ROTATION == 'size' else None,
-            'backupCount': LOG_RETENTION_DAYS if LOG_ROTATION == 'size' else None,
-            'when': 'midnight' if LOG_ROTATION == 'daily' else None,
-            'interval': 1 if LOG_ROTATION == 'daily' else None,
-            'formatter': 'json' if LOG_JSON else 'standard',
+            '()': lambda: get_file_handler('ansflow-error.log', level='ERROR'),
         },
     },
 
