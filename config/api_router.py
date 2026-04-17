@@ -10,6 +10,7 @@ from apps.registry_management.views import ImageRegistryViewSet
 from apps.system_management.views import SystemHealthViewSet, DashboardViewSet
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet
 from apps.credentials_management.views import CredentialViewSet
+from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
 
 router = DefaultRouter()
@@ -33,6 +34,8 @@ router.register(r'system/health', SystemHealthViewSet, basename='system-health')
 router.register(r'system/dashboard', DashboardViewSet, basename='system-dashboard')
 router.register(r'audit-logs', AuditLogViewSet, basename='审计日志')
 router.register(r'credentials', CredentialViewSet, basename='credentials')
+router.register(r'config/categories', ConfigCategoryViewSet, basename='config-categories')
+router.register(r'config/items', ConfigItemViewSet, basename='config-items')
 
 app_router = DefaultRouter()
 router.register(r'approval_policies', ApprovalPolicyViewSet, basename='approval_policies')

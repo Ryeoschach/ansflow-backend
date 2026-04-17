@@ -89,6 +89,7 @@ INSTALLED_APPS = [
     'apps.system_management',
     'apps.approval_center',
     'apps.credentials_management',
+    'apps.config_center',
 ]
 
 MIDDLEWARE = [
