@@ -32,6 +32,7 @@ backend/
 │   ├── registry_management/      # Docker 镜像仓库
 │   ├── approval_center/          # 发布审批工作流引擎
 │   ├── credentials_management/   # 敏感凭据安全存储
+│   ├── config_center/            # 配置中心（Redis/DB/MQ/日志配置）
 │   └── system_management/        # 系统设置、监控
 ├── config/                       # Django 项目配置
 │   ├── settings/
@@ -44,13 +45,17 @@ backend/
 │   └── urls.py                 # 全局 URL 路由
 ├── utils/                       # 公共工具
 │   ├── auth_views.py           # 认证视图（登录/刷新/登出）
-│   ├── encryption.py           # 加密工具（RSA/AES）
-│   ├── exception_handler.py    # 全局异常处理
-│   ├── middleware.py           # 中间件（审计日志）
-│   ├── pagination.py           # 分页器
-│   ├── rbac_permission.py      # SmartRBAC 权限核心
-│   ├── renderers.py            # 全局 JSON 渲染器
-│   └── schema.py               # DRF Schema（权限感知）
+│   ├── encryption.py            # 加密工具（Fernet 对称加密）
+│   ├── exception_handler.py     # 全局异常处理
+│   ├── middleware.py            # 中间件（审计日志）
+│   ├── pagination.py            # 分页器
+│   ├── rbac_permission.py       # SmartRBAC 权限核心
+│   ├── renderers.py             # 全局 JSON 渲染器
+│   ├── schema.py                # DRF Schema（权限感知）
+│   ├── signals.py               # Django 信号定义
+│   ├── config_manager.py        # 配置缓存与订阅者管理
+│   ├── config_subscribers.py    # 内置配置订阅者
+│   └── config_broadcast.py      # 多实例 Pub/Sub 广播
 ├── helm_charts/                 # Helm 部署 charts
 ├── docker-compose.yml          # 基础设施编排
 └── manage.py
@@ -90,6 +95,30 @@ backend/
 - 强制签发（Override）机制
 - 飞书/钉钉 WebHook 通知
 
+### 配置中心（Config Center）
+动态配置管理，支持 Redis/DB/MQ/日志等配置的热更新。
+
+**核心功能：**
+- 配置分类管理（Redis/数据库/消息队列/日志等）
+- 配置项 CRUD（支持 string/int/float/bool/json 类型）
+- 配置值加密存储（敏感信息）
+- 热更新机制（修改配置自动生效，无需重启）
+- 配置变更审计日志（记录变更历史）
+- 配置回滚（回退到任意历史版本）
+- 多实例 Pub/Sub 同步（Redis 广播）
+
+**热更新流程：**
+```
+修改配置 → 清除缓存 → 通知订阅者 → 广播到其他实例 → 发送 Django 信号
+```
+
+**内置订阅者：**
+| 订阅者 | 监听分类 | 处理逻辑 |
+|--------|---------|---------|
+| RedisConfigSubscriber | redis | 清除连接缓存 |
+| LoggingConfigSubscriber | logging | 动态调整日志级别 |
+| CacheConfigSubscriber | cache | 清除所有缓存 |
+
 ## API 版本
 
 所有接口以 `/api/v1/` 为前缀，版本控制通过 URL Path 实现。
@@ -108,6 +137,7 @@ backend/
 | 镜像仓库 | `/api/v1/registries/` |
 | 审批中心 | `/api/v1/approvals/` |
 | 凭据保险库 | `/api/v1/credentials/` |
+| 配置中心 | `/api/v1/config/` |
 | 系统 | `/api/v1/system/` |
 
 ## 快速开始
