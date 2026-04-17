@@ -168,11 +168,12 @@ class DataPolicy(BaseModel):
         return f"{self.role.name} - {self.get_resource_type_display()} ({self.get_action_type_display()})"
 
 
-class Menu(models.Model):
+class Menu(BaseModel):
     """
     菜单模型：树形结构，管理前端展示
     """
     title = models.CharField(max_length=50, verbose_name="菜单标题")
+    title_en = models.CharField(max_length=50, blank=True, verbose_name="菜单英文标题")
     key = models.CharField(max_length=50, unique=True, verbose_name="Antd菜单Key")
     path = models.CharField(max_length=200, verbose_name="路由路径")
     icon = models.CharField(max_length=50, blank=True, null=True, verbose_name="图标")

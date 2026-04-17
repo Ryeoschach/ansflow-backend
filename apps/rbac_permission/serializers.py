@@ -97,7 +97,7 @@ class MenuSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Menu
-        fields = ('id', 'title', 'key', 'path', 'icon', 'parent', 'order', 'children', 'create_time')
+        fields = ('id', 'title', 'title_en', 'key', 'path', 'icon', 'parent', 'order', 'children', 'create_time')
         read_only_fields = ('create_time',)
 
     def get_children(self, obj):
