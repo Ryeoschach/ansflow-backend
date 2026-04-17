@@ -313,3 +313,187 @@ CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[
     'http://localhost:3000',
     'http://127.0.0.1:3000',
 ])
+
+# =============================================
+# 统一日志配置
+# =============================================
+import os
+import logging
+from pythonjsonlogger import jsonlogger
+
+# 日志级别（默认 INFO，可通过环境变量覆盖）
+LOG_LEVEL = env('ANSFLOW_LOG_LEVEL', default='INFO').upper()
+
+# 日志目录
+ANSFLOW_LOG_DIR_DEFAULT = '/var/log/ansflow'
+LOG_DIR = env('ANSFLOW_LOG_DIR', default=ANSFLOW_LOG_DIR_DEFAULT)
+# 确保日志目录存在，如果无权限则使用本地目录
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except PermissionError:
+    # 开发环境无权限时使用本地目录
+    LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+# 是否使用 JSON 格式
+LOG_JSON = env.bool('ANSFLOW_LOG_JSON', default=True)
+
+# 日志轮转策略：daily=按天，size=按大小
+LOG_ROTATION = env('ANSFLOW_LOG_ROTATION', default='daily')
+
+# 单个日志文件最大大小（MB），仅在 size 策略下生效
+LOG_MAX_SIZE = env('ANSFLOW_LOG_MAX_SIZE', default=100, cast=int)
+
+# 保留日志天数
+LOG_RETENTION_DAYS = env('ANSFLOW_LOG_RETENTION_DAYS', default=30, cast=int)
+
+
+class CustomJsonFormatter(jsonlogger.JsonFormatter):
+    """自定义 JSON 格式化器，增加额外字段"""
+
+    def add_fields(self, log_record, record, message_dict):
+        super().add_fields(log_record, record, message_dict)
+        log_record['service'] = 'ansflow'
+        log_record['level'] = record.levelname
+        log_record['logger'] = record.name
+        log_record['module'] = record.module
+        log_record['function'] = record.funcName
+        log_record['line'] = record.lineno
+        log_record['timestamp'] = self.formatTime(record, self.datefmt)
+
+
+def get_formatter():
+    """获取格式化器"""
+    if LOG_JSON:
+        return CustomJsonFormatter('%(timestamp)s %(level)s %(name)s %(message)s')
+    else:
+        return logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+
+
+def get_file_handler(filename, level=LOG_LEVEL):
+    """获取文件处理器"""
+    filepath = os.path.join(LOG_DIR, filename)
+
+    if LOG_ROTATION == 'size':
+        from logging.handlers import RotatingFileHandler
+        handler = RotatingFileHandler(
+            filepath,
+            maxBytes=LOG_MAX_SIZE * 1024 * 1024,
+            backupCount=LOG_RETENTION_DAYS
+        )
+    else:
+        from logging.handlers import TimedRotatingFileHandler
+        handler = TimedRotatingFileHandler(
+            filepath,
+            when='midnight',
+            interval=1,
+            backupCount=LOG_RETENTION_DAYS
+        )
+        handler.suffix = '%Y%m%d'
+
+    handler.setLevel(level)
+    handler.setFormatter(get_formatter())
+    return handler
+
+
+def get_console_handler():
+    """获取控制台处理器"""
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(get_formatter())
+    return handler
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+
+    'formatters': {
+        'json': {
+            '()': lambda: CustomJsonFormatter('%(timestamp)s %(level)s %(name)s %(message)s'),
+        },
+        'standard': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
+
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'json' if LOG_JSON else 'standard',
+        },
+        'file': {
+            'level': LOG_LEVEL,
+            'class': 'logging.handlers.RotatingFileHandler' if LOG_ROTATION == 'size' else 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'ansflow.log'),
+            'maxBytes': LOG_MAX_SIZE * 1024 * 1024 if LOG_ROTATION == 'size' else None,
+            'backupCount': LOG_RETENTION_DAYS if LOG_ROTATION == 'size' else None,
+            'when': 'midnight' if LOG_ROTATION == 'daily' else None,
+            'interval': 1 if LOG_ROTATION == 'daily' else None,
+            'formatter': 'json' if LOG_JSON else 'standard',
+        },
+        'error_file': {
+            'level': 'ERROR',
+            'class': 'logging.handlers.RotatingFileHandler' if LOG_ROTATION == 'size' else 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'ansflow-error.log'),
+            'maxBytes': LOG_MAX_SIZE * 1024 * 1024 if LOG_ROTATION == 'size' else None,
+            'backupCount': LOG_RETENTION_DAYS if LOG_ROTATION == 'size' else None,
+            'when': 'midnight' if LOG_ROTATION == 'daily' else None,
+            'interval': 1 if LOG_ROTATION == 'daily' else None,
+            'formatter': 'json' if LOG_JSON else 'standard',
+        },
+    },
+
+    'root': {
+        'level': LOG_LEVEL,
+        'handlers': ['console', 'file', 'error_file'],
+    },
+
+    'loggers': {
+        'django': {
+            'level': env('ANSFLOW_LOG_DJANGO', default='WARNING'),
+            'handlers': ['console', 'file', 'error_file'],
+            'propagate': False,
+        },
+        'celery': {
+            'level': env('ANSFLOW_LOG_CELERY', default='INFO'),
+            'handlers': ['console', 'file', 'error_file'],
+            'propagate': False,
+        },
+        'celery.task': {
+            'level': env('ANSFLOW_LOG_CELERY_TASK', default='INFO'),
+            'handlers': ['console', 'file', 'error_file'],
+            'propagate': False,
+        },
+        'channels': {
+            'level': env('ANSFLOW_LOG_CHANNELS', default='INFO'),
+            'handlers': ['console', 'file', 'error_file'],
+            'propagate': False,
+        },
+        'apps': {
+            'level': LOG_LEVEL,
+            'handlers': ['console', 'file', 'error_file'],
+            'propagate': False,
+        },
+        'uvicorn': {
+            'level': env('ANSFLOW_LOG_UVICORN', default='INFO'),
+            'handlers': ['console', 'file'],
+            'propagate': False,
+        },
+        'uvicorn.error': {
+            'level': 'ERROR',
+            'handlers': ['console', 'file', 'error_file'],
+            'propagate': False,
+        },
+        'uvicorn.access': {
+            'level': env('ANSFLOW_LOG_UVICORN_ACCESS', default='WARNING'),
+            'handlers': ['console', 'file'],
+            'propagate': False,
+        },
+    },
+}
