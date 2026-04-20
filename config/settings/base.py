@@ -272,7 +272,7 @@ CELERY_RESULT_EXTENDED = True
 SPECTACULAR_SETTINGS = {
     'TITLE': 'AnsFlow 运维平台 API',
     'DESCRIPTION': '基于 Django + DRF 的自动化运维平台后端接口文档',
-    'VERSION': '1.0.0',
+    'VERSION': __import__('config').VERSION,
     'SERVE_INCLUDE_SCHEMA': False,
 
     # 授权配置（让 Swagger 支持 JWT 在线调试）
