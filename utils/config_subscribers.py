@@ -68,12 +68,28 @@ class CacheConfigSubscriber(ConfigSubscriber):
             logger.info('All cache cleared due to config change')
 
 
+class NotificationConfigSubscriber(ConfigSubscriber):
+    """
+    通知配置订阅者
+    当通知配置变更时，清除通知配置的缓存
+    """
+    name = 'notification_config_subscriber'
+    categories = ['notification']
+
+    def on_config_changed(self, category: str, key: str, value: Any):
+        """通知配置变更处理"""
+        from utils.config_manager import ConfigCache
+        ConfigCache.invalidate('notification', key)
+        logger.info(f'Notification config invalidated: notification.{key}')
+
+
 def register_config_subscribers():
     """注册所有订阅者"""
     subscribers = [
         RedisConfigSubscriber(),
         LoggingConfigSubscriber(),
         CacheConfigSubscriber(),
+        NotificationConfigSubscriber(),
     ]
 
     for subscriber in subscribers:
