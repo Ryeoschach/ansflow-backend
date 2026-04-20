@@ -562,12 +562,12 @@ def advance_pipeline_engine(self, run_id):
         # 刷新一遍 node_runs 和 node_status_map
         node_runs = list(run.nodes.all())
         node_status_map = { nr.node_id: nr for nr in node_runs }
-        
-        # 将 Run 状态置为 running
+
+    # 将 Run 状态置为 running（首次执行和重试执行都要设置）
+    if run.status == 'pending':
         run.status = 'running'
         run.start_time = timezone.now()
         run.save()
-        
         # 实时推送：流水线大脑初始化并启动
         push_pipeline_status_to_ws(run)
 
