@@ -4,6 +4,8 @@
 demo: https://ansflow.cyfee.com:10443
 admin/ansflow
 
+**当前版本**: v0.2.0 (build: 2026-04-20)
+
 ## 技术栈
 
 | 类别 | 技术 |
@@ -69,6 +71,7 @@ backend/
 - 异步执行：Celery 分布式任务，Celery Beat 定时调度
 - 实时日志：Channels WebSocket 推送，支持 ANSI 彩色日志流式输出
 - 状态机：pending → running → success/failed/stopped
+- **节点失败重试**：支持配置最大重试次数和重试间隔
 
 ### Ansible 任务中心（Task Management）
 - Playbook 解析与参数化执行
