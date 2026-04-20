@@ -28,7 +28,9 @@ def get_notification_config(key: str, default=None):
     }
     env_key = env_map.get(key)
     if env_key:
-        return os.getenv(env_key)
+        env_val = os.getenv(env_key)
+        if env_val is not None:
+            return env_val
     return default
 
 
