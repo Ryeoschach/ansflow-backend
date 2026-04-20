@@ -27,7 +27,7 @@ class PipelineRunSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['trigger_user', 'start_time', 'end_time']
 
-    def get_skipped_nodes(self, obj):
+    def get_skipped_nodes(self, obj) -> list:
         return list(obj.nodes.filter(status='skipped').values_list('node_id', flat=True))
 
 class CIEnvironmentSerializer(serializers.ModelSerializer):

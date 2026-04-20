@@ -37,7 +37,7 @@ class AnsibleTaskSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['creator', 'create_time', 'update_time']
 
-    def get_last_execution_status(self, obj):
+    def get_last_execution_status(self, obj) -> str | None:
         last = obj.executions.first()
         if last:
             return last.status

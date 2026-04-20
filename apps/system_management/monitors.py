@@ -1,12 +1,11 @@
 import time
 import datetime
 import logging
+import subprocess
 from django.db import connection
 from django_redis import get_redis_connection
 from django.conf import settings
-from kubernetes import client as k8s_client
 from ..k8s_management.models import K8sCluster
-from ..k8s_management.utils.k8s_helper import get_k8s_client
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,7 @@ class CeleryMonitor(BaseMonitor):
     def perform_check(self):
         from config.celery import app
         # 耗时操作，增加超时控制
-        i = app.control.inspect(timeout=1.0)
+        i = app.control.inspect(timeout=3.0)
         pings = i.ping()
         active_workers = len(pings) if pings else 0
         
@@ -100,15 +99,32 @@ class KubernetesMonitor(BaseMonitor):
         cluster = K8sCluster.objects.first()
         if not cluster:
             return {"status": "warning", "info": "未配置集群"}
-        
-        k8s_api = get_k8s_client(cluster)
-        api_instance = k8s_client.VersionApi(k8s_api)
-        v = api_instance.get_code()
-        return {
-            "cluster_name": cluster.name,
-            "version": v.git_version,
-            "platform": v.platform
-        }
+
+        try:
+            # 优先用 ~/.kube/config 中的当前上下文 server 地址
+            server = cluster.api_server
+            if not server:
+                return {"status": "warning", "info": "未配置 API Server"}
+
+            result = subprocess.run(
+                ["curl", "-sk", "--max-time", "5", "-o", "/dev/null", "-w", "%{http_code}|%{time_total}",
+                 f"{server}/version/"],
+                capture_output=True, text=True, timeout=8
+            )
+            output = result.stdout.strip()
+            if "|" in output:
+                http_code, time_total = output.split("|")
+                if http_code in ("200", "401", "403"):
+                    return {
+                        "status": "healthy",
+                        "info": f"连接正常 ({server})"
+                    }
+                return {"status": "warning", "info": f"K8s 返回: HTTP {http_code}"}
+            return {"status": "warning", "info": f"K8s 连接超时"}
+        except subprocess.TimeoutExpired:
+            return {"status": "warning", "info": f"K8s 连接超时: {cluster.name}"}
+        except Exception as e:
+            return {"status": "unhealthy", "info": f"K8s 检查失败: {str(e)[:50]}"}
 
 class SystemHealthManager:
     """

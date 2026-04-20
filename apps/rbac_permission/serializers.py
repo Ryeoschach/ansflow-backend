@@ -32,7 +32,7 @@ class RoleSerializer(serializers.ModelSerializer):
             'menus': {'required': False},
         }
 
-    def get_data_policies(self, obj):
+    def get_data_policies(self, obj) -> dict:
         # 按照 { 资源: { 动作: [ID列表] } } 格式返回给前端
         res = {}
         for p in obj.data_policies.all():
@@ -58,7 +58,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'password', 'email', 'roles', 'roles_info', 'is_active', 'is_staff']
 
-    def get_roles_info(self, obj):
+    def get_roles_info(self, obj) -> list:
         # 返回角色的 ID 和 名称，供前端表格渲染 Tag
         return [{"id": r.id, "name": r.name} for r in obj.roles.all()]
 
@@ -100,7 +100,7 @@ class MenuSerializer(serializers.ModelSerializer):
         fields = ('id', 'title', 'title_en', 'key', 'path', 'icon', 'parent', 'order', 'children', 'create_time')
         read_only_fields = ('create_time',)
 
-    def get_children(self, obj):
+    def get_children(self, obj) -> list:
         """
         递归获取子菜单，按 order 字段排序，并根据权限过滤
         """

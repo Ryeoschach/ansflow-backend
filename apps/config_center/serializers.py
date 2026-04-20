@@ -15,7 +15,7 @@ class ConfigItemSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'create_time', 'update_time']
 
-    def get_value_display(self, obj):
+    def get_value_display(self, obj) -> str:
         """返回值的显示，加密字段返回掩码"""
         if obj.is_encrypted:
             return '******'
@@ -55,7 +55,7 @@ class ConfigCategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'label', 'description', 'item_count', 'items', 'create_time', 'update_time']
         read_only_fields = ['id', 'create_time', 'update_time']
 
-    def get_item_count(self, obj):
+    def get_item_count(self, obj) -> int:
         return obj.items.filter(is_active=True).count()
 
 
@@ -68,7 +68,7 @@ class ConfigCategorySimpleSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'label', 'description', 'item_count', 'create_time', 'update_time']
         read_only_fields = ['id', 'create_time', 'update_time']
 
-    def get_item_count(self, obj):
+    def get_item_count(self, obj) -> int:
         return obj.items.filter(is_active=True).count()
 
 
@@ -90,12 +90,12 @@ class ConfigChangeLogSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'create_time']
 
-    def get_old_value_display(self, obj):
+    def get_old_value_display(self, obj) -> str:
         if obj.old_value and isinstance(obj.old_value, str) and obj.old_value.startswith('enc:'):
             return '******'
         return obj.old_value
 
-    def get_new_value_display(self, obj):
+    def get_new_value_display(self, obj) -> str:
         if obj.new_value and isinstance(obj.new_value, str) and obj.new_value.startswith('enc:'):
             return '******'
         return obj.new_value
