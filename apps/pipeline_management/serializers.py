@@ -19,11 +19,16 @@ class PipelineRunSerializer(serializers.ModelSerializer):
     pipeline_name = serializers.CharField(source='pipeline.name', read_only=True)
     graph_data = serializers.JSONField(source='pipeline.graph_data', read_only=True)
     nodes = PipelineNodeRunSerializer(many=True, read_only=True) # 方便前端一次性取回节点状态进行渲染
+    parent_run_id = serializers.IntegerField(source='parent_run.id', read_only=True, allow_null=True)
+    skipped_nodes = serializers.SerializerMethodField()
 
     class Meta:
         model = PipelineRun
         fields = '__all__'
         read_only_fields = ['trigger_user', 'start_time', 'end_time']
+
+    def get_skipped_nodes(self, obj):
+        return list(obj.nodes.filter(status='skipped').values_list('node_id', flat=True))
 
 class CIEnvironmentSerializer(serializers.ModelSerializer):
     class Meta:

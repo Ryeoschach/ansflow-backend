@@ -99,12 +99,21 @@ class PipelineRun(BaseModel):
         ('failed', '执行失败'),
         ('cancelled', '已取消'),
     )
+    TRIGGER_TYPE_CHOICES = (
+        ('manual', '手动触发'),
+        ('schedule', '定时触发'),
+        ('webhook', 'Webhook 触发'),
+        ('retry', '重试触发'),
+    )
     pipeline = models.ForeignKey(Pipeline, on_delete=models.CASCADE, related_name='runs')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     trigger_user = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, blank=True)
     celery_task_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="DAG 任务 ID")
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
+    trigger_type = models.CharField(max_length=20, choices=TRIGGER_TYPE_CHOICES, default='manual', verbose_name="触发类型")
+    parent_run = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='retry_runs', verbose_name="父级 Run（重试时）")
+    start_node_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="重试起始节点 ID")
 
     class Meta:
         db_table = 'pipeline_run_instance'

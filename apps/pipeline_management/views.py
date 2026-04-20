@@ -10,6 +10,31 @@ from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 
 from apps.pipeline_management.tasks import advance_pipeline_engine, push_pipeline_status_to_ws
 
+
+def get_ancestors(node_id, edges):
+    """
+    BFS 反向遍历，返回所有前置节点 ID
+    edges: [{'source': 'dndnode_0', 'target': 'dndnode_1'}, ...]
+    """
+    ancestors = []
+    visited = set()
+    queue = [node_id]
+
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+
+        # 找所有指向 current 的边（current 是 target）
+        parents = [e['source'] for e in edges if e.get('target') == current]
+        for p in parents:
+            if p not in visited:
+                ancestors.append(p)
+                queue.append(p)
+
+    return ancestors
+
 class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = Pipeline.objects.all()
     serializer_class = PipelineSerializer
@@ -56,7 +81,8 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         run = PipelineRun.objects.create(
             pipeline=pipeline,
             status='pending',
-            trigger_user=request.user
+            trigger_user=request.user,
+            trigger_type='manual'
         )
         
         # 触发 Celery DAG 引擎进行拓扑遍历调度
@@ -147,6 +173,94 @@ class PipelineRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             node.save()
 
         return Response({"message": "中止指令已发，相关节点及底层 Ansible 任务已强制关停并清理状态。"})
+
+    @action(detail=True, methods=['post'])
+    def retry(self, request, pk=None):
+        """
+        从指定节点重试流水线
+        POST /api/v1/pipeline_runs/{run_id}/retry/
+        Body: { "start_node_id": "dndnode_2" }  // 可选，空字符串从头重试
+        """
+        parent_run = self.get_object()
+
+        # 仅允许对 failed 状态的 Run 进行重试
+        if parent_run.status != 'failed':
+            return Response(
+                {"error": "只有执行失败的流水线才能重试"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        start_node_id = request.data.get('start_node_id', '')
+
+        # 获取 DAG 拓扑信息
+        graph_data = parent_run.pipeline.graph_data
+        nodes = graph_data.get('nodes', [])
+        edges = graph_data.get('edges', [])
+
+        # 构建 node_id -> node 映射
+        node_map = {n['id']: n for n in nodes}
+
+        # 确定起始节点（默认为 DAG 第一个节点，通常是 type='input' 的 Trigger 节点）
+        if start_node_id and start_node_id in node_map:
+            actual_start_node = start_node_id
+        else:
+            # 找到入口节点（没有上游的节点）
+            targets = {e.get('target') for e in edges}
+            entry_nodes = [n['id'] for n in nodes if n['id'] not in targets]
+            actual_start_node = entry_nodes[0] if entry_nodes else (nodes[0]['id'] if nodes else None)
+
+        if not actual_start_node:
+            return Response({"error": "无法确定起始节点"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 计算需要跳过的前置节点
+        ancestors = get_ancestors(actual_start_node, edges)
+
+        # 获取父 Run 的节点执行结果
+        parent_node_results = {n.node_id: n for n in parent_run.nodes.all()}
+
+        # 创建新的 PipelineRun
+        new_run = PipelineRun.objects.create(
+            pipeline=parent_run.pipeline,
+            status='pending',
+            trigger_user=request.user,
+            trigger_type='retry',
+            parent_run=parent_run,
+            start_node_id=actual_start_node,
+        )
+
+        # 创建节点状态记录
+        for node in nodes:
+            node_id = node['id']
+            parent_result = parent_node_results.get(node_id)
+
+            if node_id in ancestors:
+                # 前置节点：跳过，复用上次结果
+                PipelineNodeRun.objects.create(
+                    run=new_run,
+                    node_id=node_id,
+                    node_type=node.get('type', ''),
+                    node_label=node.get('data', {}).get('label', ''),
+                    status='skipped',
+                    logs=parent_result.logs if parent_result else '',
+                    start_time=parent_result.start_time if parent_result else None,
+                    end_time=parent_result.end_time if parent_result else None,
+                )
+            else:
+                # 从起始节点开始，需要重新执行
+                PipelineNodeRun.objects.create(
+                    run=new_run,
+                    node_id=node_id,
+                    node_type=node.get('type', ''),
+                    node_label=node.get('data', {}).get('label', ''),
+                    status='pending',
+                )
+
+        # 触发异步执行
+        advance_pipeline_engine.delay(new_run.id)
+
+        # 返回新 Run 信息
+        serializer = self.get_serializer(new_run)
+        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
 
 class CIEnvironmentViewSet(viewsets.ModelViewSet):
     """构建镜像环境管理"""

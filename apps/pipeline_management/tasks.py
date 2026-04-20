@@ -501,7 +501,8 @@ def execute_pipeline_cron(pipeline_id):
         run = PipelineRun.objects.create(
             pipeline=pipeline,
             status='pending',
-            trigger_user=None  # 定时任务没有真实发起人，为空代表系统调度
+            trigger_user=None,  # 定时任务没有真实发起人，为空代表系统调度
+            trigger_type='schedule'
         )
         # 将任务实体扔给主引擎继续调度
         advance_pipeline_engine.delay(run.id)
@@ -614,7 +615,7 @@ def advance_pipeline_engine(self, run_id):
             for edge in incoming_edges:
                 source_id = edge.get('source')
                 source_run = node_status_map.get(source_id)
-                if not source_run or source_run.status != 'success':
+                if not source_run or source_run.status not in ('success', 'skipped'):
                     all_upstream_success = False
                     break
             
