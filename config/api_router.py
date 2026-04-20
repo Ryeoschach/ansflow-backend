@@ -7,7 +7,7 @@ from apps.host_management.views import HostViewSet, EnvironmentViewSet, Resource
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet
 from apps.registry_management.views import ImageRegistryViewSet
-from apps.system_management.views import SystemHealthViewSet, DashboardViewSet
+from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
@@ -32,6 +32,7 @@ router.register(r'ci_environments', CIEnvironmentViewSet, basename='ci_environme
 router.register(r'image_registries', ImageRegistryViewSet, basename='image_registries')
 router.register(r'system/health', SystemHealthViewSet, basename='system-health')
 router.register(r'system/dashboard', DashboardViewSet, basename='system-dashboard')
+router.register(r'system/backup', BackupViewSet, basename='system-backup')
 router.register(r'audit-logs', AuditLogViewSet, basename='审计日志')
 router.register(r'credentials', CredentialViewSet, basename='credentials')
 router.register(r'config/categories', ConfigCategoryViewSet, basename='config-categories')

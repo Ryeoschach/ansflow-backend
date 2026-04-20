@@ -4,7 +4,7 @@
 demo: https://ansflow.cyfee.com:10443
 admin/ansflow
 
-**当前版本**: v0.2.0 (build: 2026-04-20)
+**当前版本**: v0.3.0 (build: 2026-04-20)
 
 ## 技术栈
 
@@ -122,6 +122,24 @@ backend/
 | LoggingConfigSubscriber | logging | 动态调整日志级别 |
 | CacheConfigSubscriber | cache | 清除所有缓存 |
 
+### 系统备份与恢复（Backup & Restore）
+全量系统数据备份与恢复，支持跨实例迁移。
+
+**备份内容：**
+- 用户、角色、权限、菜单
+- 主机、平台、环境、资源池
+- 流水线模板、CI 环境
+- K8s 集群配置、镜像仓库
+- 凭据（加密存储）、配置中心
+- 审批策略
+
+**排除内容：**
+- 执行日志、审计日志
+- 流水线运行记录（PipelineRun）
+- 用户密码（需重置）
+
+**备份格式：** gzip 压缩的 JSON 文件（`.json.gz`）
+
 ## API 版本
 
 所有接口以 `/api/v1/` 为前缀，版本控制通过 URL Path 实现。
@@ -142,6 +160,7 @@ backend/
 | 凭据保险库 | `/api/v1/credentials/` |
 | 配置中心 | `/api/v1/config/` |
 | 系统 | `/api/v1/system/` |
+| 系统备份 | `/api/v1/system/backup/` |
 
 ## 快速开始
 

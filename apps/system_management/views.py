@@ -1,9 +1,13 @@
 import datetime
 import os
+import uuid
+import gzip
+import json
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .monitors import SystemHealthManager
 from .notifiers import FeishuNotifier, DingTalkNotifier
 from apps.host_management.models import Host, ResourcePool
@@ -12,6 +16,8 @@ from apps.pipeline_management.models import PipelineRun
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Count, Q
+from django.http import HttpResponse
+from django.conf import settings
 
 class SystemHealthViewSet(viewsets.ViewSet):
     """
@@ -160,4 +166,223 @@ class DashboardViewSet(viewsets.ViewSet):
             },
             "taskTrend": task_trend,
             "recentTasks": final_recent
+        })
+
+
+class BackupViewSet(viewsets.ViewSet):
+    """
+    系统备份与恢复视图
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_backup_dir(self):
+        """获取备份存储目录"""
+        backup_dir = os.path.join(settings.MEDIA_ROOT, 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        return backup_dir
+
+    @action(detail=False, methods=['get'])
+    def generate(self, request):
+        """
+        创建系统全量备份
+        """
+        from .backup import BackupExporter
+
+        try:
+            exporter = BackupExporter()
+            backup_data = exporter.export()
+
+            # 生成文件名
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'ansflow_backup_{timestamp}.json.gz'
+            file_path = os.path.join(self._get_backup_dir(), filename)
+
+            # 写入压缩文件
+            with gzip.open(file_path, 'wt', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+
+            # 返回文件路径（相对路径）
+            file_url = f'/media/backups/{filename}'
+
+            return Response({
+                'success': True,
+                'filename': filename,
+                'url': file_url,
+                'size': os.path.getsize(file_path),
+                'record_count': {k: len(v) for k, v in backup_data['data'].items()},
+                'created_at': timestamp,
+            })
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'备份创建失败: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'])
+    def index(self, request):
+        """
+        列出所有备份文件
+        """
+        backup_dir = self._get_backup_dir()
+        backups = []
+
+        for filename in os.listdir(backup_dir):
+            if filename.endswith('.json.gz'):
+                file_path = os.path.join(backup_dir, filename)
+                stat = os.stat(file_path)
+                # 从文件名提取时间戳
+                timestamp = filename.replace('ansflow_backup_', '').replace('.json.gz', '')
+                try:
+                    dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
+                    timestamp_display = dt.strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    timestamp_display = timestamp
+
+                backups.append({
+                    'filename': filename,
+                    'url': f'/media/backups/{filename}',
+                    'size': stat.st_size,
+                    'created_at': timestamp_display,
+                })
+
+        # 按时间倒序
+        backups.sort(key=lambda x: x['created_at'], reverse=True)
+        return Response(backups)
+
+    @action(detail=False, methods=['get'])
+    def download(self, request):
+        """
+        下载指定备份文件
+        """
+        filename = request.query_params.get('filename')
+        if not filename:
+            return Response({'error': '缺少 filename 参数'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 安全检查：只允许下载 ansflow_backup_ 开头的文件
+        if not filename.startswith('ansflow_backup_') and not filename.startswith('uploaded_'):
+            return Response({'error': '非法文件名'}, status=status.HTTP_403_FORBIDDEN)
+
+        file_path = os.path.join(self._get_backup_dir(), filename)
+        if not os.path.exists(file_path):
+            return Response({'error': '备份文件不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 手动读取文件内容，通过 DRF Response 返回，以便通过认证
+        with open(file_path, 'rb') as f:
+            content = f.read()
+
+        from django.http import HttpResponse
+        response = HttpResponse(content, content_type='application/octet-stream')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=False, methods=['post'])
+    def restore(self, request):
+        """
+        从备份文件恢复数据
+        """
+        from .backup import BackupImporter
+
+        filename = request.data.get('filename')
+        if not filename:
+            return Response({'error': '缺少 filename 参数'}, status=status.HTTP_400_BAD_REQUEST)
+
+        file_path = os.path.join(self._get_backup_dir(), filename)
+        if not os.path.exists(file_path):
+            return Response({'error': '备份文件不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            importer = BackupImporter({})
+            result = importer.import_from_file(file_path)
+
+            return Response({
+                'success': result['success'],
+                'imported': result['imported'],
+                'errors': result['errors'],
+            })
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'恢复失败: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'])
+    def upload(self, request):
+        """
+        上传备份文件并恢复
+        """
+        from .backup import BackupImporter
+
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': '缺少备份文件'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not file.name.endswith('.json.gz'):
+            return Response({'error': '只支持 .json.gz 格式的备份文件'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # 保存上传文件
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'uploaded_{timestamp}_{file.name}'
+            file_path = os.path.join(self._get_backup_dir(), filename)
+
+            with open(file_path, 'wb') as f:
+                for chunk in file.chunks():
+                    f.write(chunk)
+
+            # 执行恢复
+            importer = BackupImporter({})
+            result = importer.import_from_file(file_path)
+
+            # 删除临时上传文件
+            os.remove(file_path)
+
+            return Response({
+                'success': result['success'],
+                'imported': result['imported'],
+                'errors': result['errors'],
+            })
+
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'上传恢复失败: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'])
+    def delete(self, request):
+        """
+        删除备份文件
+        """
+        filenames = request.data.get('filenames', [])
+        if not filenames:
+            return Response({'error': '缺少 filenames 参数'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not isinstance(filenames, list):
+            return Response({'error': 'filenames 必须是数组'}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted = []
+        errors = []
+        for filename in filenames:
+            # 安全检查
+            if not filename.startswith('ansflow_backup_') and not filename.startswith('uploaded_'):
+                errors.append(f'非法文件名: {filename}')
+                continue
+
+            file_path = os.path.join(self._get_backup_dir(), filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    deleted.append(filename)
+                except Exception as e:
+                    errors.append(f'{filename}: {str(e)}')
+            else:
+                errors.append(f'{filename}: 文件不存在')
+
+        return Response({
+            'success': len(errors) == 0,
+            'deleted': deleted,
+            'errors': errors,
         })
