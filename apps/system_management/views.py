@@ -28,16 +28,20 @@ class SystemHealthViewSet(viewsets.ViewSet):
         """
         获取全系统组件健康概览
         """
+        from config import VERSION, BUILD_DATE
+
         try:
             health_data = SystemHealthManager.get_all_health()
-            
+
             # 计算总体状态
             overall = "healthy"
             if any(item['status'] == 'unhealthy' for item in health_data): overall = "critical"
             elif any(item['status'] == 'warning' for item in health_data): overall = "warning"
-            
+
             return Response({
                 "status": overall,
+                "version": VERSION,
+                "build_date": BUILD_DATE,
                 "components": health_data,
                 "timestamp": datetime.datetime.now().isoformat()
             })
