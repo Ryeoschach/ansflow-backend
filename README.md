@@ -4,7 +4,7 @@
 demo: https://ansflow.cyfee.com:10443
 admin/ansflow
 
-**当前版本**: v0.3.0 (build: 2026-04-20)
+**当前版本**: v0.4.0 (build: 2026-04-20)
 
 ## 技术栈
 
