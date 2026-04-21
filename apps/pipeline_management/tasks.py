@@ -1,4 +1,6 @@
 import time
+import os
+import logging
 import requests
 from celery import shared_task
 from django.utils import timezone
@@ -6,6 +8,8 @@ from apps.pipeline_management.models import Pipeline, PipelineRun, PipelineNodeR
 from celery.exceptions import SoftTimeLimitExceeded
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+
+logger = logging.getLogger(__name__)
 
 def push_pipeline_status_to_ws(run_obj):
     """
@@ -84,8 +88,12 @@ def execute_pipeline_node(self, node_run_id):
     import shutil
     
     # 统一工作区路径：基于 PipelineRun 的 ID，所有容器和脚本挂载都在此进行
-    # Todo：临时目录以及工作目录规划
-    workspace_dir = f"/tmp/ansflow_workspaces/run_{run_id}"
+    # 重试时复用父 run 的工作目录，避免重新 clone 代码
+    parent_run_id = node_run.run.parent_run_id
+    if parent_run_id:
+        workspace_dir = f"/tmp/ansflow_workspaces/run_{parent_run_id}"
+    else:
+        workspace_dir = f"/tmp/ansflow_workspaces/run_{run_id}"
     os.makedirs(workspace_dir, exist_ok=True)
     source_dir = os.path.join(workspace_dir, 'source')
     
@@ -161,18 +169,30 @@ def execute_pipeline_node(self, node_run_id):
                     "/bin/sh", "-c", build_script
                 ]
                 
+                logger.info(f"[DEBUG] docker_build 开始执行 node={node_run.node_id} workspace={workspace_dir} source_dir={source_dir}")
+                logger.info(f"[DEBUG] cmd = {' '.join(cmd)}")
+
                 node_run.logs += f"\n[$] {' '.join(cmd)}\n"
-                
-                # 执行命令并捕获标准输出和异常输出
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                node_run.logs += "\n--- 容器内的输出日志 ---\n"
-                node_run.logs += result.stdout
-                
-                if result.stderr:
-                    node_run.logs += "\n--- 标准异常捕获 ---\n"
-                    node_run.logs += result.stderr
-                    
+
+                # 避免 capture_output=True 死锁（maven 输出量大时 PIPE 缓冲会满）
+                # 改用文件中转：实时写入文件，结束后读回日志
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.log', delete=False) as tmp:
+                    tmp_path = tmp.name
+
+                logger.info(f"[DEBUG] subprocess 开始，等待完成... tmp_path={tmp_path}")
+                with open(tmp_path, 'w', buffering=1) as stdout_f:
+                    result = subprocess.run(cmd, stdout=stdout_f, stderr=subprocess.STDOUT)
+                logger.info(f"[DEBUG] subprocess 完成，returncode={result.returncode}")
+
+                with open(tmp_path, 'r') as f:
+                    node_run.logs += "\n--- 容器内的输出日志 ---\n"
+                    node_run.logs += f.read()
+
+                import os
+                os.unlink(tmp_path)
+                logger.info(f"[DEBUG] docker_build 完成，returncode={result.returncode}")
+
                 if result.returncode == 0:
                     node_run.logs += "\n✨ 隔离沙箱编译执行成功！所有编译产物均已落回宿主机的工作区中。"
                     success = True
@@ -272,11 +292,21 @@ def execute_pipeline_node(self, node_run_id):
                 ]
 
                 node_run.logs += f"\n[$] {' '.join(cmd)}\n"
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                node_run.logs += "\n--- Kaniko 构建输出 ---\n"
-                node_run.logs += result.stdout
-                
+
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.log', delete=False) as tmp:
+                    tmp_path = tmp.name
+
+                with open(tmp_path, 'w', buffering=1) as stdout_f:
+                    result = subprocess.run(cmd, stdout=stdout_f, stderr=subprocess.STDOUT)
+
+                with open(tmp_path, 'r') as f:
+                    node_run.logs += "\n--- Kaniko 构建输出 ---\n"
+                    node_run.logs += f.read()
+
+                import os
+                os.unlink(tmp_path)
+
                 if result.stderr:
                     node_run.logs += "\n--- Kaniko 标准异常 ---\n"
                     node_run.logs += result.stderr
