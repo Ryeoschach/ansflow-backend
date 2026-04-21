@@ -311,7 +311,7 @@ class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save()
 
-    @action(detail=True, methods=['post'], url_path='trigger')
+    @action(detail=True, methods=['post'], url_path='trigger', permission_classes=[])
     def trigger(self, request, pk=None):
         """
         触发 Webhook 对应的流水线（供外部系统调用，不需要认证）
