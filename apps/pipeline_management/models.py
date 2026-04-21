@@ -21,10 +21,17 @@ class Pipeline(BaseModel):
         ordering = ['-create_time']
 
     def save(self, *args, **kwargs):
+        # 0. 判断是否为更新操作（已有 ID）
+        is_update = self.pk is not None
+
         # 1. 拦截保存动作，先把对象存到数据库从而产生 ID
         super(Pipeline, self).save(*args, **kwargs)
 
-        # 2. 如果成功安装了 django_celery_beat，则注册/更新它的定期任务
+        # 2. 保存时自动创建版本快照（仅当有 graph_data 且为更新时）
+        if is_update and self.graph_data:
+            self._create_version_snapshot()
+
+        # 3. 如果成功安装了 django_celery_beat，则注册/更新它的定期任务
         try:
             from django_celery_beat.models import PeriodicTask, CrontabSchedule
             import json
@@ -44,11 +51,11 @@ class Pipeline(BaseModel):
                         day_of_week=parts[4],
                         timezone='Asia/Shanghai'
                     )
-                    
+
                     task = None
                     if self.celery_periodic_task_id:
                         task = PeriodicTask.objects.filter(id=self.celery_periodic_task_id).first()
-                    
+
                     # 容灾：如果 ID 丢了，尝试通过名称找回（解决手动删改库导致的断连）
                     task_name = f'Pipeline_Cron_{self.id}_Trigger'
                     if not task:
@@ -87,7 +94,27 @@ class Pipeline(BaseModel):
                             task.enabled = False
                             task.save()
         except ImportError:
-            pass 
+            pass
+
+    def _create_version_snapshot(self):
+        """自动创建版本快照"""
+        from django.utils import timezone as tz
+        last_version = self.versions.order_by('-version_number').first()
+        next_version = (last_version.version_number + 1) if last_version else 1
+
+        # 取消之前 current 版本标记
+        self.versions.filter(is_current=True).update(is_current=False)
+
+        PipelineVersion.objects.create(
+            pipeline=self,
+            version_number=next_version,
+            graph_data=self.graph_data,
+            name=self.name,
+            desc=self.desc,
+            creator=self.creator,
+            change_summary=f'自动快照 v{next_version}',
+            is_current=True,
+        ) 
 
 
 class PipelineRun(BaseModel):
@@ -154,7 +181,69 @@ class CIEnvironment(BaseModel):
     type = models.CharField(max_length=50, verbose_name="技术栈标签", blank=True, null=True)
     description = models.TextField(blank=True, null=True, verbose_name="用途描述")
     status = models.CharField(max_length=20, default='READY', verbose_name="状态") # PULLING, READY, ERROR
-    
+
     class Meta:
         db_table = 'pipeline_ci_environment'
         ordering = ['-create_time']
+
+
+class PipelineVersion(BaseModel):
+    """
+    流水线模板版本快照：每次保存流水线时自动生成版本记录
+    """
+    pipeline = models.ForeignKey(Pipeline, on_delete=models.CASCADE, related_name='versions', verbose_name="所属流水线")
+    version_number = models.IntegerField(verbose_name="版本号")
+    graph_data = JSONField(default=dict, verbose_name="版本快照数据")
+    name = models.CharField(max_length=100, verbose_name="版本名称（快照时）")
+    desc = models.TextField(blank=True, null=True, verbose_name="版本描述（快照时）")
+    creator = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, verbose_name="操作人")
+    change_summary = models.CharField(max_length=255, blank=True, null=True, verbose_name="变更说明")
+    is_current = models.BooleanField(default=False, verbose_name="是否为当前版本")
+
+    class Meta:
+        db_table = 'pipeline_version'
+        verbose_name = "流水线版本"
+        verbose_name_plural = verbose_name
+        ordering = ['-version_number']
+        unique_together = ('pipeline', 'version_number')
+        indexes = [
+            models.Index(fields=['pipeline', '-version_number']),
+        ]
+
+    def __str__(self):
+        return f"{self.pipeline.name} v{self.version_number}"
+
+
+class PipelineWebhook(BaseModel):
+    """
+    流水线 Webhook 触发配置
+    """
+    EVENT_TYPE_CHOICES = [
+        ('push', '代码推送'),
+        ('tag', '标签创建'),
+        ('pull_request', 'Pull Request'),
+        ('manual', '手动触发'),
+    ]
+
+    pipeline = models.ForeignKey(Pipeline, on_delete=models.CASCADE, related_name='webhooks', verbose_name="关联流水线")
+    name = models.CharField(max_length=100, verbose_name="Webhook 名称", help_text="如: GitHub Push Trigger")
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES, default='push', verbose_name="触发事件")
+    repository_url = models.CharField(max_length=512, blank=True, null=True, verbose_name="仓库地址", help_text="如: https://github.com/org/repo")
+    branch_filter = models.CharField(max_length=255, blank=True, null=True, verbose_name="分支过滤", help_text="留空表示所有分支，支持 glob 匹配如: main, release/*")
+    secret_key = models.CharField(max_length=128, blank=True, null=True, verbose_name="签名密钥", help_text="用于验证请求来源")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+    description = models.TextField(blank=True, null=True, verbose_name="描述")
+    last_trigger_time = models.DateTimeField(null=True, blank=True, verbose_name="最近触发时间")
+    trigger_count = models.IntegerField(default=0, verbose_name="累计触发次数")
+
+    class Meta:
+        db_table = 'pipeline_webhook'
+        verbose_name = "流水线 Webhook"
+        verbose_name_plural = verbose_name
+        ordering = ['-create_time']
+        indexes = [
+            models.Index(fields=['pipeline', 'event_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.pipeline.name} - {self.name}"

@@ -4,8 +4,8 @@ from rest_framework.response import Response
 from rest_framework import status # Added for status.HTTP_400_BAD_REQUEST
 from django.utils import timezone
 from config.celery import app as celery_app
-from .models import Pipeline, PipelineRun, CIEnvironment, PipelineNodeRun
-from .serializers import PipelineSerializer, PipelineRunSerializer, CIEnvironmentSerializer
+from .models import Pipeline, PipelineRun, CIEnvironment, PipelineNodeRun, PipelineWebhook, PipelineVersion
+from .serializers import PipelineSerializer, PipelineRunSerializer, CIEnvironmentSerializer, PipelineWebhookSerializer, PipelineVersionSerializer
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 
 from apps.pipeline_management.tasks import advance_pipeline_engine, push_pipeline_status_to_ws
@@ -89,6 +89,32 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         advance_pipeline_engine.delay(run.id)
         
         return Response({'msg': '流水线已启动', 'run_id': run.id})
+
+    @action(detail=True, methods=['post'])
+    def rollback(self, request, pk=None):
+        """
+        回滚流水线到指定版本
+        POST /api/v1/pipelines/{id}/rollback/
+        Body: { "version_id": 3 }
+        """
+        pipeline = self.get_object()
+        version_id = request.data.get('version_id')
+
+        if not version_id:
+            return Response({'error': '必须指定 version_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            version = pipeline.versions.get(id=version_id)
+        except PipelineVersion.DoesNotExist:
+            return Response({'error': '指定版本不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+        # 恢复 graph_data 和描述
+        pipeline.graph_data = version.graph_data
+        pipeline.name = version.name
+        pipeline.desc = version.desc
+        pipeline.save()
+
+        return Response({'msg': f'已回滚到 v{version.version_number}', 'pipeline_id': pipeline.id})
 
 class PipelineRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """流水线运行记录"""
@@ -268,3 +294,93 @@ class CIEnvironmentViewSet(viewsets.ModelViewSet):
     serializer_class = CIEnvironmentSerializer
     permission_classes = [SmartRBACPermission]
     resource_code = 'pipeline:ci_env'
+
+
+class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    """流水线 Webhook 配置管理"""
+    queryset = PipelineWebhook.objects.all()
+    serializer_class = PipelineWebhookSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'pipeline:webhook'
+    resource_type = 'pipeline'
+    resource_owner_field = 'pipeline__creator'
+    filterset_fields = ['pipeline', 'event_type', 'is_active']
+    search_fields = ['name', 'repository_url']
+    ordering_fields = ['create_time', 'last_trigger_time']
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    @action(detail=True, methods=['post'], url_path='trigger')
+    def trigger(self, request, pk=None):
+        """
+        触发 Webhook 对应的流水线（供外部系统调用，不需要认证）
+        GET/POST /api/v1/pipeline/webhooks/{id}/trigger/?secret=xxx
+        """
+        webhook = self.get_object()
+
+        # 验证 secret
+        secret = request.query_params.get('secret') or request.data.get('secret')
+        if webhook.secret_key and webhook.secret_key != secret:
+            return Response({'error': 'Invalid secret'}, status=status.HTTP_403_FORBIDDEN)
+
+        # 检查是否启用
+        if not webhook.is_active:
+            return Response({'error': 'Webhook is disabled'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 获取事件类型和分支信息
+        event_type = request.data.get('event') or request.query_params.get('event', 'push')
+        branch = request.data.get('ref', '').replace('refs/heads/', '') or request.query_params.get('branch', '')
+
+        # 检查分支过滤
+        if webhook.branch_filter:
+            import fnmatch
+            if not fnmatch.fnmatch(branch, webhook.branch_filter):
+                return Response({'message': 'Branch does not match filter, skipped'}, status=status.HTTP_200_OK)
+
+        # 触发流水线
+        try:
+            run = PipelineRun.objects.create(
+                pipeline=webhook.pipeline,
+                status='pending',
+                trigger_user=webhook.pipeline.creator,
+                trigger_type='webhook'
+            )
+
+            # 更新触发统计
+            webhook.last_trigger_time = timezone.now()
+            webhook.trigger_count += 1
+            webhook.save()
+
+            # 异步触发 DAG 引擎
+            advance_pipeline_engine.delay(run.id)
+
+            return Response({
+                'message': 'Pipeline triggered successfully',
+                'run_id': run.id,
+                'pipeline': webhook.pipeline.name,
+                'branch': branch,
+            }, status=status.HTTP_202_ACCEPTED)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PipelineVersionViewSet(DataScopeMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    流水线版本历史（只读）
+    """
+    queryset = PipelineVersion.objects.all()
+    serializer_class = PipelineVersionSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'pipeline:version'
+    resource_type = 'pipeline'
+    filterset_fields = ['pipeline', 'is_current']
+    search_fields = ['pipeline__name', 'change_summary']
+    ordering_fields = ['version_number', 'create_time']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        pipeline_id = self.request.query_params.get('pipeline')
+        if pipeline_id:
+            qs = qs.filter(pipeline_id=pipeline_id)
+        return qs
