@@ -571,14 +571,14 @@ def advance_pipeline_engine(self, run_id):
         # 实时推送：流水线大脑初始化并启动
         push_pipeline_status_to_ws(run)
 
-        # 重试时：从父运行复制工作区产物到新工作区
-        if run.parent_run_id:
-            parent_workspace = f"/tmp/ansflow_workspaces/run_{run.parent_run_id}"
-            current_workspace = f"/tmp/ansflow_workspaces/run_{run_id}"
-            if os.path.exists(parent_workspace):
-                import shutil
-                # 复制父运行的工作区到新运行（保留 git clone 等产物）
-                shutil.copytree(parent_workspace, current_workspace, dirs_exist_ok=True)
+    # 重试时：从父运行复制工作区产物到新工作区（无论首次执行还是重试都要执行）
+    if run.parent_run_id:
+        parent_workspace = f"/tmp/ansflow_workspaces/run_{run.parent_run_id}"
+        current_workspace = f"/tmp/ansflow_workspaces/run_{run_id}"
+        if os.path.exists(parent_workspace) and not os.path.exists(current_workspace):
+            import shutil
+            # 复制父运行的工作区到新运行（保留 git clone 等产物）
+            shutil.copytree(parent_workspace, current_workspace, dirs_exist_ok=True)
 
     # ======= 状态评估核心 =======
     
