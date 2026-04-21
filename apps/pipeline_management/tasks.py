@@ -571,6 +571,15 @@ def advance_pipeline_engine(self, run_id):
         # 实时推送：流水线大脑初始化并启动
         push_pipeline_status_to_ws(run)
 
+        # 重试时：从父运行复制工作区产物到新工作区
+        if run.parent_run_id:
+            parent_workspace = f"/tmp/ansflow_workspaces/run_{run.parent_run_id}"
+            current_workspace = f"/tmp/ansflow_workspaces/run_{run_id}"
+            if os.path.exists(parent_workspace):
+                import shutil
+                # 复制父运行的工作区到新运行（保留 git clone 等产物）
+                shutil.copytree(parent_workspace, current_workspace, dirs_exist_ok=True)
+
     # ======= 状态评估核心 =======
     
     # 检查是否有失败节点，有一个失败则整个 pipeline 失败 (默认开启 fail-fast)
