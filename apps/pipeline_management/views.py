@@ -317,7 +317,10 @@ class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
         触发 Webhook 对应的流水线（供外部系统调用，不需要认证）
         GET/POST /api/v1/pipeline/webhooks/{id}/trigger/?secret=xxx
         """
-        webhook = self.get_object()
+        # 直接查，不走 DataScopeMixin 过滤（该 ViewSet 是内部接口，
+        # 而 webhook trigger 是公开接口，不需要 RBAC 权限控制）
+        from django.shortcuts import get_object_or_404
+        webhook = get_object_or_404(PipelineWebhook.objects.all(), pk=pk)
 
         # 验证 secret
         secret = request.query_params.get('secret') or request.data.get('secret')
