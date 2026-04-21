@@ -315,17 +315,49 @@ class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
     def trigger(self, request, pk=None):
         """
         触发 Webhook 对应的流水线（供外部系统调用，不需要认证）
-        GET/POST /api/v1/pipeline/webhooks/{id}/trigger/?secret=xxx
+        支持两种验证方式：
+        1. HMAC-SHA256 签名（推荐）：
+           - Header X-AnsFlow-Timestamp: Unix 时间戳字符串
+           - Header X-AnsFlow-Signature: sha256=<hex_digest>
+        2. 旧版明文 secret（向后兼容）：
+           - Query/Body param: secret=xxx
         """
         # 直接查，不走 DataScopeMixin 过滤（该 ViewSet 是内部接口，
         # 而 webhook trigger 是公开接口，不需要 RBAC 权限控制）
         from django.shortcuts import get_object_or_404
+        from utils.webhook_security import verify_webhook_signature
+
         webhook = get_object_or_404(PipelineWebhook.objects.all(), pk=pk)
 
-        # 验证 secret
-        secret = request.query_params.get('secret') or request.data.get('secret')
-        if webhook.secret_key and webhook.secret_key != secret:
-            return Response({'error': 'Invalid secret'}, status=status.HTTP_403_FORBIDDEN)
+        # 获取原始请求体（bytes，用于签名验证）
+        body = request.body
+        signature_header = request.headers.get('X-AnsFlow-Signature')
+        timestamp_header = request.headers.get('X-AnsFlow-Timestamp')
+
+        # 优先使用 HMAC-SHA256 签名验证
+        if signature_header or timestamp_header:
+            is_valid, err = verify_webhook_signature(
+                secret_key=webhook.secret_key or "",
+                signature_header=signature_header,
+                timestamp_header=timestamp_header,
+                body=body,
+            )
+            if not is_valid:
+                if err == "missing_timestamp":
+                    return Response({'error': 'Missing X-AnsFlow-Timestamp header'}, status=status.HTTP_401_UNAUTHORIZED)
+                elif err == "missing_signature":
+                    return Response({'error': 'Missing X-AnsFlow-Signature header'}, status=status.HTTP_401_UNAUTHORIZED)
+                elif err == "invalid_timestamp":
+                    return Response({'error': 'Invalid X-AnsFlow-Timestamp header'}, status=status.HTTP_401_UNAUTHORIZED)
+                elif err == "timestamp_too_old":
+                    return Response({'error': 'Request timestamp too old (possible replay attack)'}, status=status.HTTP_401_UNAUTHORIZED)
+                elif err == "signature_mismatch":
+                    return Response({'error': 'Invalid signature'}, status=status.HTTP_401_UNAUTHORIZED)
+        else:
+            # 旧版兼容：明文 secret
+            secret = request.query_params.get('secret') or request.data.get('secret')
+            if webhook.secret_key and webhook.secret_key != secret:
+                return Response({'error': 'Invalid secret'}, status=status.HTTP_403_FORBIDDEN)
 
         # 检查是否启用
         if not webhook.is_active:
