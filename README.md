@@ -2,27 +2,27 @@
 
 企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。
 
-**当前版本**: v1.2.2 (build: 2026-04-21)
-**Demo**: https://ansflow.cyfee.com:10443
-**默认账号**: admin / ansflow
+**当前版本**：v1.2.2 (build: 2026-04-21)  
+**在线 Demo**：https://ansflow.cyfee.com:10443  
+**默认账号**：admin / ansflow
 
 ---
 
 ## 技术栈
 
-| 类别 | 技术 |
-|------|------|
-| 框架 | Django 5.2 + Django REST Framework 3.16 |
-| 语言 | Python 3.12+ |
-| ORM | Django ORM (SQLite dev / PostgreSQL prod) |
-| 认证 | JWT via SimpleJWT（Cookie 存储） |
-| 异步任务 | Celery 5.x + Redis |
-| 实时通信 | Django Channels + WebSocket |
-| 缓存 | Redis + django-redis |
-| 容器编排 | Kubernetes Python Client |
-| 基础设施即代码 | Ansible Runner |
-| 镜像管理 | Docker Registry API |
-| API 文档 | drf-spectacular (Swagger/OpenAPI) |
+| 类别 | 技术 | 说明 |
+|------|------|------|
+| 框架 | Django 5.2 + DRF 3.16 | 核心 Web 框架 |
+| 语言 | Python 3.12+ | 类型提示 / 异步支持 |
+| ORM | Django ORM | SQLite（开发）/ PostgreSQL（生产） |
+| 认证 | JWT via SimpleJWT | Cookie 存储，Access 60min / Refresh 7d |
+| 异步任务 | Celery 5.x + Redis | 分布式任务队列 |
+| 实时通信 | Django Channels + WebSocket | 流水线日志实时推送 |
+| 缓存 | Redis + django-redis | 高速缓存层 |
+| 容器编排 | Kubernetes Python Client | K8s 集群管理 |
+| 基础设施即代码 | Ansible Runner | 批量主机任务执行 |
+| 镜像管理 | Docker Registry API | 镜像仓库操作 |
+| API 文档 | drf-spectacular | Swagger / OpenAPI 3.0 |
 
 ---
 
@@ -30,38 +30,74 @@
 
 ```
 backend/
-├── apps/                          # 业务应用模块
-│   ├── rbac_permission/            # 用户 / 角色 / 权限 / 菜单 / 审计日志
-│   ├── host_management/            # 主机管理、平台接入、环境、资源池
-│   ├── task_management/            # Ansible 任务（Playbook 执行）
-│   ├── pipeline_management/        # 流水线 DAG 可视化编排 + 定时调度
-│   ├── k8s_management/            # Kubernetes 多集群 + Helm 应用管理
-│   ├── registry_management/        # Docker 镜像仓库 + 产物管理
-│   ├── approval_center/            # 发布审批工作流引擎
-│   ├── credentials_management/    # 敏感凭据安全存储（加密保险库）
-│   ├── config_center/              # 配置中心（分类 / 项 / 变更审计）
-│   └── system_management/          # 系统设置、健康检查、备份恢复
-├── config/                         # Django 项目配置
+├── apps/                                   # 业务应用模块
+│   ├── rbac_permission/                     # 用户/角色/权限/菜单/审计日志
+│   │   ├── models.py                        # User/Role/Permission/Menu/AuditLog
+│   │   ├── views.py                         # 用户/角色/权限 API
+│   │   ├── serializers.py
+│   │   ├── urls.py
+│   │   └── tasks.py                         # 定时同步用户状态
+│   ├── host_management/                     # 主机管理/平台接入/环境/资源池
+│   │   ├── models.py                        # Host/Environment/Platform/ResourcePool
+│   │   ├── views.py
+│   │   └── tasks.py                         # 平台连接检测
+│   ├── task_management/                     # Ansible 任务中心
+│   │   ├── models.py                        # AnsibleTask/AnsibleExecution/TaskLog
+│   │   ├── views.py
+│   │   └── tasks.py                         # run_ansible_task Celery 任务
+│   ├── pipeline_management/                 # 流水线 DAG 编排 + 定时调度（核心模块）
+│   │   ├── models.py                        # Pipeline/PipelineRun/PipelineNodeRun/CIEnvironment/PipelineWebhook/PipelineVersion
+│   │   ├── views.py
+│   │   ├── serializers.py
+│   │   ├── urls.py
+│   │   └── tasks.py                         # advance_pipeline_engine / execute_pipeline_node
+│   ├── k8s_management/                      # Kubernetes 多集群 + Helm 应用管理
+│   │   ├── models.py                        # K8sCluster
+│   │   ├── views.py
+│   │   └── tasks.py
+│   ├── registry_management/                  # Docker 镜像仓库 + 产物管理
+│   │   ├── models.py                        # ImageRegistry/Artifact/ArtifactVersion
+│   │   └── views.py
+│   ├── approval_center/                      # 发布审批工作流引擎
+│   │   ├── models.py                        # ApprovalPolicy/ApprovalTicket
+│   │   └── views.py
+│   ├── credentials_management/              # 敏感凭据安全存储
+│   │   ├── models.py                        # Credential（Fernet 加密）
+│   │   └── views.py
+│   ├── config_center/                        # 配置中心（分类/项/变更审计/热更新）
+│   │   ├── models.py                        # ConfigCategory/ConfigItem/ConfigChangeLog
+│   │   ├── views.py
+│   │   └── tasks.py
+│   └── system_management/                    # 系统设置/健康检查/备份恢复/通知
+│       ├── models.py
+│       ├── views.py                         # Health/Dashboard/Backup/Notification
+│       └── notifiers.py                     # 飞书/钉钉通知发送器
+├── config/                                   # Django 项目配置
+│   ├── __init__.py                          # Celery app 导入 + 版本信息
 │   ├── settings/
-│   │   ├── base.py               # 基础配置（所有环境共用）
-│   │   ├── development.py         # 开发环境覆盖
-│   │   └── production.py          # 生产环境覆盖
-│   ├── asgi.py                   # ASGI 配置（支持 WebSocket）
-│   ├── celery.py                 # Celery 异步任务配置
-│   ├── routing.py                # Channels 路由
-│   └── urls.py                   # 全局 URL 路由
-├── utils/                         # 公共工具
-│   ├── auth_views.py             # 认证视图（登录 / 刷新 / 登出）
-│   ├── encryption.py             # 加密工具（Fernet 对称加密）
-│   ├── exception_handler.py      # 全局 DRF 异常处理
-│   ├── middleware.py             # 中间件（审计日志）
-│   ├── pagination.py             # 分页器
-│   ├── rbac_permission.py        # SmartRBAC 权限核心
-│   ├── config_manager.py         # 配置缓存与订阅者管理
-│   ├── config_subscribers.py     # 内置配置订阅者（热更新）
-│   └── config_broadcast.py       # 多实例 Pub/Sub 广播
-├── helm_charts/                   # Helm 部署 chart
-├── docker-compose.yml            # 基础设施编排
+│   │   ├── base.py                          # 基础配置（所有环境共用）
+│   │   ├── development.py                   # 开发环境覆盖（DEBUG=True 等）
+│   │   └── production.py                    # 生产环境覆盖（安全强化）
+│   ├── asgi.py                              # ASGI 配置（支持 WebSocket via Channels）
+│   ├── celery.py                            # Celery 异步任务配置
+│   ├── routing.py                           # Channels 路由（WebSocket URL 映射）
+│   └── urls.py                              # 全局 URL 路由（API 前缀 /api/v1/）
+├── utils/                                   # 公共工具
+│   ├── base_model.py                        # BaseModel 基类（id/create_time/update_time）
+│   ├── auth_views.py                        # 认证视图（CookieTokenObtainPairView 等）
+│   ├── encryption.py                        # Fernet 对称加密工具
+│   ├── exception_handler.py                  # 全局 DRF 异常处理
+│   ├── middleware.py                         # 审计日志中间件
+│   ├── pagination.py                        # 分页器（PageNumberPagination）
+│   ├── rbac_permission.py                   # SmartRBAC 权限核心
+│   ├── renderers.py                         # JSON 渲染器
+│   ├── schema.py                            # DRF Schema（权限感知）
+│   ├── signals.py                           # Django 信号定义
+│   ├── config_manager.py                    # 配置缓存与订阅者管理
+│   ├── config_subscribers.py                 # 内置配置订阅者（Redis/Logging/Cache/Notification）
+│   └── config_broadcast.py                  # 多实例 Pub/Sub 广播
+├── helm_charts/                              # Helm 部署 chart
+├── docker-compose.yml                       # 基础设施编排（Redis/PostgreSQL）
 └── manage.py
 ```
 
@@ -92,17 +128,17 @@ cp .env.example .env
 # 编辑 .env，修改 SECRET_KEY / DATABASE_URL / REDIS_URL 等
 ```
 
-`.env` 关键配置：
+**关键配置项**：
 
-```env
-SECRET_KEY=your-secret-key-here
-DEBUG=True
-ALLOWED_HOSTS=127.0.0.1,localhost
-DATABASE_URL=sqlite:///db.sqlite3
-CELERY_BROKER_URL=redis://127.0.0.1:6379/6
-CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/7
-CORS_ALLOWED_ORIGINS=http://localhost:3000
-```
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `SECRET_KEY` | Django 密钥（生产必须修改） | `your-secret-key-here` |
+| `DEBUG` | 调试模式 | `True` / `False` |
+| `ALLOWED_HOSTS` | 允许的 Host | `127.0.0.1,localhost` |
+| `DATABASE_URL` | 数据库连接 | `sqlite:///db.sqlite3` |
+| `CELERY_BROKER_URL` | Celery Broker | `redis://127.0.0.1:6379/6` |
+| `CELERY_RESULT_BACKEND` | Celery 结果存储 | `redis://127.0.0.1:6379/7` |
+| `CORS_ALLOWED_ORIGINS` | CORS 允许的源 | `http://localhost:3000` |
 
 ### 数据库初始化
 
@@ -117,10 +153,10 @@ uv run python manage.py createsuperuser
 # 终端 1 - Django API
 uv run python manage.py runserver 0.0.0.0:8000
 
-# 终端 2 - Celery Worker（执行流水线任务）
+# 终端 2 - Celery Worker（执行流水线/任务）
 uv run celery -A config worker -l INFO
 
-# 终端 3 - Celery Beat（定时调度器，支持数据库调度）
+# 终端 3 - Celery Beat（定时调度，支持数据库调度）
 uv run celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
 
 # 终端 4 - Daphne ASGI + WebSocket（生产推荐）
@@ -141,57 +177,78 @@ docker compose up -d
 
 ### 1. 认证与账号（Authentication）
 
-**路由**: `/api/v1/auth/`
+**路由**：`/api/v1/auth/`
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/v1/auth/login/` | POST | 登录，返回 Access + Refresh Token（写入 Cookie） |
+| `/api/v1/auth/login/` | POST | 登录，返回 Access + Refresh Token（写入 HttpOnly Cookie） |
 | `/api/v1/auth/refresh/` | POST | 刷新 Access Token |
-| `/api/v1/account/me/` | GET | 获取当前用户信息 |
+| `/api/v1/auth/logout/` | POST | 登出（清除 Cookie） |
+| `/api/v1/account/me/` | GET | 获取当前用户信息 + 权限列表 |
 | `/api/v1/account/menus/` | GET | 获取当前用户的菜单树 |
 
-**登录请求体**:
+**登录请求体**：
 ```json
 { "username": "admin", "password": "ansflow" }
 ```
 
-**响应**（Cookie 中写入 token，HttpOnly）：
-```json
-{ "access_token": "...", "refresh_token": "..." }
-```
-
-**Token 策略**:
-- Access Token 有效期 60 分钟
-- Refresh Token 有效期 7 天
-- Token 存储在 HttpOnly Cookie 中，防止 XSS 窃取
+**Token 策略**：
+- Access Token 有效期 **60 分钟**
+- Refresh Token 有效期 **7 天**
+- Token 存储在 **HttpOnly Cookie** 中，防止 XSS 窃取
+- 前端通过 Axios 拦截器自动附加 Cookie
 
 ---
 
 ### 2. 用户权限管理（RBAC）
 
-**路由**: `/api/v1/users/` `/api/v1/roles/` `/api/v1/rbac/`
+**路由**：
+- `/api/v1/users/` — 用户 CRUD
+- `/api/v1/roles/` — 角色 CRUD + 权限分配
+- `/api/v1/rbac/permissions/` — 权限码查看
+- `/api/v1/rbac/audit-logs/` — 审计日志
 
-**Model**: `User / Role / Permission / Menu / AuditLog`
+**Model**：`User / Role / Permission / Menu / AuditLog`
 
-**核心特性**:
+**核心特性**：
 
-- **SmartRBAC 权限模型**：每个 ViewSet 通过 `resource_code` 声明资源类型，Action 自动映射到具体操作权限码
-- **数据范围过滤**：`DataScopeMixin` 根据用户角色过滤可访问数据范围
-- **审计日志**：所有写操作自动记录（用户 / 时间 / IP / 操作内容 / 变更前后数据）
+#### SmartRBAC 权限模型
 
-**权限码格式**: `{resource}:{action}`
+每个 ViewSet 通过 `resource_code` 声明资源类型，Action 自动映射到具体操作权限码：
 
+```python
+class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    resource_code = 'pipeline:template'    # → 权限码前缀
+    resource_type = 'pipeline'              # → 数据范围过滤类型
+    resource_owner_field = 'creator'        # → 所有者字段（数据权限豁免）
 ```
-pipeline:template:view    # 查看流水线列表/详情
-pipeline:template:add      # 新建流水线模板
-pipeline:template:edit     # 编辑流水线配置
-pipeline:template:delete   # 删除流水线模板
-pipeline:template:execute  # 触发流水线执行
-pipeline:run:view          # 查看执行历史
-pipeline:run:stop         # 强制终止流水线实例
-```
 
-**用户数据结构**:
+**权限码自动推导规则**：
+
+| Action | 映射后缀 | 示例 |
+|--------|---------|------|
+| list / retrieve | `view` | `pipeline:template:view` |
+| create | `add` | `pipeline:template:add` |
+| update / partial_update | `edit` | `pipeline:template:edit` |
+| destroy | `delete` | `pipeline:template:delete` |
+| 自定义 action（如 execute） | 方法名 | `pipeline:template:execute` |
+
+#### 数据范围过滤（DataScopeMixin）
+
+用户只能看到：
+- 自己创建的数据
+- 角色数据策略允许访问的范围内数据
+
+#### 审计日志（AuditLogMiddleware）
+
+全局拦截所有 `POST` / `PUT` / `PATCH` / `DELETE` 请求，自动记录：
+- 操作人、时间、IP 地址
+- 操作类型（增/删/改）
+- 资源类型和具体操作
+- 变更前后数据快照
+- 请求路径、请求方法、响应状态码
+
+**用户数据结构**：
 ```json
 {
   "id": 1,
@@ -199,53 +256,51 @@ pipeline:run:stop         # 强制终止流水线实例
   "nickname": "管理员",
   "roles": ["超级管理员"],
   "permissions": ["pipeline:template:view", "pipeline:template:edit", "..."],
-  "menus": [{ "name": "流水线", "path": "/pipeline", "children": [...] }]
+  "menus": [{ "name": "流水线", "path": "/pipeline", "title_en": "Pipeline", "children": [...] }]
 }
-```
-
-**ViewSet 示例**:
-```python
-class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
-    resource_code = 'pipeline:template'
-    resource_type = 'pipeline'
-    resource_owner_field = 'creator'
-    # 权限码自动推导: list→view, create→add, update→edit, destroy→delete
 ```
 
 ---
 
 ### 3. 主机管理（Host Management）
 
-**路由**: `/api/v1/hosts/` `/api/v1/environments/` `/api/v1/platforms/` `/api/v1/resource_pools/` `/api/v1/ssh_credentials/`
+**路由**：
+- `/api/v1/hosts/` — 主机 CRUD
+- `/api/v1/environments/` — 环境 CRUD（开发/测试/预发布/生产）
+- `/api/v1/platforms/` — 平台类型 CRUD（认证方式：SSH Key / 密码）
+- `/api/v1/resource_pools/` — 资源池 CRUD（主机分组）
+- `/api/v1/ssh_credentials/` — SSH 凭据 CRUD（加密存储）
 
-**Model**: `Host / Environment / Platform / ResourcePool / SshCredential`
+**Model**：`Host / Environment / Platform / ResourcePool / SshCredential`
 
-**功能**:
-
-- **平台接入**：管理多类主机平台（Linux/Windows/Database 等），通过 SSH Key 或密码认证
-- **环境管理**：按环境分类主机（开发 / 测试 / 预发布 / 生产）
-- **资源池**：主机分组，用于 Ansible 执行目标选择
-- **SSH 凭据**：加密存储 SSH 私钥/密码，支持批量主机分组执行
-
-**SSH 凭据加密**：私钥和密码使用 Fernet 对称加密存储在数据库，运行时解密用于 SSH 连接，**不在日志中打印任何明文凭据**。
+**功能**：
+- **多平台接入**：管理 Linux / Windows / Database 等类型主机
+- **SSH 认证**：支持 SSH Key 或密码认证
+- **环境分组**：按环境隔离主机（开发/测试/生产）
+- **资源池**：主机分组用于 Ansible 执行目标选择
+- **SSH 凭据加密**：私钥和密码使用 **Fernet 对称加密**存储，运行时解密用于 SSH 连接，**不在日志中打印任何明文凭据**
 
 ---
 
 ### 4. Ansible 任务中心（Task Management）
 
-**路由**: `/api/v1/tasks/` `/api/v1/executions/`
+**路由**：
+- `/api/v1/tasks/` — Ansible 任务模板 CRUD
+- `/api/v1/executions/` — 执行历史 / 状态查看
 
-**Model**: `AnsibleTask / AnsibleExecution / TaskLog`
+**Model**：`AnsibleTask / AnsibleExecution / TaskLog`
 
-**功能**:
-
-- **Playbook 管理**：存储并管理 Ansible Playbook，支持 `cmd`（即席命令）和 `playbook` 两种任务类型
+**功能**：
+- **Playbook 管理**：存储并管理 Ansible Playbook
+- **任务类型**：
+  - `cmd`：即席命令（直接在目标主机执行 shell 命令）
+  - `playbook`：Playbook 剧本（上传 YAML 文件或引用已有模板）
 - **参数化执行**：传入 `extravars` 变量，Playbook 动态渲染
 - **目标主机**：通过 `resource_pool` 选择执行目标主机
 - **实时日志**：执行过程中 TaskLog 实时写入，通过 WebSocket 推送前端
 - **执行历史**：完整的执行记录（状态 / 开始时间 / 结束时间 / 摘要统计）
 
-**执行流程**:
+**执行流程**：
 ```
 POST /api/v1/executions/ → 创建 AnsibleExecution (status=pending)
      ↓
@@ -256,44 +311,56 @@ ansible_runner.run() → event_handler 回调写入 TaskLog
 执行完成 → status='success'/'failed' → WebSocket 推送结果
 ```
 
-**执行状态**: `pending` → `running` → `success` / `failed`
+**执行状态机**：`pending` → `running` → `success` / `failed`
 
 ---
 
-### 5. 流水线引擎（Pipeline Management）
+### 5. 流水线引擎（Pipeline Management）- 核心模块
 
-**路由**: `/api/v1/pipelines/` `/api/v1/pipeline_runs/` `/api/v1/pipeline/webhooks/` `/api/v1/pipeline/versions/` `/api/v1/ci_environments/`
+**路由**：
+- `/api/v1/pipelines/` — 流水线模板 CRUD / 执行 / 回滚
+- `/api/v1/pipeline_runs/` — 运行记录 / 停止 / 重试
+- `/api/v1/pipeline/webhooks/` — Webhook 配置 / 触发
+- `/api/v1/pipeline/versions/` — 版本历史 / 回滚
+- `/api/v1/ci_environments/` — CI 环境镜像管理
+- `/api/v1/artifacts/` — 产物记录
+- `/api/v1/artifact-versions/` — 产物版本
 
-**Model**: `Pipeline / PipelineRun / PipelineNodeRun / CIEnvironment / PipelineWebhook / PipelineVersion`
+**Model**：`Pipeline / PipelineRun / PipelineNodeRun / CIEnvironment / PipelineWebhook / PipelineVersion / Artifact / ArtifactVersion`
+
+---
 
 #### 5.1 流水线模板（Pipeline）
 
-**核心概念**:
+**核心概念**：
 
 - **DAG 可视化编排**：前端 ReactFlow 画布编排节点和连线，后端存储 `graph_data`（nodes + edges JSON）
 - **节点类型**：
-  - `input`：流水线触发入口（无前置依赖的最上游节点）
-  - `git_clone`：代码拉取（支持 GitHub/GitLab，指定分支）
-  - `docker_build`：沙箱编译（挂载代码目录到 Docker 容器执行构建脚本）
-  - `kaniko_build`：Kaniko 镜像构建（无需 Docker Daemon，直接推送到镜像仓库）
-  - `ansible`：触发 Ansible 任务节点
-  - `k8s_deploy`：Kubernetes 部署
-  - `http_webhook`：HTTP 回调通知
 
-**Pipeline 状态机**:
+| 节点类型 | 说明 | 关键配置 |
+|---------|------|---------|
+| `input` | 流水线触发入口（无前置依赖的最上游节点） | 触发方式 |
+| `git_clone` | 代码拉取（支持 GitHub/GitLab，指定分支） | 仓库 URL / 分支 |
+| `docker_build` | Docker 沙箱编译（挂载代码目录到容器执行构建脚本） | CI 环境 / 构建脚本 |
+| `kaniko_build` | Kaniko 镜像构建（无需 Docker Daemon，直接推送镜像） | 镜像仓库 / 镜像名 / Dockerfile |
+| `ansible` | 触发 Ansible 任务节点 | 任务模板 / 主机分组 |
+| `k8s_deploy` | Kubernetes 部署 | 集群 / 命名空间 / Helm Chart |
+| `http_webhook` | HTTP 回调通知 | 请求方法 / URL / 请求头 / Body |
+
+**Pipeline 状态机**：
 ```
 pending → running → success
                 ↘→ failed → retry → running
                 ↘→ cancelled
 ```
 
-**节点执行状态**:
+**节点执行状态**：
 ```
 pending → running → success
                   ↘→ failed → （重试时）→ skipped（前置节点跳过）
 ```
 
-**创建流水线**:
+**创建流水线**：
 ```json
 POST /api/v1/pipelines/
 {
@@ -305,62 +372,82 @@ POST /api/v1/pipelines/
 }
 ```
 
+---
+
 #### 5.2 流水线执行（PipelineRun）
 
-**触发方式**:
+**触发方式**：
 
 1. **手动触发**：`POST /api/v1/pipelines/{id}/execute/`
 2. **Webhook 触发**：外部系统通过 Webhook 触发（GitHub push 事件等）
 3. **定时触发**：Celery Beat 定时调度（需开启 `is_cron_enabled`）
 4. **节点重试**：从失败节点重新执行 `POST /api/v1/pipeline_runs/{id}/retry/`
 
-**执行流程（DAG 引擎）**:
+**执行流程（DAG 引擎 — `advance_pipeline_engine`）**：
 
 ```
 advance_pipeline_engine(run_id)
   ├── 检查流水线状态（已终态直接返回）
-  ├── 更新 run.status = running
+  ├── 更新 run.status = running（首次执行）
   ├── 生成所有节点的 PipelineNodeRun 记录（首次执行）
+  ├── 复制父运行工作区（重试时，保留 git clone 等产物）
   ├── DAG 拓扑遍历，寻找所有就绪节点（前置依赖全部 success/skipped）
   ├── apply_async(execute_pipeline_node) 下发节点任务
   └── 节点执行完成后回调引擎，继续下一轮调度
 ```
 
-**节点执行（execute_pipeline_node）**:
+**节点执行（`execute_pipeline_node`）**：
 
 ```
 execute_pipeline_node(node_run_id)
-  ├── 加载节点配置（从 graph_data 获取 node_type 和 data）
+  ├── 检查流水线是否已取消（cancelled）
+  ├── 更新 node_run.status = running
+  ├── 创建工作区目录 /tmp/ansflow_workspaces/run_{run_id}/
   ├── 根据 node_type 分流：
-  │   ├── git_clone    → git Python 库克隆代码到 {workspace_dir}/source/
+  │   ├── git_clone    → git 克隆代码到 {workspace_dir}/source/
   │   ├── docker_build → docker run 挂载 source_dir 执行构建脚本
   │   ├── kaniko_build → kaniko 镜像构建 + 推送
   │   ├── ansible      → run_ansible_task() 触发 Ansible 任务
   │   └── k8s_deploy   → kubectl apply 部署到 K8s
   ├── 更新 node_run.status / logs / output_data
-  └── advance_pipeline_engine(run_id) 回调继续调度
+  ├── advance_pipeline_engine(run_id) 回调继续调度
+  └── 实时推送状态到 WebSocket
 ```
 
-**重试机制**:
+**重试机制**：
 
-- 支持从指定节点重试：`POST /api/v1/pipeline_runs/{id}/retry/` body: `{"start_node_id": "dndnode_2"}`
+- 支持从指定节点重试：`POST /api/v1/pipeline_runs/{id}/retry/`
+  ```json
+  { "start_node_id": "dndnode_2" }
+  ```
 - 前置节点标记为 `skipped`，复用上次执行结果
-- 重试节点使用父 run 的 workspace（避免重新 clone 代码）
+- 重试时从父运行复制工作区到新运行（保留 git clone 等产物）
+
+**工作区管理**：
+
+- 路径：`/tmp/ansflow_workspaces/run_{run_id}/`
+- `source/` 子目录存放代码（git clone 目标）
+- 重试时自动从父运行复制工作区
+
+---
 
 #### 5.3 版本历史（PipelineVersion）
 
 每次保存流水线模板自动创建版本快照，包含完整的 `graph_data`，支持一键回滚到任意历史版本。
 
-```
+```bash
+# 回滚到指定版本
 POST /api/v1/pipelines/{id}/rollback/
 Body: { "version_id": 3 }
 ```
+
+---
 
 #### 5.4 Webhook 触发器（PipelineWebhook）
 
 支持外部系统通过 Webhook 触发流水线执行。
 
-**Webhook 创建**:
+**创建 Webhook**：
 ```json
 POST /api/v1/pipeline/webhooks/
 {
@@ -369,42 +456,49 @@ POST /api/v1/pipeline/webhooks/
   "event_type": "push",
   "repository_url": "https://github.com/xxx/yyy",
   "branch_filter": "main",
-  "secret_key": "my-webhook-secret",
+  "secret_key": "auto-generated-secret",
   "is_active": true
 }
 ```
 
-**触发地址**: `/api/v1/pipeline/webhooks/{id}/trigger/`
+**触发地址**：`/api/v1/pipeline/webhooks/{id}/trigger/`（公开，无需认证）
 
-**签名验证（三种方式，按优先级）**:
+**签名验证（三种方式，按优先级）**：
 
-1. **GitHub 签名**（`X-Hub-Signature-256`）：GitHub 官方 Webhook 格式
-2. **AnsFlow 签名**（`X-AnsFlow-Signature` + `X-AnsFlow-Timestamp`）：HMAC-SHA256 + 时间戳防重放
-3. **明文 Secret**（`?secret=xxx` 或 body secret）：向后兼容旧版
+| 优先级 | 签名头 | 说明 |
+|-------|--------|------|
+| 1 | `X-Hub-Signature-256` | GitHub 官方 Webhook 格式 |
+| 2 | `X-AnsFlow-Signature` + `X-AnsFlow-Timestamp` | HMAC-SHA256 + 时间戳防重放 |
+| 3 | `?secret=xxx` 或 body secret | 向后兼容旧版 |
 
-**GitHub 签名验证示例**:
+**GitHub Webhook 设置示例**：
 ```bash
-# 在 GitHub Webhook 设置中填入 secret
-# GitHub 自动使用 HMAC-SHA256 签名发送
-X-Hub-Signature-256: sha256=abc123...
+# 在 GitHub 仓库 Settings → Webhooks → Add webhook
+# Payload URL: https://your-domain/api/v1/pipeline/webhooks/1/trigger/
+# Content type: application/json
+# Secret: 填入 AnsFlow 生成的 secret_key
+# Events: Push / Pull request 等
 ```
 
-**AnsFlow 自定义签名**:
+**AnsFlow 自定义签名**：
 ```bash
 # 签名计算: HMAC-SHA256(secret, "{timestamp}.{body}")
 timestamp=$(date +%s)
-body='{"event":"push"}'
+body='{"event":"push","ref":"refs/heads/main"}'
 signature=$(echo -n "${timestamp}.${body}" | openssl dgst -sha256 -hmac "secret" | cut -d' ' -f2)
 
 curl -X POST "https://your-domain/api/v1/pipeline/webhooks/1/trigger/" \
   -H "X-AnsFlow-Timestamp: ${timestamp}" \
   -H "X-AnsFlow-Signature: sha256=${signature}" \
+  -H "Content-Type: application/json" \
   -d "${body}"
 ```
 
+---
+
 #### 5.5 CI 环境（CIEnvironment）
 
-管理流水线节点的执行环境镜像，例如：
+管理流水线节点的执行环境镜像：
 
 ```json
 {
@@ -417,20 +511,36 @@ curl -X POST "https://your-domain/api/v1/pipeline/webhooks/1/trigger/" \
 
 ---
 
+#### 5.6 产物管理（Artifact / ArtifactVersion）
+
+记录构建产物及版本历史：
+
+```json
+{
+  "name": "simple-java-maven-app",
+  "artifact_type": "jar",
+  "registry": 1,
+  "current_version": "v1.0.0",
+  "description": "Java Maven 示例应用"
+}
+```
+
+---
+
 ### 6. Kubernetes 多集群管理（K8s Management）
 
-**路由**: `/api/v1/k8s/`
+**路由**：`/api/v1/k8s/`
 
-**Model**: `K8sCluster`
+**Model**：`K8sCluster`
 
-**功能**:
+**功能**：
 
 - **多集群接入**：通过 KubeConfig 文件接入多个 K8s 集群
 - **Helm 应用管理**：部署 / 升级 / 回滚 Helm Chart
 - **资源查看**：Deployment / Service / Ingress / ConfigMap / Secret / Pod 等
 - **健康检查**：实时检测集群连接状态（5 秒超时，不阻塞页面渲染）
 
-**Helm 部署**:
+**Helm 部署**：
 ```json
 POST /api/v1/k8s/helm/
 {
@@ -447,38 +557,29 @@ POST /api/v1/k8s/helm/
 
 ---
 
-### 7. 镜像仓库与产物管理（Registry Management）
+### 7. 镜像仓库管理（Registry Management）
 
-**路由**: `/api/v1/image_registries/` `/api/v1/artifacts/` `/api/v1/artifact-versions/`
+**路由**：`/api/v1/image_registries/`
 
-**Model**: `ImageRegistry / Artifact / ArtifactVersion`
+**Model**：`ImageRegistry`
 
-**功能**:
+**功能**：
 
-- **镜像仓库**：管理 Docker Registry（Docker Hub / 私有仓库），支持认证
-- **产物记录**：记录构建产物（Docker 镜像 / JAR 包等）及版本历史
-- **版本追溯**：每次构建生成产物快照，可追溯历史版本
-
-**Artifact 数据结构**:
-```json
-{
-  "name": "simple-java-maven-app",
-  "artifact_type": "jar",
-  "registry": 1,
-  "current_version": "v1.0.0",
-  "description": "Java Maven 示例应用"
-}
-```
+- 管理 Docker Registry（Docker Hub / 阿里云 / 私有仓库）
+- 支持 Basic Auth 认证
+- 查看仓库下的镜像列表
 
 ---
 
 ### 8. 审批工作流（Approval Center）
 
-**路由**: `/api/v1/approval_policies/` `/api/v1/approval_tickets/`
+**路由**：
+- `/api/v1/approval_policies/` — 审批策略 CRUD
+- `/api/v1/approval_tickets/` — 审批工单查看 / 审批
 
-**Model**: `ApprovalPolicy / ApprovalTicket`
+**Model**：`ApprovalPolicy / ApprovalTicket`
 
-**功能**:
+**功能**：
 
 - **审批策略**：可配置多级审批、条件分支、审批人规则
 - **工单管理**：创建 / 审批 / 拒绝 / 强制签发（Override）
@@ -486,7 +587,7 @@ POST /api/v1/k8s/helm/
 - **通知推送**：支持飞书 / 钉钉 Webhook 通知
 - **安全策略**：可对接 ProxyApprovalEngine，自动将高风险操作转为工单审批
 
-**审批流程**:
+**审批流程**：
 ```
 触发审批 → 创建工单（pending）→ 审批人处理（approved/rejected/overridden）→ 执行后续操作
 ```
@@ -497,11 +598,14 @@ POST /api/v1/k8s/helm/
 
 ### 9. 配置中心（Config Center）
 
-**路由**: `/api/v1/config/categories/` `/api/v1/config/items/` `/api/v1/config/change-logs/`
+**路由**：
+- `/api/v1/config/categories/` — 配置分类 CRUD
+- `/api/v1/config/items/` — 配置项 CRUD / 热更新
+- `/api/v1/config/change-logs/` — 配置变更历史 / 回滚
 
-**Model**: `ConfigCategory / ConfigItem / ConfigChangeLog`
+**Model**：`ConfigCategory / ConfigItem / ConfigChangeLog`
 
-**功能**:
+**功能**：
 
 - **分类管理**：将配置按用途分组（Redis / 数据库 / 消息队列 / 日志 / 通知 等）
 - **配置项 CRUD**：支持 `string` / `int` / `float` / `bool` / `json` 五种类型
@@ -510,13 +614,12 @@ POST /api/v1/k8s/helm/
 - **变更审计**：完整记录每次配置变更（变更人 / 时间 / 变更前后值）
 - **配置回滚**：可回退到任意历史版本
 
-**热更新机制**:
-
+**热更新机制**：
 ```
 修改配置 → ConfigCache 失效 → ConfigSubscriber 收到通知 → 各模块重载配置
 ```
 
-**内置订阅者**:
+**内置订阅者**：
 
 | 订阅者 | 监听分类 | 处理逻辑 |
 |--------|---------|---------|
@@ -525,7 +628,7 @@ POST /api/v1/k8s/helm/
 | CacheConfigSubscriber | cache | 清除 Django 缓存 |
 | NotificationConfigSubscriber | notification | 清除通知配置缓存 |
 
-**通知配置示例**（Config Category: `notification`）:
+**通知配置示例**（Config Category: `notification`）：
 
 | Key | 类型 | 说明 |
 |-----|------|------|
@@ -541,24 +644,24 @@ POST /api/v1/k8s/helm/
 
 ### 10. 凭据保险库（Credentials Management）
 
-**路由**: `/api/v1/credentials/`
+**路由**：`/api/v1/credentials/`
 
-**Model**: `Credential`
+**Model**：`Credential`
 
-**功能**:
+**功能**：
 
-- **加密存储**：使用 Fernet 对称加密算法加密存储敏感凭据（API Key / 密码 / Token 等）
-- **分类管理**：支持按类型（api_key/password/token/certificate）分类
-- **环境隔离**：可关联特定环境（开发/测试/生产），不同环境使用不同凭据
+- **加密存储**：使用 Fernet 对称加密算法加密存储敏感凭据（API Key / 密码 / Token / 证书等）
+- **分类管理**：支持按类型（api_key / password / token / certificate）分类
+- **环境隔离**：可关联特定环境（开发 / 测试 / 生产），不同环境使用不同凭据
 - **审计日志**：所有凭据访问记录在审计日志中
 
-**凭据结构**:
+**凭据结构**：
 ```json
 {
   "name": "GitHub API Token",
   "credential_type": "api_key",
   "username": "my-github-user",
-  "encrypted_value": "gAAAAABh...",  // 加密存储
+  "encrypted_value": "gAAAAABh...",
   "env": "production",
   "description": "用于 GitHub Webhook 签名验证"
 }
@@ -568,13 +671,16 @@ POST /api/v1/k8s/helm/
 
 ### 11. 系统管理与监控（System Management）
 
-**路由**: `/api/v1/system/health/` `/api/v1/system/dashboard/` `/api/v1/system/backup/`
+**路由**：
+- `/api/v1/system/health/` — 健康检查
+- `/api/v1/system/dashboard/` — 仪表盘统计
+- `/api/v1/system/backup/` — 系统备份与恢复
 
 #### 11.1 健康检查（SystemHealthViewSet）
 
-**路由**: `/api/v1/system/health/status/`
+**路由**：`/api/v1/system/health/status/`
 
-**检查项**:
+**检查项**：
 
 | 检查项 | 超时 | 说明 |
 |--------|------|------|
@@ -583,14 +689,19 @@ POST /api/v1/k8s/helm/
 | Database | 2s | Django ORM 执行 `SELECT 1` |
 | K8s 集群 | 5s | `curl --max-time 5 {server}/version/` |
 
-> 注意：每个检查项独立超时，单个故障不阻塞其他检查，页面不会因为一个集群超时而全屏 loading。
+> 注意：每个检查项**独立超时**，单个故障**不阻塞**其他检查，页面不会因为一个集群超时而全屏 loading。
 
-#### 11.2 系统备份（BackupViewSet）
+#### 11.2 仪表盘（DashboardViewSet）
 
-**路由**: `/api/v1/system/backup/` `/api/v1/system/backup/restore/`
+**路由**：`/api/v1/system/dashboard/stats/`
 
-**备份内容**:
+聚合展示系统关键指标（流水线总数 / 执行次数 / 成功率等）。
 
+#### 11.3 系统备份（BackupViewSet）
+
+**路由**：`/api/v1/system/backup/`
+
+**备份内容**：
 - 用户、角色、权限、菜单
 - 主机、平台、环境、资源池
 - 流水线模板、CI 环境
@@ -598,51 +709,43 @@ POST /api/v1/k8s/helm/
 - 凭据（加密存储）、配置中心数据
 - 审批策略
 
-**排除内容**:
-
+**排除内容**：
 - 执行日志、审计日志（数据量大且无需迁移）
 - 流水线运行记录（PipelineRun）
 - 用户密码（迁移后需重置）
 
-**备份格式**: gzip 压缩的 JSON 文件（`.json.gz`）
-
-#### 11.3 仪表盘（DashboardViewSet）
-
-**路由**: `/api/v1/system/dashboard/stats/`
-
-聚合展示系统关键指标（流水线总数 / 执行次数 / 成功率等）。
+**备份格式**：gzip 压缩的 JSON 文件（`.json.gz`）
 
 ---
 
 ### 12. 审计日志（Audit Log）
 
-**路由**: `/api/v1/audit-logs/`
+**路由**：`/api/v1/audit-logs/`
 
-**Model**: `AuditLog`
+**Model**：`AuditLog`
 
-**记录内容**:
-
+**记录内容**：
 - 操作人、时间、IP 地址
 - 操作类型（增/删/改）
 - 资源类型和具体操作
 - 变更前后数据快照（变更类操作）
 - 请求路径、请求方法、响应状态码
 
-**中间件**: `utils/middleware.AuditLogMiddleware` 全局拦截所有写操作请求。
+**中间件**：`utils/middleware.AuditLogMiddleware` 全局拦截所有写操作请求。
 
 ---
 
 ## API 路由总览
 
-所有接口以 `/api/v1/` 为前缀。
+所有接口以 `/api/v1/` 为前缀，版本控制通过 URL Path 实现。
 
 | 模块 | 路由前缀 | 核心功能 |
 |------|---------|---------|
-| 认证 | `/api/v1/auth/` | 登录 / 刷新 Token |
+| 认证 | `/api/v1/auth/` | 登录 / 刷新 Token / 登出 |
 | 账号 | `/api/v1/account/` | 当前用户信息 / 菜单树 |
 | 用户管理 | `/api/v1/users/` | 用户 CRUD |
 | 角色管理 | `/api/v1/roles/` | 角色 CRUD + 权限分配 |
-| 权限管理 | `/api/v1/system/permissions/` | 权限码查看 |
+| 权限管理 | `/api/v1/rbac/permissions/` | 权限码查看 |
 | 菜单管理 | `/api/v1/system/menus/` | 菜单树管理 |
 | 主机管理 | `/api/v1/hosts/` | 主机 CRUD |
 | 环境管理 | `/api/v1/environments/` | 环境 CRUD |
@@ -650,7 +753,7 @@ POST /api/v1/k8s/helm/
 | 资源池 | `/api/v1/resource_pools/` | 资源池 CRUD |
 | SSH 凭据 | `/api/v1/ssh_credentials/` | SSH 凭据 CRUD |
 | Ansible 任务 | `/api/v1/tasks/` | 任务模板 CRUD |
-| Ansible 执行记录 | `/api/v1/executions/` | 执行历史 / 状态查看 |
+| Ansible 执行 | `/api/v1/executions/` | 执行历史 / 状态查看 |
 | 流水线 | `/api/v1/pipelines/` | 模板 CRUD / 执行 / 回滚 |
 | 流水线运行 | `/api/v1/pipeline_runs/` | 运行记录 / 停止 / 重试 |
 | Webhook | `/api/v1/pipeline/webhooks/` | Webhook 配置 / 触发 |
@@ -674,7 +777,7 @@ POST /api/v1/k8s/helm/
 
 ## WebSocket 实时通信
 
-**路由**: `/ws/pipeline/{run_id}/logs/`
+**路由**：`/ws/pipeline/{run_id}/logs/`
 
 通过 Django Channels 实现流水线执行日志实时推送，前端通过 WebSocket 消费：
 
@@ -683,7 +786,6 @@ const { sendMessage, lastMessage } = useWebSocket(
   `ws://localhost:8000/ws/pipeline/134/logs`
 );
 
-// 接收日志消息
 useEffect(() => {
   if (lastMessage) {
     const data = JSON.parse(lastMessage.data);
@@ -698,30 +800,59 @@ useEffect(() => {
 
 ---
 
+## 通知系统
+
+支持飞书 / 钉钉 Webhook 通知，配置通过 ConfigCenter 管理（热更新）。
+
+**触发场景**：
+
+| 场景 | 通知类型 | 说明 |
+|------|---------|------|
+| 流水线启动 | 启动通知 | 流水线开始执行时触发 |
+| 流水线成功 | 结果通知 | 流水线执行成功时触发 |
+| 流水线失败 | 结果通知 | 流水线执行失败时触发 |
+| 审批工单创建 | 审批通知 | 新建审批工单时通知审批人 |
+| 审批通过/拒绝 | 结果通知 | 审批结果通知申请人 |
+
+---
+
+## 定时调度
+
+使用 `django_celery_beat` + `DatabaseScheduler`，流水线定时调度通过数据库管理，支持在页面动态启停定时任务。
+
+**Celery Beat 配置**：
+- 调度器：`django_celery_beat.schedulers:DatabaseScheduler`
+- 任务存储：数据库（可通过 Admin 页面管理）
+- 支持 Crontab 表达式（分/时/日/月/周）
+
+---
+
 ## 权限码参考
 
-| 资源 | 动作 | 权限码 |
-|------|------|--------|
-| 流水线模板 | 查看/新建/编辑/删除/执行 | `pipeline:template:view/add/edit/delete/execute` |
-| 流水线运行 | 查看/停止 | `pipeline:run:view/stop` |
-| 流水线版本 | 查看/回滚 | `pipeline:version:view/rollback` |
-| Webhook | 查看/新建/编辑/删除/触发 | `pipeline:webhook:view/add/edit/delete/trigger` |
-| CI 环境 | 查看/新建/编辑/删除 | `pipeline:ci_env:view/add/edit/delete` |
-| 主机 | 查看/新建/编辑/删除 | `host:host:view/add/edit/delete` |
-| 环境 | 查看/新建/编辑/删除 | `host:env:view/add/edit/delete` |
-| 资源池 | 查看/新建/编辑/删除 | `host:resource_pool:view/add/edit/delete` |
-| SSH 凭据 | 查看/新建/编辑/删除 | `host:ssh_credential:view/add/edit/delete` |
-| Ansible 任务 | 查看/新建/编辑/删除 | `task:ansible_task:view/add/edit/delete` |
-| 镜像仓库 | 查看/新建/编辑/删除 | `registry:docker:view/add/edit/delete` |
-| 审批工单 | 查看/审批/强制签发 | `system:approval_ticket:view/approve` |
-| 审计日志 | 查看 | `rbac:audit:view` |
-| 凭据 | 查看/新建/编辑/删除 | `system:credential:view/add/edit/delete` |
-| 系统监控 | 查看 | `system:monitor:view` |
-| 用户管理 | 查看/新建/编辑/删除 | `rbac:user:view/add/edit/delete` |
-| 角色管理 | 查看/新建/编辑/删除 | `rbac:role:view/add/edit/delete` |
-| 菜单管理 | 查看/编辑 | `system:menu:view/edit` |
-| 配置项 | 查看/编辑 | `config:config_item:view/edit` |
-| K8s 集群 | 查看/新建/编辑/删除 | `k8s:cluster:view/add/edit/delete` |
+| 模块 | 资源 | 动作 | 权限码 |
+|------|------|------|--------|
+| 流水线 | 流水线模板 | 查看/新建/编辑/删除/执行 | `pipeline:template:view/add/edit/delete/execute` |
+| 流水线 | 流水线运行 | 查看/停止/重试 | `pipeline:run:view/stop/retry` |
+| 流水线 | 流水线版本 | 查看/回滚 | `pipeline:version:view/rollback` |
+| 流水线 | Webhook | 查看/新建/编辑/删除/触发 | `pipeline:webhook:view/add/edit/delete/trigger` |
+| 流水线 | CI 环境 | 查看/新建/编辑/删除 | `pipeline:ci_env:view/add/edit/delete` |
+| 任务中心 | Ansible 任务 | 查看/新建/编辑/删除 | `task:ansible_task:view/add/edit/delete` |
+| K8s | K8s 集群 | 查看/新建/编辑/删除 | `k8s:cluster:view/add/edit/delete` |
+| K8s | Helm 应用 | 部署/升级/回滚 | `k8s:helm:deploy/upgrade/rollback` |
+| 镜像仓库 | 镜像仓库 | 查看/新建/编辑/删除 | `registry:docker:view/add/edit/delete` |
+| 审批 | 审批策略 | 查看/新建/编辑/删除 | `system:approval_policy:view/add/edit/delete` |
+| 审批 | 审批工单 | 查看/审批/强制签发 | `system:approval_ticket:view/approve` |
+| 系统 | 审计日志 | 查看 | `rbac:audit:view` |
+| 系统 | 凭据 | 查看/新建/编辑/删除 | `system:credential:view/add/edit/delete` |
+| 系统 | 系统监控 | 查看 | `system:monitor:view` |
+| 系统 | 菜单管理 | 查看/编辑 | `system:menu:view/edit` |
+| 配置 | 配置项 | 查看/编辑 | `config:config_item:view/edit` |
+| RBAC | 用户 | 查看/新建/编辑/删除 | `rbac:user:view/add/edit/delete` |
+| RBAC | 角色 | 查看/新建/编辑/删除 | `rbac:role:view/add/edit/delete` |
+| 主机 | 主机 | 查看/新建/编辑/删除 | `host:host:view/add/edit/delete` |
+| 主机 | 环境 | 查看/新建/编辑/删除 | `host:env:view/edit` |
+| 主机 | 资源池 | 查看/新建/编辑/删除 | `host:resource_pool:view/add/edit/delete` |
+| 主机 | SSH 凭据 | 查看/新建/编辑/删除 | `host:ssh_credential:view/add/edit/delete` |
 
 ---
 
@@ -743,31 +874,33 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         ...
 ```
 
-### 数据范围过滤（DataScopeMixin）
-
-用户只能看到：
-
-- 自己创建的数据
-- 角色数据策略允许访问的范围内数据
-
 ### 审计日志中间件
 
 `utils/middleware.AuditLogMiddleware` 全局拦截所有 `POST` / `PUT` / `PATCH` / `DELETE` 请求，自动记录用户 / 时间 / IP / 操作内容 / 变更前后数据快照。
 
-### 通知系统
+### 前端权限控制
 
-支持飞书 / 钉钉 Webhook 通知，配置通过 ConfigCenter 管理（热更新）。
+后端返回用户权限码列表，前端 `hasPermission()` 函数做快速判断：
 
-触发场景：
+```typescript
+// 未授权用户不会发送请求，按钮直接隐藏
+enabled: !!token && hasPermission('pipeline:template:view'),
+{hasPermission('pipeline:template:delete') && <Button>删除</Button>}
+```
 
-- 流水线启动
-- 流水线执行完成（成功 / 失败）
-- 审批工单创建
-- 审批结果（通过 / 拒绝）
+### WebSocket 实时日志
 
-### 定时调度
+Channels + Redis 实现日志流推送，前端通过 `react-use-websocket` 消费：
 
-使用 `django_celery_beat` + `DatabaseScheduler`，流水线定时调度通过数据库管理，支持在页面动态启停定时任务。
+```typescript
+const { sendMessage, lastMessage } = useWebSocket(
+  `ws://localhost:8000/ws/pipeline/${runId}/logs`
+);
+```
+
+### 前端缓存策略
+
+关键元数据（集群列表、用户信息、命名空间）持久化到 `localStorage`，TTL 24 小时，`QueryPersistenceManager` 自动同步。
 
 ---
 
