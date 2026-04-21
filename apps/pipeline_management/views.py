@@ -326,6 +326,8 @@ class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
         # 而 webhook trigger 是公开接口，不需要 RBAC 权限控制）
         from django.shortcuts import get_object_or_404
         from utils.webhook_security import verify_webhook_signature
+        import hmac
+        import hashlib
 
         webhook = get_object_or_404(PipelineWebhook.objects.all(), pk=pk)
 
@@ -334,10 +336,22 @@ class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
         signature_header = request.headers.get('X-AnsFlow-Signature')
         timestamp_header = request.headers.get('X-AnsFlow-Timestamp')
 
-        # 优先使用 HMAC-SHA256 签名验证
-        if signature_header or timestamp_header:
+        # 获取密钥
+        secret_key = webhook.secret_key or ""
+
+        # 1. GitHub 签名验证 (X-Hub-Signature-256)
+        github_sig = request.headers.get('X-Hub-Signature-256', '')
+        if github_sig and secret_key:
+            expected = 'sha256=' + hmac.new(
+                secret_key.encode('utf-8'), body, hashlib.sha256
+            ).hexdigest()
+            if not hmac.compare_digest(expected, github_sig):
+                return Response({'error': 'Invalid signature'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # 2. 自定义签名验证 (X-AnsFlow-Signature + X-AnsFlow-Timestamp)
+        elif signature_header and secret_key:
             is_valid, err = verify_webhook_signature(
-                secret_key=webhook.secret_key or "",
+                secret_key=secret_key,
                 signature_header=signature_header,
                 timestamp_header=timestamp_header,
                 body=body,
@@ -350,13 +364,14 @@ class PipelineWebhookViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 elif err == "invalid_timestamp":
                     return Response({'error': 'Invalid X-AnsFlow-Timestamp header'}, status=status.HTTP_401_UNAUTHORIZED)
                 elif err == "timestamp_too_old":
-                    return Response({'error': 'Request timestamp too old (possible replay attack)'}, status=status.HTTP_401_UNAUTHORIZED)
+                    return Response({'error': 'Request timestamp too old'}, status=status.HTTP_401_UNAUTHORIZED)
                 elif err == "signature_mismatch":
                     return Response({'error': 'Invalid signature'}, status=status.HTTP_401_UNAUTHORIZED)
-        else:
-            # 旧版兼容：明文 secret
+
+        # 3. 明文密钥验证（向后兼容）
+        elif secret_key:
             secret = request.query_params.get('secret') or request.data.get('secret')
-            if webhook.secret_key and webhook.secret_key != secret:
+            if secret != secret_key:
                 return Response({'error': 'Invalid secret'}, status=status.HTTP_403_FORBIDDEN)
 
         # 检查是否启用
