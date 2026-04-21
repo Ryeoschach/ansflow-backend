@@ -74,5 +74,5 @@ class PipelineWebhookSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request:
             base = request.build_absolute_uri('/').rstrip('/')
-            return f"{base}/api/v1/pipeline/webhooks/trigger/{obj.id}/"
-        return f"/api/v1/pipeline/webhooks/trigger/{obj.id}/"
+            return f"{base}/api/v1/pipeline/webhooks/{obj.id}/trigger/"
+        return f"/api/v1/pipeline/webhooks/{obj.id}/trigger/"
