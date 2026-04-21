@@ -94,6 +94,18 @@ class ArtifactViewSet(DataScopeMixin, viewsets.ModelViewSet):
             return ArtifactDetailSerializer
         return ArtifactSerializer
 
+    @action(detail=True, methods=['get'], url_path='versions')
+    def versions(self, request, pk=None):
+        """获取指定产物的所有版本"""
+        artifact = self.get_object()
+        versions = artifact.versions.all().order_by('-create_time')
+        page = self.paginate_queryset(versions)
+        if page is not None:
+            serializer = ArtifactVersionSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = ArtifactVersionSerializer(versions, many=True)
+        return Response(serializer.data)
+
 
 class ArtifactVersionViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """

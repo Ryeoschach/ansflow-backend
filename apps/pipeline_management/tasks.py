@@ -319,6 +319,37 @@ def execute_pipeline_node(self, node_run_id):
                         "full_image": full_image
                     }
                     success = True
+
+                    # 自动记录产物到 Artifact 表
+                    try:
+                        from apps.registry_management.models import Artifact, ArtifactVersion
+                        artifact_name = image_name.split('/')[-1] if '/' in image_name else image_name
+                        artifact, created = Artifact.objects.get_or_create(
+                            name=artifact_name,
+                            image_registry=registry,
+                            defaults={
+                                'source_type': 'docker',
+                                'type': 'docker_image',
+                                'repository': image_name,
+                                'latest_tag': image_tag,
+                                'pipeline': node_run.run.pipeline,
+                            }
+                        )
+                        if not created:
+                            artifact.latest_tag = image_tag
+                            artifact.repository = image_name
+                            artifact.save(update_fields=['latest_tag', 'repository', 'update_time'])
+
+                        # 创建版本记录
+                        ArtifactVersion.objects.create(
+                            artifact=artifact,
+                            tag=image_tag,
+                            pipeline_run=node_run.run,
+                            build_user=node_run.run.trigger_user.username if node_run.run.trigger_user else None,
+                        )
+                        node_run.logs += f"\n[产物记录] 已创建/更新 Artifact: {artifact.name}:{image_tag}"
+                    except Exception as art_err:
+                        node_run.logs += f"\n[产物记录] 记录失败: {str(art_err)}"
                 else:
                     node_run.logs += f"\n Kaniko 编译失败，退出码: {result.returncode}"
                     success = False
