@@ -4,7 +4,7 @@
 demo: https://ansflow.cyfee.com:10443
 admin/ansflow
 
-**当前版本**: v0.4.0 (build: 2026-04-20)
+**当前版本**: v1.2.1 (build: 2026-04-21)
 
 ## 技术栈
 
@@ -72,6 +72,9 @@ backend/
 - 实时日志：Channels WebSocket 推送，支持 ANSI 彩色日志流式输出
 - 状态机：pending → running → success/failed/stopped
 - **节点失败重试**：支持配置最大重试次数和重试间隔
+- **版本历史**：每次保存自动创建版本快照，支持回滚
+- **Webhook 触发器**：支持外部系统（GitHub/GitLab）通过 Webhook 触发流水线，自动验证签名
+- **产物管理**：记录构建产物（Docker 镜像、JAR 包等）及版本历史
 
 ### Ansible 任务中心（Task Management）
 - Playbook 解析与参数化执行
