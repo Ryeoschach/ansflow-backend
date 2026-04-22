@@ -6,7 +6,7 @@ from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewS
 from apps.host_management.views import HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
-from apps.registry_management.views import ImageRegistryViewSet, ArtifactViewSet, ArtifactVersionViewSet
+from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
 from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet
 from apps.credentials_management.views import CredentialViewSet
@@ -34,6 +34,8 @@ router.register(r'pipeline/versions', PipelineVersionViewSet, basename='pipeline
 router.register(r'image_registries', ImageRegistryViewSet, basename='image_registries')
 router.register(r'artifacts', ArtifactViewSet, basename='artifacts')
 router.register(r'artifact-versions', ArtifactVersionViewSet, basename='artifact-versions')
+router.register(r'artifactory/instances', ArtifactoryInstanceViewSet, basename='artifactory_instances')
+router.register(r'artifactory/repositories', ArtifactoryRepositoryViewSet, basename='artifactory_repositories')
 router.register(r'system/health', SystemHealthViewSet, basename='system-health')
 router.register(r'system/dashboard', DashboardViewSet, basename='system-dashboard')
 router.register(r'system/backup', BackupViewSet, basename='system-backup')

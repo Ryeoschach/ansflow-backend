@@ -2,7 +2,7 @@
 
 企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。
 
-**当前版本**：v1.2.2 (build: 2026-04-21)  
+**当前版本**：v1.3.0 (build: 2026-04-22)  
 **在线 Demo**：https://ansflow.cyfee.com:10443  
 **默认账号**：admin / ansflow
 
@@ -513,17 +513,27 @@ curl -X POST "https://your-domain/api/v1/pipeline/webhooks/1/trigger/" \
 
 #### 5.6 产物管理（Artifact / ArtifactVersion）
 
-记录构建产物及版本历史：
+记录构建产物及版本历史，支持 Docker/Harbor 和 Artifactory 两大来源：
+
+**来源类型**：
+- `source_type=docker`：Docker 镜像，关联 Harbor（ImageRegistry）
+- `source_type=artifactory`：通用制品，关联 JFrog Artifactory
 
 ```json
 {
-  "name": "simple-java-maven-app",
-  "artifact_type": "jar",
-  "registry": 1,
-  "current_version": "v1.0.0",
-  "description": "Java Maven 示例应用"
+  "name": "backend-api",
+  "source_type": "artifactory",
+  "type": "jar",
+  "artifactory_repo": 1,
+  "repository": "com/company/backend-api",
+  "latest_tag": "v1.0.0",
+  "pipeline": 1
 }
 ```
+
+**产物类型**：`docker_image` / `jar` / `npm_package` / `pypi_package` / `helm_chart` / `binary` / `other`
+
+**自动记录**：Kaniko 构建节点执行成功后，自动创建/更新 Artifact 及 ArtifactVersion 记录。
 
 ---
 
@@ -557,17 +567,40 @@ POST /api/v1/k8s/helm/
 
 ---
 
-### 7. 镜像仓库管理（Registry Management）
+### 7. 制品仓库管理（Registry Management）
+
+#### 7.1 Harbor 镜像仓库
 
 **路由**：`/api/v1/image_registries/`
 
 **Model**：`ImageRegistry`
 
-**功能**：
+管理 Docker/Harbor 镜像仓库，支持 Basic Auth 认证。
 
-- 管理 Docker Registry（Docker Hub / 阿里云 / 私有仓库）
-- 支持 Basic Auth 认证
-- 查看仓库下的镜像列表
+#### 7.2 JFrog Artifactory 制品库
+
+**路由**：
+- `/api/v1/artifactory/instances/` — Artifactory 服务实例管理
+- `/api/v1/artifactory/repositories/` — 实例下的仓库配置
+
+**Model**：`ArtifactoryInstance / ArtifactoryRepository`
+
+**仓库类型**：`maven` / `npm` / `generic` / `helm` / `docker` / `pypi` / `go`
+
+**制品来源分工**：
+
+| 制品类型 | 推荐来源 |
+|---------|---------|
+| Docker 镜像 / Helm Chart | Harbor（`source_type=docker`） |
+| JAR / Maven 制品 | Artifactory（`source_type=artifactory`） |
+| npm / PyPI 包 | Artifactory（`source_type=artifactory`） |
+| 二进制文件 | Artifactory（`source_type=artifactory`） |
+
+**API 示例 - 测试连接**：
+```
+GET /api/v1/artifactory/instances/{id}/test_connection/
+→ { "status": "ok", "message": "连接成功" }
+```
 
 ---
 
@@ -760,8 +793,11 @@ POST /api/v1/k8s/helm/
 | 流水线版本 | `/api/v1/pipeline/versions/` | 版本历史 / 回滚 |
 | CI 环境 | `/api/v1/ci_environments/` | CI 环境镜像管理 |
 | K8s 集群 | `/api/v1/k8s/` | 集群接入 / Helm 部署 |
-| 镜像仓库 | `/api/v1/image_registries/` | Registry 管理 |
+| 镜像仓库 | `/api/v1/image_registries/` | Harbor Registry 管理 |
+| Artifactory 实例 | `/api/v1/artifactory/instances/` | Artifactory 实例管理 |
+| Artifactory 仓库 | `/api/v1/artifactory/repositories/` | Maven/npm/Generic 等仓库 |
 | 产物管理 | `/api/v1/artifacts/` | 产物记录 / 版本 |
+| 产物版本 | `/api/v1/artifact-versions/` | 版本快照 |
 | 审批策略 | `/api/v1/approval_policies/` | 审批策略 CRUD |
 | 审批工单 | `/api/v1/approval_tickets/` | 工单查看 / 审批 |
 | 凭据保险库 | `/api/v1/credentials/` | 凭据 CRUD（加密） |
@@ -840,6 +876,8 @@ useEffect(() => {
 | K8s | K8s 集群 | 查看/新建/编辑/删除 | `k8s:cluster:view/add/edit/delete` |
 | K8s | Helm 应用 | 部署/升级/回滚 | `k8s:helm:deploy/upgrade/rollback` |
 | 镜像仓库 | 镜像仓库 | 查看/新建/编辑/删除 | `registry:docker:view/add/edit/delete` |
+| 制品库 | Artifactory 实例/仓库 | 查看/新建/编辑/删除 | `registry:artifactory:view/add/edit/delete` |
+| 产物 | 产物/版本 | 查看/新建/编辑/删除 | `pipeline:artifact:view/add/edit/delete` |
 | 审批 | 审批策略 | 查看/新建/编辑/删除 | `system:approval_policy:view/add/edit/delete` |
 | 审批 | 审批工单 | 查看/审批/强制签发 | `system:approval_ticket:view/approve` |
 | 系统 | 审计日志 | 查看 | `rbac:audit:view` |
