@@ -131,6 +131,21 @@ class UserViewSet(viewsets.ModelViewSet):
         
         return Response({"message": "角色分配成功"})
 
+    @action(detail=True, methods=['post'])
+    def reset_password(self, request, pk=None):
+        """
+        管理员重置用户密码
+        POST /api/v1/users/{id}/reset_password/
+        Body: { "new_password": "..." }
+        """
+        user = self.get_object()
+        new_password = request.data.get('new_password')
+        if not new_password:
+            return Response({"message": "新密码不能为空"}, status=400)
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+        return Response({"message": "密码重置成功"})
+
 
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
