@@ -1,3 +1,4 @@
+from django.conf import settings
 from apps.rbac_permission.models import Permission, Role, User, Menu, DataPolicy, AuditLog
 from rest_framework import serializers
 
@@ -66,11 +67,21 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'password', 'email', 'roles', 'roles_info', 'is_active', 'is_staff', 'avatar']
+        fields = ['id', 'username', 'password', 'email', 'roles', 'roles_info', 'is_active', 'is_staff', 'avatar', 'avatar_url']
 
     def get_roles_info(self, obj) -> list:
         # 返回角色的 ID 和 名称，供前端表格渲染 Tag
         return [{"id": r.id, "name": r.name} for r in obj.roles.all()]
+
+    def get_avatar_url(self, obj) -> str:
+        # 构建头像的完整 URL
+        if obj.avatar:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(settings.MEDIA_URL + obj.avatar.name)
+            # 降级：手动拼接
+            return f"{getattr(settings, 'MEDIA_URL', '/media/')}{obj.avatar.name}"
+        return None
 
     # 因为是继承Django的User表，需要重写create来处理密码
     def create(self, validated_data):
