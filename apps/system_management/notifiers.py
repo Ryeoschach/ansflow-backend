@@ -62,7 +62,7 @@ def is_notification_enabled(event_type: str) -> bool:
             except json.JSONDecodeError:
                 notify_on = None
         if notify_on and event_type not in notify_on:
-        return False
+            return False
 
     return True
 
