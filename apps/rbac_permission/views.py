@@ -83,7 +83,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
         user = request.user
         user.avatar = serializer.validated_data['avatar']
-        user.save(update_fields=['avatar', 'update_time'])
+        user.save(update_fields=['avatar'])
 
         avatar_url = request.build_absolute_uri(settings.MEDIA_URL + user.avatar.name)
         return Response({
@@ -113,7 +113,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
 
         user.set_password(new_pw)
-        user.save(update_fields=['password', 'update_time'])
+        user.save(update_fields=['password'])
 
         return Response({"message": "密码修改成功，请重新登录"})
 
