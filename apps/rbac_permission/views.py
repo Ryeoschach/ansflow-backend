@@ -35,8 +35,8 @@ class UserViewSet(viewsets.ModelViewSet):
     resource_code = 'rbac:user'
 
     def get_permissions(self):
-        # me 接口应该允许任何已登录用户访问，不需要 rbac:user 权限
-        if self.action == 'me':
+        # 这些 action 只需要登录，不做 RBAC 权限检查（操作用户自己的数据）
+        if self.action in ('me', 'upload_avatar', 'change_password'):
             return [permissions.IsAuthenticated()]
         return super().get_permissions()
 
