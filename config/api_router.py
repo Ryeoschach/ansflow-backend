@@ -59,6 +59,8 @@ api_v1_patterns = [
 
     # 账号逻辑 (Account) —— 指向 ViewSet 里的特定 Action
     path('account/me/', UserViewSet.as_view({'get': 'me'}), name='account-me'),
+    path('account/me/avatar/', UserViewSet.as_view({'patch': 'upload_avatar'}), name='account-avatar'),
+    path('account/me/password/', UserViewSet.as_view({'post': 'change_password'}), name='account-password'),
     path('account/menus/', MenuViewSet.as_view({'get': 'my_menus'}), name='account-menus'),
 
     # 将标准 Router 里的路径挂载进来

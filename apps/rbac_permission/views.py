@@ -1,10 +1,15 @@
 from rest_framework import viewsets, permissions, filters
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from rest_framework import status
 from apps.rbac_permission.models import User, Role, Permission, Menu, AuditLog
-from apps.rbac_permission.serializers import UserSerializer, RoleSerializer, PermissionSerializer, MenuSerializer, AuditLogSerializer
+from apps.rbac_permission.serializers import (
+    UserSerializer, RoleSerializer, PermissionSerializer, MenuSerializer, AuditLogSerializer,
+    AvatarUploadSerializer, ChangePasswordSerializer,
+)
 from utils.rbac_permission import SmartRBACPermission
 from django.core.cache import cache
+from django.conf import settings
 
 from utils.logic import calculate_user_menu_tree
 
@@ -52,12 +57,65 @@ class UserViewSet(viewsets.ModelViewSet):
                 # 写入缓存，1小时有效期
                 cache.set(cache_key, perms, timeout=3600)
 
+        # 构建头像 URL
+        avatar_url = None
+        if user.avatar:
+            avatar_url = request.build_absolute_uri(settings.MEDIA_URL + user.avatar.name)
+
         return Response({
             "username": user.username,
             "roles": [r.name for r in user.roles.all()],
             "permissions": perms,  # 给前端做按钮权限控制
-            "is_superuser": user.is_superuser
+            "is_superuser": user.is_superuser,
+            "avatar": avatar_url,
         })
+
+    @action(detail=False, methods=['patch'], url_path='avatar')
+    def upload_avatar(self, request):
+        """
+        上传头像
+        PATCH /api/v1/account/me/avatar/
+        Body: multipart/form-data { avatar: <file> }
+        """
+        serializer = AvatarUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        user.avatar = serializer.validated_data['avatar']
+        user.save(update_fields=['avatar', 'update_time'])
+
+        avatar_url = request.build_absolute_uri(settings.MEDIA_URL + user.avatar.name)
+        return Response({
+            "message": "头像上传成功",
+            "avatar": avatar_url,
+        })
+
+    @action(detail=False, methods=['post'], url_path='password')
+    def change_password(self, request):
+        """
+        修改密码
+        POST /api/v1/account/me/password/
+        Body: { old_password: "...", new_password: "..." }
+        """
+        serializer = ChangePasswordSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        old_pw = serializer.validated_data['old_password']
+        new_pw = serializer.validated_data['new_password']
+
+        if not user.check_password(old_pw):
+            return Response(
+                {"error": "当前密码错误"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(new_pw)
+        user.save(update_fields=['password', 'update_time'])
+
+        return Response({"message": "密码修改成功，请重新登录"})
 
     @action(detail=True, methods=['post'])
     def assign_roles(self, request, pk=None):

@@ -17,6 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
+from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
 
@@ -29,6 +30,7 @@ urlpatterns = [
     # path('api/<str:version>/', include(api_v1_patterns)),
 ]
 
+# 开发环境下提供 media 文件访问（生产环境由 nginx 处理）
 if getattr(settings, 'ENABLE_ADMIN', False) or settings.DEBUG:
     urlpatterns += [
         path('admin/', admin.site.urls),
@@ -41,4 +43,4 @@ if getattr(settings, 'ENABLE_ADMIN', False) or settings.DEBUG:
 
         # ReDoc (展示类界面)
         path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
-    ]
+    ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -184,12 +184,41 @@ docker compose up -d
 | `/api/v1/auth/login/` | POST | 登录，返回 Access + Refresh Token（写入 HttpOnly Cookie） |
 | `/api/v1/auth/refresh/` | POST | 刷新 Access Token |
 | `/api/v1/auth/logout/` | POST | 登出（清除 Cookie） |
-| `/api/v1/account/me/` | GET | 获取当前用户信息 + 权限列表 |
+| `/api/v1/account/me/` | GET | 获取当前用户信息 + 权限列表 + 头像 URL |
+| `/api/v1/account/me/avatar/` | PATCH | 上传头像（multipart/form-data，字段 avatar） |
+| `/api/v1/account/me/password/` | POST | 修改密码（{ old_password, new_password }） |
 | `/api/v1/account/menus/` | GET | 获取当前用户的菜单树 |
 
 **登录请求体**：
 ```json
 { "username": "admin", "password": "ansflow" }
+```
+
+**GET /api/v1/account/me/ 响应**：
+```json
+{
+  "username": "admin",
+  "roles": ["超级管理员"],
+  "permissions": ["*"],
+  "is_superuser": true,
+  "avatar": "http://localhost:8000/media/avatars/user_1.png"
+}
+```
+
+**PATCH /api/v1/account/me/avatar/ 上传头像**：
+```bash
+curl -X PATCH http://localhost:8000/api/v1/account/me/avatar/ \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: multipart/form-data" \
+  -F "avatar=@/path/to/avatar.png"
+```
+
+**POST /api/v1/account/me/password/ 修改密码**：
+```bash
+curl -X POST http://localhost:8000/api/v1/account/me/password/ \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"old_password": "oldpass", "new_password": "newpass123"}'
 ```
 
 **Token 策略**：

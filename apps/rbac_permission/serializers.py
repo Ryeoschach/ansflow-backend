@@ -2,6 +2,15 @@ from apps.rbac_permission.models import Permission, Role, User, Menu, DataPolicy
 from rest_framework import serializers
 
 
+class AvatarUploadSerializer(serializers.Serializer):
+    avatar = serializers.ImageField(required=True, help_text="头像图片文件（PNG/JPG/GIF/WebP，建议尺寸 200x200）")
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True, style={'input_type': 'password'}, help_text="当前密码")
+    new_password = serializers.CharField(required=True, style={'input_type': 'password'}, help_text="新密码（至少 8 位）")
+
+
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Permission
@@ -53,10 +62,11 @@ class UserSerializer(serializers.ModelSerializer):
         style={'input_type': 'password'}
     )
     roles_info = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'password', 'email', 'roles', 'roles_info', 'is_active', 'is_staff']
+        fields = ['id', 'username', 'password', 'email', 'roles', 'roles_info', 'is_active', 'is_staff', 'avatar']
 
     def get_roles_info(self, obj) -> list:
         # 返回角色的 ID 和 名称，供前端表格渲染 Tag

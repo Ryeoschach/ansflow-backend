@@ -30,6 +30,7 @@ dependencies = [
     "channels-redis>=4.3.0",
     "daphne>=4.2.1",
     "python-json-logger>=2.0.0",
+    "pillow>=12.2.0",
 ]
 
 [dependency-groups]

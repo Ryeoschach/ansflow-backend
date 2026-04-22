@@ -131,6 +131,7 @@ class Role(BaseModel):
 class User(AbstractUser):
     roles = models.ManyToManyField('rbac_permission.Role', blank=True)
     mobile = models.CharField(max_length=11, blank=True)
+    avatar = models.ImageField(upload_to='avatars/', null=True, blank=True, verbose_name="头像")
 
     class Meta:
         db_table = 'rbac_permission_user'
