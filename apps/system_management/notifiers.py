@@ -1,6 +1,7 @@
 import requests
 import logging
 import os
+import json
 from abc import ABC, abstractmethod
 from django.utils import timezone
 from utils.config_manager import ConfigCache
@@ -53,7 +54,14 @@ def is_notification_enabled(event_type: str) -> bool:
 
     # 事件类型白名单
     notify_on = get_notification_config('notify_on', None)
-    if notify_on and event_type not in notify_on:
+    if notify_on:
+        # notify_on 可能是 JSON 字符串（如 '["pipeline_result"]'）或已解析的列表
+        if isinstance(notify_on, str):
+            try:
+                notify_on = json.loads(notify_on)
+            except json.JSONDecodeError:
+                notify_on = None
+        if notify_on and event_type not in notify_on:
         return False
 
     return True
