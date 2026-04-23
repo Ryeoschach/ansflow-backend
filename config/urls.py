@@ -26,6 +26,8 @@ from .api_router import api_v1_patterns
 urlpatterns = [
     # 全局 API 版本入口
     path('api/v1/', include(api_v1_patterns)),
+    # 三方授权登录 + LDAP 认证
+    path('api/v1/auth/', include('apps.auth.urls')),
     # <str:version> 会被 DRF 的 URLPathVersioning 自动捕捉
     # path('api/<str:version>/', include(api_v1_patterns)),
 ]

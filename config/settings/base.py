@@ -71,6 +71,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
+    'social_django',  # 三方授权登录
+
     'channels',
     'rest_framework',
     'django_celery_results',
@@ -176,6 +178,11 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 ENABLE_ADMIN = False
 
 AUTH_USER_MODEL = 'rbac_permission.User'
+
+# 认证后端：支持本地密码 + LDAP（按顺序尝试）
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+]
 
 REST_FRAMEWORK = {
     # 身份验证配置
@@ -479,3 +486,29 @@ LOGGING = {
         },
     },
 }
+
+# =============================================
+# 三方授权登录配置（通过环境变量设置）
+# =============================================
+
+# GitHub OAuth
+GITHUB_CLIENT_ID = env('GITHUB_CLIENT_ID', default='')
+GITHUB_CLIENT_SECRET = env('GITHUB_CLIENT_SECRET', default='')
+
+# 微信 OAuth（公众号 / 小程序）
+WECHAT_APPID = env('WECHAT_APPID', default='')
+WECHAT_APPSECRET = env('WECHAT_APPSECRET', default='')
+
+# LDAP 配置
+LDAP_SERVER = env('LDAP_SERVER', default='')  # ldap://ldap.company.com:389
+LDAP_BASE_DN = env('LDAP_BASE_DN', default='')  # dc=company,dc=com
+LDAP_USER_DN_TEMPLATE = env('LDAP_USER_DN_TEMPLATE', default='uid={username},ou=users,{base_dn}')
+
+# social-auth 核心配置
+SOCIAL_AUTH_LOGIN_REDIRECT_URL = '/api/v1/account/me/'
+SOCIAL_AUTH_URL_PREFIX = 'auth/social'
+SOCIAL_AUTH_PIPELINE = (
+    'social_core.pipeline.social_auth.social_details',
+    'social_core.pipeline.social_auth.social_uid',
+    'social_core.pipeline.social_auth.associate_by_email_if_available',
+)

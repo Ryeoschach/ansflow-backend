@@ -129,9 +129,21 @@ class Role(BaseModel):
 
 
 class User(AbstractUser):
+    LOGIN_TYPE_CHOICES = [
+        ('password', '密码登录'),
+        ('ldap', 'LDAP 登录'),
+        ('github', 'GitHub 授权'),
+        ('wechat', '微信授权'),
+    ]
+
     roles = models.ManyToManyField('rbac_permission.Role', blank=True)
     mobile = models.CharField(max_length=11, blank=True)
     avatar = models.ImageField(upload_to='avatars/', null=True, blank=True, verbose_name="头像")
+    login_type = models.CharField(max_length=20, default='password', choices=LOGIN_TYPE_CHOICES, verbose_name="登录方式")
+    github_id = models.CharField(max_length=100, blank=True, null=True, unique=True, verbose_name="GitHub ID")
+    wechat_openid = models.CharField(max_length=100, blank=True, null=True, unique=True, verbose_name="微信 OpenID")
+    ldap_dn = models.CharField(max_length=255, blank=True, null=True, verbose_name="LDAP DN")
+    ldap_uid = models.CharField(max_length=128, blank=True, null=True, verbose_name="LDAP UID")
 
     class Meta:
         db_table = 'rbac_permission_user'
