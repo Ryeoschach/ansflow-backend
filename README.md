@@ -188,6 +188,12 @@ docker compose up -d
 | `/api/v1/account/me/avatar/` | PATCH | 上传头像（multipart/form-data，字段 avatar） |
 | `/api/v1/account/me/password/` | POST | 修改密码（{ old_password, new_password }） |
 | `/api/v1/account/menus/` | GET | 获取当前用户的菜单树 |
+| `/api/v1/auth/social/github/` | POST | GitHub OAuth 登录（code 换 Token） |
+| `/api/v1/auth/social/github/callback/` | GET | GitHub OAuth 回调（前端 redirect 方式） |
+| `/api/v1/auth/social/wechat/` | POST | 微信扫码登录（code 换 OpenID） |
+| `/api/v1/auth/social/wechat/callback/` | GET | 微信 OAuth 回调（前端 redirect 方式） |
+| `/api/v1/auth/social/bind/` | POST | 已登录用户绑定 GitHub / 微信账号 |
+| `/api/v1/auth/ldap/login/` | POST | LDAP 账号密码登录 |
 
 **登录请求体**：
 ```json
@@ -219,6 +225,22 @@ curl -X POST http://localhost:8000/api/v1/account/me/password/ \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"old_password": "oldpass", "new_password": "newpass123"}'
+```
+
+**三方授权登录回调**（前端 redirect 方式）：
+```
+GET /api/v1/auth/social/wechat/callback/?code=微信code&redirect_uri=https://前端页面
+→ 重定向到 {redirect_uri}?access_token=xxx&refresh_token=xxx&username=xxx&user_id=1
+
+GET /api/v1/auth/social/github/callback/?code=github-code&redirect_uri=https://前端页面
+→ 重定向到 {redirect_uri}?access_token=xxx&refresh_token=xxx&username=xxx&user_id=1
+```
+
+**LDAP 登录**：
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/ldap/login/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "john", "password": "xxx"}'
 ```
 
 **Token 策略**：
@@ -803,7 +825,7 @@ GET /api/v1/artifactory/instances/{id}/test_connection/
 
 | 模块 | 路由前缀 | 核心功能 |
 |------|---------|---------|
-| 认证 | `/api/v1/auth/` | 登录 / 刷新 Token / 登出 |
+| 认证 | `/api/v1/auth/` | 登录 / 三方授权 / LDAP / 刷新 Token / 登出 |
 | 账号 | `/api/v1/account/` | 当前用户信息 / 菜单树 |
 | 用户管理 | `/api/v1/users/` | 用户 CRUD |
 | 角色管理 | `/api/v1/roles/` | 角色 CRUD + 权限分配 |
