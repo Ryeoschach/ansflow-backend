@@ -36,7 +36,7 @@ class Command(BaseCommand):
             # 前端地址
             ('frontend_url', 'http://localhost:3000', 'string', False, '前端根地址，用于生成详情页链接'),
             # 事件类型白名单
-            ('notify_on', ['pipeline_start', 'pipeline_result', 'approval_requested', 'approval_result'], 'json', False, '触发通知的事件类型列表'),
+            ('notify_on', ['pipeline_start', 'pipeline_result', 'approval_requested', 'approval_result', 'task_result'], 'json', False, '触发通知的事件类型列表'),
         ]
 
         for key, value, value_type, is_encrypted, description in items:
