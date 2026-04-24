@@ -10,6 +10,15 @@ class AuditLogMiddleware(MiddlewareMixin):
     审计日志中间件：捕捉所有写操作请求
     """
 
+    # 不监控的路径列表（精确匹配）
+    EXCLUDE_PATHS = [
+        '/api/v1/auth/refresh/',  # Token 刷新接口
+        '/api/v1/auth/login/',    # 登录接口（密码类）
+        '/api/v1/auth/social/github/',    # GitHub 登录
+        '/api/v1/auth/social/wechat/',    # 微信登录
+        '/api/v1/auth/ldap/login/',       # LDAP 登录
+    ]
+
     def process_request(self, request):
         # 记录请求到达时的时间，用于计算后续耗时
         request.start_time = time.time()
@@ -47,7 +56,11 @@ class AuditLogMiddleware(MiddlewareMixin):
         # 过滤：审计写操作 (POST, PUT, PATCH, DELETE)
         if request.method not in ['POST', 'PUT', 'PATCH', 'DELETE']:
             return response
-            
+
+        # 过滤：排除路径
+        if request.path in self.EXCLUDE_PATHS:
+            return response
+
         # 截取结束时间
         end_time = time.time()
         
