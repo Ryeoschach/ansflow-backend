@@ -14,6 +14,7 @@ class AuditLogMiddleware(MiddlewareMixin):
     EXCLUDE_PATHS = [
         '/api/v1/auth/refresh/',  # Token 刷新接口
         '/api/v1/auth/login/',    # 登录接口（密码类）
+        '/api/v1/auth/logout/',     # 退出登陆
         '/api/v1/auth/social/github/',    # GitHub 登录
         '/api/v1/auth/social/wechat/',    # 微信登录
         '/api/v1/auth/ldap/login/',       # LDAP 登录
