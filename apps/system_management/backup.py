@@ -288,12 +288,9 @@ class BackupExporter:
             for field_name in fields:
                 value = getattr(obj, field_name, None)
 
-                # 处理外键
-                if field_name in model_info.fk_fields:
-                    if value is not None:
-                        record[field_name] = value.id if hasattr(value, 'id') else value
-                    else:
-                        record[field_name] = None
+                # 处理外键（包括未在 fk_fields 中声明的反向关系）
+                if hasattr(value, 'id') and hasattr(value, '_meta') and not isinstance(value, (str, int, float, bool, type(None))):
+                    record[field_name] = value.id if value is not None else None
                 # 处理普通字段
                 elif value is not None:
                     if isinstance(value, (datetime,)):
