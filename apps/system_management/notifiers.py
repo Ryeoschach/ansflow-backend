@@ -38,7 +38,7 @@ def get_notification_config(key: str, default=None):
 def is_notification_enabled(event_type: str) -> bool:
     """
     检查通知是否启用。
-    event_type: pipeline_start / pipeline_result / approval_requested / approval_result
+    event_type: pipeline_start / pipeline_result / approval_requested / approval_result / task_result
     """
     # 总开关
     enabled = get_notification_config('enabled', True)
@@ -144,7 +144,7 @@ class DingTalkNotifier(BaseNotifier):
 def _send_notification(event_type: str, title: str, content: str, detail_url: str = None):
     """
     统一通知发送入口，读取配置中心的 webhook 配置。
-    event_type: pipeline_start / pipeline_result / approval_requested / approval_result
+    event_type: pipeline_start / pipeline_result / approval_requested / approval_result / task_result
     """
     if not is_notification_enabled(event_type):
         logger.debug(f"Notification disabled for event type: {event_type}")
@@ -229,3 +229,25 @@ def notify_approval_result(ticket):
     )
     detail_url = f"{_get_frontend_url()}/v1/system/approvals"
     _send_notification('approval_result', title, content, detail_url)
+
+
+def notify_task_result(execution_obj):
+    """
+    Ansible 任务执行结果通知
+    """
+    logger.info(f"[Notify] 正在尝试发送 Ansible 任务执行结果通知: Execution #{execution_obj.id}")
+    status_text = '执行成功' if execution_obj.status == 'success' else '执行失败'
+    title = f"Ansible 任务 {execution_obj.task.name} {status_text}"
+    executor_name = execution_obj.executor.username if execution_obj.executor else '系统'
+    duration = ''
+    if execution_obj.start_time and execution_obj.end_time:
+        duration = f"\n**耗时**: {int((execution_obj.end_time - execution_obj.start_time).total_seconds())}s"
+    content = (
+        f"**执行 ID**: #{execution_obj.id}\n"
+        f"**任务模板**: {execution_obj.task.name}\n"
+        f"**目标资源池**: {execution_obj.task.resource_pool.name if execution_obj.task.resource_pool else 'N/A'}\n"
+        f"**执行者**: {executor_name}\n"
+        f"**执行状态**: {execution_obj.status}{duration}"
+    )
+    detail_url = f"{_get_frontend_url()}/v1/task/executions?id={execution_obj.id}"
+    _send_notification('task_result', title, content, detail_url)

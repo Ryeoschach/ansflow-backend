@@ -138,7 +138,11 @@ def run_ansible_task(self, execution_id, extra_vars=None):
         execution.result_summary = r.stats
         execution.end_time = timezone.now()
         execution.save()
-        
+
+        # 发送执行结果通知
+        from apps.system_management.notifiers import notify_task_result
+        notify_task_result(execution)
+
         return {
             "status": execution.status,
             "logs": formatted_logs,
@@ -151,4 +155,7 @@ def run_ansible_task(self, execution_id, extra_vars=None):
             execution.status = 'failed'
             execution.remark = f"内部错误: {str(e)}"
             execution.save()
+            # 发送执行结果通知
+            from apps.system_management.notifiers import notify_task_result
+            notify_task_result(execution)
         return f"实例 {execution_id} 失败: {str(e)}"

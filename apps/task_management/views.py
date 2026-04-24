@@ -1,3 +1,4 @@
+import json
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -10,6 +11,18 @@ from django.utils import timezone
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
+
+
+def _get_extra_vars(task):
+    """解析 task.extra_vars，支持 dict 或 JSON 字符串"""
+    try:
+        if isinstance(task.extra_vars, dict):
+            return task.extra_vars
+        if isinstance(task.extra_vars, str) and task.extra_vars.strip():
+            return json.loads(task.extra_vars)
+    except json.JSONDecodeError:
+        pass
+    return {}
 
 
 class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
@@ -37,7 +50,7 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # 保存时自动关联创建者
         task = serializer.save(creator=self.request.user)
-        
+
         # 如果请求中带有 run_now，则立即触发一次执行
         if self.request.data.get('run_now'):
             execution = AnsibleExecution.objects.create(
@@ -45,7 +58,8 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 executor=self.request.user,
                 status='pending'
             )
-            res = run_ansible_task.delay(execution.id)
+            extra_vars = _get_extra_vars(task)
+            res = run_ansible_task.delay(execution.id, extra_vars)
             execution.celery_task_id = res.id
             execution.save()
 
@@ -60,7 +74,8 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
             executor=request.user,
             status='pending'
         )
-        res = run_ansible_task.delay(execution.id)
+        extra_vars = _get_extra_vars(task)
+        res = run_ansible_task.delay(execution.id, extra_vars)
         execution.celery_task_id = res.id
         execution.save()
 
@@ -101,7 +116,7 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
         logs = execution.logs.all().order_by('create_time')
         serializer = TaskLogSerializer(logs, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['delete'])
     def batch_delete(self, request):
         """
@@ -110,7 +125,7 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
         ids = request.data.get('ids', [])
         if not ids:
             return Response({"error": "请提供要删除的 ID 列表"}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         AnsibleExecution.objects.filter(id__in=ids).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -122,20 +137,20 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
         execution = self.get_object()
         if execution.status not in ['pending', 'running']:
             return Response({"error": "该任务当前不处于可停止状态"}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # 1. 向 Celery 发送终止信号
         if execution.celery_task_id:
             celery_app.control.revoke(execution.celery_task_id, terminate=True, signal='SIGKILL')
-        
+
         # 2. 更新数据库状态
         execution.status = 'failed'
         execution.end_time = timezone.now()
         from apps.task_management.models import TaskLog
         TaskLog.objects.create(
-            execution=execution, 
-            host="SYSTEM", 
+            execution=execution,
+            host="SYSTEM",
             output="\n[!] 任务已被用户手动强制终止 (Revoked by User)"
         )
         execution.save()
-        
+
         return Response({"message": "终止指令已下发"})
