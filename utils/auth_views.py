@@ -2,6 +2,7 @@
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.conf import settings
 from rest_framework.response import Response
+from django.contrib.auth import get_user_model
 
 
 class CookieTokenObtainPairView(TokenObtainPairView):
@@ -15,7 +16,15 @@ class CookieTokenObtainPairView(TokenObtainPairView):
             # 从数据中拿掉 refresh，不发给前端
             refresh_token = response.data.pop('refresh')
 
-            print(f"DEBUG: Login success for {request.data.get('username')}, setting cookie.")
+            # 获取用户信息一并返回
+            User = get_user_model()
+            user = User.objects.get(username=request.data.get('username'))
+            user_data = {
+                'username': user.username,
+            }
+            response.data['user'] = user_data
+
+            print(f"DEBUG: Login success for {user_data['username']}, setting cookie.")
 
             # 设置 HttpOnly Cookie
             response.set_cookie(
