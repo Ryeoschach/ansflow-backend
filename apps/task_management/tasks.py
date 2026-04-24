@@ -25,7 +25,11 @@ def run_ansible_task(self, execution_id, extra_vars=None):
         
         # 准备 Inventory
         inventory = generate_ansible_inventory(task.resource_pool_id)
-        
+
+        # 获取资源池信息（用于生成组名）
+        from apps.host_management.models import ResourcePool
+        pool = ResourcePool.objects.get(id=task.resource_pool_id)
+
         # 创建临时工作目录
         private_data_dir = f'/tmp/ansible_execution_{execution_id}'
         if os.path.exists(private_data_dir):
@@ -63,15 +67,25 @@ def run_ansible_task(self, execution_id, extra_vars=None):
         if extra_vars:
             runner_kwargs['extravars'] = extra_vars
         
+        # 组名增加前缀避免与主机名冲突
+        group_key = f"pool_{pool.code}"
+        runner_kwargs['host_pattern'] = group_key
+
         if task.task_type == 'cmd':
             runner_kwargs['module'] = 'shell'
             runner_kwargs['module_args'] = task.content
-            runner_kwargs['host_pattern'] = 'all'
         else:
+            # 将 playbook 中的 `- hosts: localhost` 替换为实际的资源池组名
+            playbook_content = task.content
+            if '- hosts: localhost' in playbook_content:
+                playbook_content = playbook_content.replace('- hosts: localhost', f'- hosts: {group_key}')
+            elif '- hosts: all' in playbook_content:
+                playbook_content = playbook_content.replace('- hosts: all', f'- hosts: {group_key}')
+
             playbook_path = os.path.join(private_data_dir, 'project', 'playbook.yml')
             os.makedirs(os.path.dirname(playbook_path), exist_ok=True)
             with open(playbook_path, 'w') as f:
-                f.write(task.content)
+                f.write(playbook_content)
             runner_kwargs['playbook'] = 'playbook.yml'
 
         # 定义事件回调
