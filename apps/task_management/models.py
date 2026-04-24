@@ -99,7 +99,7 @@ class AnsibleSchedule(BaseModel):
     Ansible 定时任务调度
     """
     CRON_CHOICES = (
-        ('custom', '自定义 Cron'),
+        ('cron', '自定义 Cron'),
         ('interval', '固定间隔'),
     )
     INTERVAL_UNIT_CHOICES = (

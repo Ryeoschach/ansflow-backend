@@ -1,7 +1,10 @@
+import json
 import os
 import shutil
 import logging
+from datetime import datetime
 from celery import shared_task
+from croniter import croniter
 import ansible_runner
 from django.utils import timezone
 from apps.task_management.models import AnsibleTask, AnsibleExecution, TaskLog
@@ -182,7 +185,6 @@ def run_ansible_schedule(schedule_id):
         if isinstance(task.extra_vars, dict):
             extra_vars = task.extra_vars
         elif isinstance(task.extra_vars, str) and task.extra_vars.strip():
-            import json
             try:
                 extra_vars = json.loads(task.extra_vars)
             except json.JSONDecodeError:
@@ -191,6 +193,9 @@ def run_ansible_schedule(schedule_id):
         res = run_ansible_task.delay(execution.id, extra_vars)
         execution.celery_task_id = res.id
         execution.save()
+
+        # 执行后更新 next_run_time
+        update_next_run_time(schedule)
 
         return {"status": "triggered", "execution_id": execution.id}
     except AnsibleSchedule.DoesNotExist:
@@ -201,13 +206,31 @@ def run_ansible_schedule(schedule_id):
         return f"Schedule {schedule_id} error: {str(e)}"
 
 
+def update_next_run_time(schedule):
+    """
+    更新调度的下次执行时间
+    """
+    try:
+        if schedule.schedule_type == 'cron' and schedule.cron_expression:
+            cron = croniter(schedule.cron_expression, timezone.now())
+            schedule.next_run_time = datetime.fromtimestamp(cron.get_next())
+        elif schedule.schedule_type == 'interval':
+            from datetime import timedelta
+            unit_map = {'minutes': 60, 'hours': 3600, 'days': 86400}
+            seconds = schedule.interval_value * unit_map.get(schedule.interval_unit, 3600)
+            schedule.next_run_time = timezone.now() + timedelta(seconds=seconds)
+        else:
+            schedule.next_run_time = None
+        schedule.save(update_fields=['next_run_time'])
+    except Exception as e:
+        logger.error(f"Failed to update next_run_time: {e}")
+
+
 def sync_schedule_to_beat(schedule):
     """
     将调度同步到 Celery Beat
     """
     from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
-    import croniter
-    from datetime import datetime
 
     if not schedule.is_enabled:
         # 如果调度被禁用，删除关联的 PeriodicTask
@@ -243,10 +266,12 @@ def sync_schedule_to_beat(schedule):
         )[0]
     else:  # custom cron
         # 解析 cron 表达式: 分 时 日 月 周
-        parts = (schedule.cron_expression or '0 * * * *').split()
+        cron_expr = schedule.cron_expression or '0 * * * *'
+        parts = cron_expr.split()
         if len(parts) != 5:
-            logger.error(f"Invalid cron expression: {schedule.cron_expression}")
-            return
+            logger.error(f"Invalid cron expression: {schedule.cron_expression}, using default '0 * * * *'")
+            cron_expr = '0 * * * *'
+            parts = cron_expr.split()
 
         cron_schedule, _ = CrontabSchedule.objects.get_or_create(
             minute=parts[0],
@@ -267,11 +292,7 @@ def sync_schedule_to_beat(schedule):
         )[0]
 
     # 计算下次执行时间
-    try:
-        cron = croniter.croniter(schedule.cron_expression, datetime.now())
-        schedule.next_run_time = datetime.fromtimestamp(cron.get_next())
-    except:
-        schedule.next_run_time = None
+    update_next_run_time(schedule)
 
     schedule.periodic_task_id = task.id
     schedule.save(update_fields=['periodic_task_id', 'next_run_time'])

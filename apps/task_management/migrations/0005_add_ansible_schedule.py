@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
                 ('remark', models.TextField(blank=True, null=True, verbose_name='备注')),
                 ('name', models.CharField(max_length=128, verbose_name='调度名称')),
                 ('is_enabled', models.BooleanField(default=True, verbose_name='是否启用')),
-                ('schedule_type', models.CharField(choices=[('custom', '自定义 Cron'), ('interval', '固定间隔')], default='custom', max_length=20, verbose_name='调度类型')),
+                ('schedule_type', models.CharField(choices=[('cron', '自定义 Cron'), ('interval', '固定间隔')], default='custom', max_length=20, verbose_name='调度类型')),
                 ('cron_expression', models.CharField(blank=True, help_text='格式: 分 时 日 月 周，如 0 3 * * * 表示每天凌晨3点', max_length=64, null=True, verbose_name='Cron 表达式')),
                 ('interval_value', models.IntegerField(default=1, verbose_name='间隔值')),
                 ('interval_unit', models.CharField(choices=[('minutes', '分钟'), ('hours', '小时'), ('days', '天')], default='hours', max_length=10, verbose_name='间隔单位')),

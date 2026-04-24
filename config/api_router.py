@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from apps.k8s_management.views import K8sClusterViewSet
 from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewSet, MenuViewSet, AuditLogViewSet
 from apps.host_management.views import HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet
-from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet
+from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet, AnsibleScheduleViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
 from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet
@@ -25,6 +25,7 @@ router.register(r'system/menus', MenuViewSet, basename='system-menus')
 router.register(r'system/permissions', PermissionViewSet, basename='system-permissions')
 router.register(r'tasks', AnsibleTaskViewSet, basename='ansible_tasks')
 router.register(r'executions', AnsibleExecutionViewSet, basename='ansible_executions')
+router.register(r'schedules', AnsibleScheduleViewSet, basename='ansible_schedules')
 router.register(r'k8s', K8sClusterViewSet, basename='k8s_management')
 router.register(r'pipelines', PipelineViewSet, basename='pipelines')
 router.register(r'pipeline_runs', PipelineRunViewSet, basename='pipeline_runs')
