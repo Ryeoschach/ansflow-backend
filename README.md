@@ -2,7 +2,7 @@
 
 企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。
 
-**当前版本**：v1.3.0 (build: 2026-04-22)  
+**当前版本**：v1.3.2 (build: 2026-04-24)  
 **在线 Demo**：https://ansflow.cyfee.com:10443  
 **默认账号**：admin / ansflow
 

@@ -378,7 +378,13 @@ def ldap_login(request):
 
     ldap_server = getattr(settings, 'LDAP_SERVER', None)
     ldap_base_dn = getattr(settings, 'LDAP_BASE_DN', None)
-    ldap_user_dn_template = getattr(settings, 'LDAP_USER_DN_TEMPLATE', 'uid={username},' + (ldap_base_dn or ''))
+    ldap_user_dn_template = getattr(settings, 'LDAP_USER_DN_TEMPLATE', 'uid={username},ou=users,{base_dn}')
+    ldap_manager_dn = getattr(settings, 'LDAP_MANAGER_DN', None)
+    ldap_manager_password = getattr(settings, 'LDAP_MANAGER_PASSWORD', None)
+
+    logger.info(f"[LDAP Login] Server: {ldap_server}, BaseDN: {ldap_base_dn}")
+    logger.info(f"[LDAP Login] UserTemplate: {ldap_user_dn_template}")
+    logger.info(f"[LDAP Login] ManagerDN: {ldap_manager_dn}")
 
     if not ldap_server:
         return Response({'error': 'LDAP 未配置'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -394,13 +400,48 @@ def ldap_login(request):
         conn.set_option(ldap.OPT_REFERRALS, 0)
         conn.protocol_version = ldap.VERSION3
 
-        user_dn = ldap_user_dn_template.format(username=username)
-        conn.simple_bind_s(user_dn, password)
-        logger.info(f"[LDAP Login] 认证成功: {user_dn}")
+        user_dn = ldap_user_dn_template.format(username=username, base_dn=ldap_base_dn)
+        logger.info(f"[LDAP Login] Attempting bind with user_dn: {user_dn}")
 
-        # 2. 查询用户信息
+        # 如果配置了 manager DN，先用 manager 搜索用户完整 DN
+        if ldap_manager_dn and ldap_manager_password:
+            logger.info(f"[LDAP Login] Binding with manager DN first")
+            conn.simple_bind_s(ldap_manager_dn, ldap_manager_password)
+            logger.info(f"[LDAP Login] Manager bind success")
+
+            # 搜索用户完整 DN
+            search_filter = f'(uid={username})'
+            logger.info(f"[LDAP Login] Searching with filter: {search_filter}, base: {ldap_base_dn}")
+            result = conn.search_s(ldap_base_dn, ldap.SCOPE_SUBTREE, search_filter, ['dn'])
+            logger.info(f"[LDAP Login] Search result: {result}")
+
+            if result:
+                user_dn = result[0][0]
+                logger.info(f"[LDAP Login] Found user DN: {user_dn}")
+            else:
+                logger.warning(f"[LDAP Login] User not found in LDAP directory")
+            conn.unbind_s()
+
+            # 重新连接并用真实用户 DN 验证
+            conn = ldap.initialize(ldap_server)
+            conn.set_option(ldap.OPT_REFERRALS, 0)
+            conn.protocol_version = ldap.VERSION3
+
+        conn.simple_bind_s(user_dn, password)
+        logger.info(f"[LDAP Login] User bind success: {user_dn}")
+
+        # 2. 查询用户信息 - 需要用 manager DN 搜索（用户绑定后没有搜索权限）
+        search_conn = ldap.initialize(ldap_server)
+        search_conn.set_option(ldap.OPT_REFERRALS, 0)
+        search_conn.protocol_version = ldap.VERSION3
+        if ldap_manager_dn and ldap_manager_password:
+            search_conn.simple_bind_s(ldap_manager_dn, ldap_manager_password)
+            logger.info(f"[LDAP Login] Search conn bound with manager")
         search_filter = f'(uid={username})'
-        result = conn.search_s(ldap_base_dn, ldap.SCOPE_SUBTREE, search_filter, ['cn', 'mail', 'uid', 'displayName'])
+        logger.info(f"[LDAP Login] Searching user info with base: {ldap_base_dn}")
+        result = search_conn.search_s(ldap_base_dn, ldap.SCOPE_SUBTREE, search_filter, ['cn', 'mail', 'uid', 'displayName'])
+        logger.info(f"[LDAP Login] User info search result: {result}")
+        search_conn.unbind_s()
         user_info = {}
         if result:
             _, attrs = result[0]
@@ -436,7 +477,9 @@ def ldap_login(request):
             user.save(update_fields=['login_type', 'update_time'])
 
         tokens = get_tokens_for_user(user)
-        return Response({
+
+        # 设置 refresh token 到 HttpOnly cookie
+        response = Response({
             'message': '登录成功',
             'user': {
                 'id': user.id,
@@ -444,8 +487,18 @@ def ldap_login(request):
                 'login_type': user.login_type,
                 'email': user.email,
             },
-            **tokens,
+            'access': tokens['access_token'],
         })
+        response.set_cookie(
+            key='refresh_token',
+            value=tokens['refresh_token'],
+            httponly=True,
+            secure=not settings.DEBUG,
+            samesite='Lax',
+            path='/',
+            max_age=7 * 24 * 3600
+        )
+        return response
 
     except ldap.INVALID_CREDENTIALS:
         return Response({'error': '用户名或密码错误'}, status=status.HTTP_401_UNAUTHORIZED)

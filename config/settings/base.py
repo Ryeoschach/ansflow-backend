@@ -503,6 +503,8 @@ WECHAT_APPSECRET = env('WECHAT_APPSECRET', default='')
 LDAP_SERVER = env('LDAP_SERVER', default='')  # ldap://ldap.company.com:389
 LDAP_BASE_DN = env('LDAP_BASE_DN', default='')  # dc=company,dc=com
 LDAP_USER_DN_TEMPLATE = env('LDAP_USER_DN_TEMPLATE', default='uid={username},ou=users,{base_dn}')
+LDAP_MANAGER_DN = env('LDAP_MANAGER_DN', default='')
+LDAP_MANAGER_PASSWORD = env('LDAP_MANAGER_PASSWORD', default='')
 
 # social-auth 核心配置
 SOCIAL_AUTH_LOGIN_REDIRECT_URL = '/api/v1/account/me/'
