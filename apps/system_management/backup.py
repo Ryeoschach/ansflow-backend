@@ -54,6 +54,8 @@ def get_encrypted_field_names() -> set:
         'K8sCluster.kubeconfig_content',
         'K8sCluster.token',
         'ImageRegistry.password',
+        'ArtifactoryInstance.api_key',
+        'ArtifactoryInstance.password',
         'ConfigItem.value',  # 当 is_encrypted=True 时
     }
 
@@ -131,8 +133,9 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     'User': ModelInfo(
         app_label='rbac_permission', model_name='User', table_name='rbac_permission_user',
         m2m_fields={'roles': 'Role'},
-        # 排除密码、最后登录等字段
-        exclude_fields=['password', 'last_login', 'remark', 'date_joined'],
+        # 排除密码、最后登录、三方登录字段、头像等
+        exclude_fields=['password', 'last_login', 'remark', 'date_joined',
+                        'github_id', 'wechat_openid', 'ldap_dn', 'ldap_uid', 'login_type', 'avatar'],
         export_order=8,
     ),
     'Platform': ModelInfo(
@@ -151,6 +154,45 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         exclude_fields=['remark'],
         export_order=11,
     ),
+    'ArtifactoryInstance': ModelInfo(
+        app_label='registry_management', model_name='ArtifactoryInstance', table_name='registry_artifactory_instance',
+        exclude_fields=['remark'],
+        export_order=11.5,
+    ),
+    'ArtifactoryRepository': ModelInfo(
+        app_label='registry_management', model_name='ArtifactoryRepository', table_name='registry_artifactory_repository',
+        fk_fields={'instance': ('ArtifactoryInstance', 'id')},
+        exclude_fields=['remark'],
+        export_order=12,
+    ),
+    'PipelineRun': ModelInfo(
+        app_label='pipeline_management', model_name='PipelineRun', table_name='pipeline_pipelinerun',
+        fk_fields={
+            'pipeline': ('Pipeline', 'id'),
+            'trigger_user': ('User', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=13,
+    ),
+    'Artifact': ModelInfo(
+        app_label='registry_management', model_name='Artifact', table_name='pipeline_artifact',
+        fk_fields={
+            'image_registry': ('ImageRegistry', 'id'),
+            'artifactory_repo': ('ArtifactoryRepository', 'id'),
+            'pipeline': ('Pipeline', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=14,
+    ),
+    'ArtifactVersion': ModelInfo(
+        app_label='registry_management', model_name='ArtifactVersion', table_name='pipeline_artifact_version',
+        fk_fields={
+            'artifact': ('Artifact', 'id'),
+            'pipeline_run': ('PipelineRun', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=15,
+    ),
     'Host': ModelInfo(
         app_label='host_management', model_name='Host', table_name='cmdb_host',
         fk_fields={
@@ -159,40 +201,40 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'credential': ('SshCredential', 'id'),
         },
         exclude_fields=['remark'],
-        export_order=12,
+        export_order=16,
     ),
     'ResourcePool': ModelInfo(
         app_label='host_management', model_name='ResourcePool', table_name='cmdb_resource_pool',
         m2m_fields={'hosts': 'Host'},
         exclude_fields=['remark'],
-        export_order=13,
+        export_order=17,
     ),
     'Pipeline': ModelInfo(
         app_label='pipeline_management', model_name='Pipeline', table_name='pipeline_template',
         fk_fields={'creator': ('User', 'id')},
         exclude_fields=['remark'],
-        export_order=14,
+        export_order=18,
     ),
     'CIEnvironment': ModelInfo(
         app_label='pipeline_management', model_name='CIEnvironment', table_name='pipeline_ci_environment',
         exclude_fields=['remark'],
-        export_order=15,
+        export_order=19,
     ),
     'ConfigCategory': ModelInfo(
         app_label='config_center', model_name='ConfigCategory', table_name='config_center_category',
         exclude_fields=['remark'],
-        export_order=16,
+        export_order=20,
     ),
     'ConfigItem': ModelInfo(
         app_label='config_center', model_name='ConfigItem', table_name='config_center_item',
         fk_fields={'category': ('ConfigCategory', 'id')},
         exclude_fields=['remark'],
-        export_order=17,
+        export_order=21,
     ),
     'ApprovalPolicy': ModelInfo(
         app_label='approval_center', model_name='ApprovalPolicy', table_name='approval_center_policy',
         exclude_fields=['remark'],
-        export_order=18,
+        export_order=22,
     ),
 }
 
