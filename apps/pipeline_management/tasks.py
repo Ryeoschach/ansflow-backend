@@ -379,7 +379,8 @@ def execute_pipeline_node(self, node_run_id):
             execution = AnsibleExecution.objects.create(
                 task=ansible_task,
                 status='pending',
-                executor=node_run.run.trigger_user
+                executor=node_run.run.trigger_user,
+                from_pipeline=True  # 来自流水线，不发送单独通知
             )
             # 将执行实例 ID 存入节点输出，方便在中止流水线时反向查找并关停
             node_run.output_data = {'ansible_execution_id': execution.id}

@@ -61,10 +61,13 @@ class AnsibleExecution(BaseModel):
     
     # 关联的异步任务 ID (用于停止/控制)
     celery_task_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="Celery 任务 ID")
-    
+
     # 时间记录
     start_time = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
     end_time = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
+
+    # 是否来自流水线（来自流水线的 Ansible 执行不发送单独通知，由流水线统一通知）
+    from_pipeline = models.BooleanField(default=False, verbose_name="来自流水线")
 
     class Meta:
         db_table = 'task_ansible_execution'

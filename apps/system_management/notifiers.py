@@ -49,7 +49,7 @@ def is_notification_enabled(event_type: str) -> bool:
     level = get_notification_config('level', 'all')
     if level == 'none':
         return False
-    if level == 'error_only' and event_type not in ('pipeline_result', 'approval_result'):
+    if level == 'error_only' and event_type not in ('pipeline_result', 'approval_result', 'task_result'):
         return False
 
     # 事件类型白名单
@@ -234,20 +234,42 @@ def notify_approval_result(ticket):
 def notify_task_result(execution_obj):
     """
     Ansible 任务执行结果通知
+    - 来自流水线的 Ansible 执行不发送单独通知，由流水线统一通知
+    - 支持 error_only 级别配置（仅失败时通知）
     """
+    # 来自流水线的 Ansible 执行不发送单独通知
+    if getattr(execution_obj, 'from_pipeline', False):
+        logger.debug(f"[Notify] Ansible Execution #{execution_obj.id} from pipeline, skip notification")
+        return
+
+    if not is_notification_enabled('task_result'):
+        logger.debug(f"[Notify] Task notification disabled for event type: task_result")
+        return
+
     logger.info(f"[Notify] 正在尝试发送 Ansible 任务执行结果通知: Execution #{execution_obj.id}")
     status_text = '执行成功' if execution_obj.status == 'success' else '执行失败'
-    title = f"Ansible 任务 {execution_obj.task.name} {status_text}"
+    status_emoji = '✅' if execution_obj.status == 'success' else '❌'
+    title = f"{status_emoji} Ansible 任务 {execution_obj.task.name} {status_text}"
     executor_name = execution_obj.executor.username if execution_obj.executor else '系统'
     duration = ''
     if execution_obj.start_time and execution_obj.end_time:
         duration = f"\n**耗时**: {int((execution_obj.end_time - execution_obj.start_time).total_seconds())}s"
-    content = (
-        f"**执行 ID**: #{execution_obj.id}\n"
-        f"**任务模板**: {execution_obj.task.name}\n"
-        f"**目标资源池**: {execution_obj.task.resource_pool.name if execution_obj.task.resource_pool else 'N/A'}\n"
-        f"**执行者**: {executor_name}\n"
-        f"**执行状态**: {execution_obj.status}{duration}"
-    )
+
+    content_lines = [
+        f"**执行 ID**: #{execution_obj.id}",
+        f"**任务模板**: {execution_obj.task.name}",
+        f"**目标资源池**: {execution_obj.task.resource_pool.name if execution_obj.task.resource_pool else 'N/A'}",
+        f"**执行者**: {executor_name}",
+        f"**执行状态**: {execution_obj.status}{duration}",
+    ]
+
+    # 如果是 playbook 类型，显示内容预览
+    if execution_obj.task.task_type == 'playbook':
+        content_lines.append(f"**任务类型**: Playbook")
+    else:
+        content_lines.append(f"**任务类型**: Ad-hoc 命令")
+
+    content = '\n'.join(content_lines)
     detail_url = f"{_get_frontend_url()}/v1/task/executions?id={execution_obj.id}"
+
     _send_notification('task_result', title, content, detail_url)
