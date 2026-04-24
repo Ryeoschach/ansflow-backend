@@ -159,3 +159,119 @@ def run_ansible_task(self, execution_id, extra_vars=None):
             from apps.system_management.notifiers import notify_task_result
             notify_task_result(execution)
         return f"实例 {execution_id} 失败: {str(e)}"
+
+
+@shared_task(name="run_ansible_schedule")
+def run_ansible_schedule(schedule_id):
+    """
+    执行定时调度任务
+    """
+    from apps.task_management.models import AnsibleSchedule
+    try:
+        schedule = AnsibleSchedule.objects.select_related('task', 'creator').get(id=schedule_id)
+        task = schedule.task
+
+        # 创建执行记录
+        execution = AnsibleExecution.objects.create(
+            task=task,
+            executor=schedule.creator,
+            status='pending'
+        )
+
+        extra_vars = {}
+        if isinstance(task.extra_vars, dict):
+            extra_vars = task.extra_vars
+        elif isinstance(task.extra_vars, str) and task.extra_vars.strip():
+            import json
+            try:
+                extra_vars = json.loads(task.extra_vars)
+            except json.JSONDecodeError:
+                pass
+
+        res = run_ansible_task.delay(execution.id, extra_vars)
+        execution.celery_task_id = res.id
+        execution.save()
+
+        return {"status": "triggered", "execution_id": execution.id}
+    except AnsibleSchedule.DoesNotExist:
+        logger.error(f"Schedule {schedule_id} not found")
+        return f"Schedule {schedule_id} not found"
+    except Exception as e:
+        logger.error(f"Schedule {schedule_id} error: {str(e)}")
+        return f"Schedule {schedule_id} error: {str(e)}"
+
+
+def sync_schedule_to_beat(schedule):
+    """
+    将调度同步到 Celery Beat
+    """
+    from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
+    import croniter
+    from datetime import datetime
+
+    if not schedule.is_enabled:
+        # 如果调度被禁用，删除关联的 PeriodicTask
+        if schedule.periodic_task_id:
+            try:
+                PeriodicTask.objects.get(id=schedule.periodic_task_id).delete()
+            except PeriodicTask.DoesNotExist:
+                pass
+            schedule.periodic_task_id = None
+            schedule.save(update_fields=['periodic_task_id'])
+        return
+
+    # 创建或更新 IntervalSchedule
+    if schedule.schedule_type == 'interval':
+        interval_map = {
+            'minutes': IntervalSchedule.MINUTES,
+            'hours': IntervalSchedule.HOURS,
+            'days': IntervalSchedule.DAYS,
+        }
+        interval_schedule, _ = IntervalSchedule.objects.get_or_create(
+            every=schedule.interval_value,
+            period=interval_map.get(schedule.interval_unit, IntervalSchedule.HOURS)
+        )
+        task = PeriodicTask.objects.update_or_create(
+            id=schedule.periodic_task_id if schedule.periodic_task_id else None,
+            defaults={
+                'name': f"ansible_schedule_{schedule.id}",
+                'task': 'run_ansible_schedule',
+                'interval': interval_schedule,
+                'args': json.dumps([schedule.id]),
+                'enabled': True,
+            }
+        )[0]
+    else:  # custom cron
+        # 解析 cron 表达式: 分 时 日 月 周
+        parts = (schedule.cron_expression or '0 * * * *').split()
+        if len(parts) != 5:
+            logger.error(f"Invalid cron expression: {schedule.cron_expression}")
+            return
+
+        cron_schedule, _ = CrontabSchedule.objects.get_or_create(
+            minute=parts[0],
+            hour=parts[1],
+            day_of_month=parts[2],
+            month_of_year=parts[3],
+            day_of_week=parts[4],
+        )
+        task = PeriodicTask.objects.update_or_create(
+            id=schedule.periodic_task_id if schedule.periodic_task_id else None,
+            defaults={
+                'name': f"ansible_schedule_{schedule.id}",
+                'task': 'run_ansible_schedule',
+                'crontab': cron_schedule,
+                'args': json.dumps([schedule.id]),
+                'enabled': True,
+            }
+        )[0]
+
+    # 计算下次执行时间
+    try:
+        cron = croniter.croniter(schedule.cron_expression, datetime.now())
+        schedule.next_run_time = datetime.fromtimestamp(cron.get_next())
+    except:
+        schedule.next_run_time = None
+
+    schedule.periodic_task_id = task.id
+    schedule.save(update_fields=['periodic_task_id', 'next_run_time'])

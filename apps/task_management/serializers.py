@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from apps.task_management.models import AnsibleTask, AnsibleExecution, TaskLog
+from apps.task_management.models import AnsibleTask, AnsibleExecution, TaskLog, AnsibleSchedule
 
 
 class TaskLogSerializer(serializers.ModelSerializer):
@@ -42,3 +42,22 @@ class AnsibleTaskSerializer(serializers.ModelSerializer):
         if last:
             return last.status
         return None
+
+
+class AnsibleScheduleSerializer(serializers.ModelSerializer):
+    task_name = serializers.CharField(source='task.name', read_only=True)
+    creator_name = serializers.CharField(source='creator.username', read_only=True)
+
+    class Meta:
+        model = AnsibleSchedule
+        fields = [
+            'id', 'name', 'task', 'task_name', 'is_enabled', 'schedule_type',
+            'cron_expression', 'interval_value', 'interval_unit',
+            'periodic_task_id', 'next_run_time', 'creator', 'creator_name',
+            'create_time', 'update_time'
+        ]
+        read_only_fields = ['creator', 'create_time', 'update_time', 'periodic_task_id', 'next_run_time']
+
+    def create(self, validated_data):
+        validated_data['creator'] = self.context['request'].user
+        return super().create(validated_data)

@@ -2,8 +2,8 @@ import json
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from apps.task_management.models import AnsibleTask, AnsibleExecution
-from apps.task_management.serializers import AnsibleTaskSerializer, AnsibleExecutionSerializer, TaskLogSerializer
+from apps.task_management.models import AnsibleTask, AnsibleExecution, AnsibleSchedule
+from apps.task_management.serializers import AnsibleTaskSerializer, AnsibleExecutionSerializer, TaskLogSerializer, AnsibleScheduleSerializer
 from apps.task_management.tasks import run_ansible_task
 from apps.task_management.filters import AnsibleTaskFilter, AnsibleExecutionFilter
 from config.celery import app as celery_app
@@ -154,3 +154,86 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
         execution.save()
 
         return Response({"message": "终止指令已下发"})
+
+
+class AnsibleScheduleViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    """
+    Ansible 定时调度管理
+    """
+    queryset = AnsibleSchedule.objects.all().order_by('-create_time')
+    serializer_class = AnsibleScheduleSerializer
+    permission_classes = [SmartRBACPermission]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
+    search_fields = ['name']
+    ordering_fields = ['create_time', 'update_time']
+    resource_type = 'ansible_schedule'
+    resource_owner_field = 'creator'
+    resource_code = 'tasks:ansible_schedules'
+    permission_labels = {
+        'view':   {'name': '查看定时调度', 'danger': 'safe'},
+        'add':    {'name': '新建定时调度', 'danger': 'warn'},
+        'edit':   {'name': '编辑定时调度', 'danger': 'warn'},
+        'delete': {'name': '删除定时调度', 'danger': 'high'},
+        'toggle': {'name': '启停定时调度', 'danger': 'warn'},
+    }
+
+    def perform_create(self, serializer):
+        schedule = serializer.save(creator=self.request.user)
+        # 同步到 Celery Beat
+        from apps.task_management.tasks import sync_schedule_to_beat
+        sync_schedule_to_beat(schedule)
+
+    def perform_update(self, serializer):
+        schedule = serializer.save()
+        # 同步到 Celery Beat
+        from apps.task_management.tasks import sync_schedule_to_beat
+        sync_schedule_to_beat(schedule)
+
+    def perform_destroy(self, instance):
+        # 先删除 Celery Beat 中的任务
+        from apps.task_management.tasks import sync_schedule_to_beat
+        instance.is_enabled = False
+        sync_schedule_to_beat(instance)
+        instance.delete()
+
+    @action(detail=True, methods=['post'])
+    def toggle(self, request, pk=None):
+        """
+        切换启用/禁用状态
+        """
+        schedule = self.get_object()
+        schedule.is_enabled = not schedule.is_enabled
+        schedule.save(update_fields=['is_enabled'])
+
+        # 同步到 Celery Beat
+        from apps.task_management.tasks import sync_schedule_to_beat
+        sync_schedule_to_beat(schedule)
+
+        return Response({
+            'is_enabled': schedule.is_enabled,
+            'message': f"已{'启用' if schedule.is_enabled else '禁用'}定时调度"
+        })
+
+    @action(detail=True, methods=['post'])
+    def trigger(self, request, pk=None):
+        """
+        手动触发一次执行
+        """
+        schedule = self.get_object()
+        task = schedule.task
+
+        execution = AnsibleExecution.objects.create(
+            task=task,
+            executor=request.user,
+            status='pending'
+        )
+
+        extra_vars = _get_extra_vars(task)
+        res = run_ansible_task.delay(execution.id, extra_vars)
+        execution.celery_task_id = res.id
+        execution.save()
+
+        return Response({
+            "message": "定时任务已手动触发",
+            "execution_id": execution.id
+        }, status=status.HTTP_201_CREATED)

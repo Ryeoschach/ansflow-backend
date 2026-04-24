@@ -92,3 +92,53 @@ class TaskLog(models.Model):
         db_table = 'task_log'
         verbose_name = "任务日志"
         verbose_name_plural = verbose_name
+
+
+class AnsibleSchedule(BaseModel):
+    """
+    Ansible 定时任务调度
+    """
+    CRON_CHOICES = (
+        ('custom', '自定义 Cron'),
+        ('interval', '固定间隔'),
+    )
+    INTERVAL_UNIT_CHOICES = (
+        ('minutes', '分钟'),
+        ('hours', '小时'),
+        ('days', '天'),
+    )
+
+    name = models.CharField(max_length=128, verbose_name="调度名称")
+    task = models.ForeignKey(AnsibleTask, on_delete=models.CASCADE, related_name='schedules', verbose_name="关联任务模板")
+
+    # 是否启用
+    is_enabled = models.BooleanField(default=True, verbose_name="是否启用")
+
+    # 调度类型
+    schedule_type = models.CharField(max_length=20, choices=CRON_CHOICES, default='custom', verbose_name="调度类型")
+
+    # Cron 表达式（分钟 小时 天 月 周）
+    cron_expression = models.CharField(max_length=64, blank=True, null=True, verbose_name="Cron 表达式",
+                                        help_text="格式: 分 时 日 月 周，如 0 3 * * * 表示每天凌晨3点")
+
+    # 间隔调度
+    interval_value = models.IntegerField(default=1, verbose_name="间隔值")
+    interval_unit = models.CharField(max_length=10, choices=INTERVAL_UNIT_CHOICES, default='hours', verbose_name="间隔单位")
+
+    # Celery Beat 的 task name（关联 djcelery_solar_schedule 或自定义 periodic_task）
+    periodic_task_id = models.IntegerField(null=True, blank=True, verbose_name="Celery PeriodicTask ID")
+
+    # 下次执行时间
+    next_run_time = models.DateTimeField(null=True, blank=True, verbose_name="下次执行时间")
+
+    # 创建者
+    creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='created_schedules', verbose_name="创建者")
+
+    class Meta:
+        db_table = 'task_ansible_schedule'
+        verbose_name = "Ansible 定时调度"
+        verbose_name_plural = verbose_name
+        ordering = ['-create_time']
+
+    def __str__(self):
+        return f"{self.name} - {self.task.name}"
