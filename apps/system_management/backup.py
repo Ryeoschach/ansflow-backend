@@ -512,10 +512,11 @@ class BackupImporter:
                         if value is not None:
                             new_related_id = self.id_map.get(related_model_name, {}).get(value)
                             if new_related_id is not None:
-                                # FK 引用可以映射，存入 fk_lookups 用于 lookup，不放入 create_data（避免 raw int）
+                                # FK 可映射，同时加入 fk_lookups（lookup用）和 create_data（创建用）
                                 fk_lookups[field_name] = new_related_id
+                                create_data[field_name] = new_related_id
                             else:
-                                # FK 引用在新库找不到映射，标记为 None（避免 Django FK 字段收到 raw int）
+                                # FK 不可映射，设为 None（Django 会验证 FK nullable）
                                 create_data[field_name] = None
                         # None 值不设置，跳过
                     # 处理 User.password（不迁移密码）
