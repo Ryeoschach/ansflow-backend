@@ -450,11 +450,17 @@ class BackupImporter:
         for model_name, model_info in sorted_models:
             records = self.data.get(model_name, [])
             if records:
-                self._import_model(model_info, records)
+                try:
+                    self._import_model(model_info, records)
+                except Exception as e:
+                    self._error(f"  模型 {model_name} 导入失败: {str(e)}，继续处理下一个模型")
 
         # 第二遍：处理 M2M 关系
         for (model_name, obj_id, m2m_field), related_ids in self.m2m_buffer.items():
-            self._attach_m2m(model_name, obj_id, m2m_field, related_ids)
+            try:
+                self._attach_m2m(model_name, obj_id, m2m_field, related_ids)
+            except Exception as e:
+                self._error(f"  建立 M2M 关系失败 {model_name}.{m2m_field}: {str(e)}，继续")
 
         return {
             'success': len(self.errors) == 0,
