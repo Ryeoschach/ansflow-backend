@@ -17,7 +17,8 @@
 import json
 import gzip
 import logging
-from datetime import datetime
+import uuid
+from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
@@ -142,18 +143,21 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='k8s_management', model_name='K8sCluster', table_name='k8s_clusters',
         exclude_fields=['remark'],
         encrypted_fields=['kubeconfig_content', 'token'],
+        unique_fields=['name'],
         export_order=10,
     ),
     'ImageRegistry': ModelInfo(
         app_label='registry_management', model_name='ImageRegistry', table_name='registry_image_registry',
         exclude_fields=['remark'],
         encrypted_fields=['password'],
+        unique_fields=['name'],
         export_order=11,
     ),
     'ArtifactoryInstance': ModelInfo(
         app_label='registry_management', model_name='ArtifactoryInstance', table_name='registry_artifactory_instance',
         exclude_fields=['remark'],
         encrypted_fields=['api_key', 'password'],
+        unique_fields=['name'],
         export_order=11.5,
     ),
     'ArtifactoryRepository': ModelInfo(
@@ -231,17 +235,20 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'credential': ('SshCredential', 'id'),
         },
         exclude_fields=['remark'],
+        unique_fields=['hostname'],
         export_order=17,
     ),
     'ResourcePool': ModelInfo(
         app_label='host_management', model_name='ResourcePool', table_name='cmdb_resource_pool',
         m2m_fields={'hosts': 'Host'},
         exclude_fields=['remark'],
+        unique_fields=['code'],
         export_order=18,
     ),
     'CIEnvironment': ModelInfo(
         app_label='pipeline_management', model_name='CIEnvironment', table_name='pipeline_ci_environment',
         exclude_fields=['remark'],
+        unique_fields=['name'],
         export_order=19,
     ),
     'AnsibleTask': ModelInfo(
@@ -274,6 +281,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     'ConfigCategory': ModelInfo(
         app_label='config_center', model_name='ConfigCategory', table_name='config_center_category',
         exclude_fields=['remark'],
+        unique_fields=['name'],
         export_order=20,
     ),
     'ConfigItem': ModelInfo(
@@ -341,9 +349,15 @@ class BackupExporter:
                         continue
 
                     value = getattr(obj, field.name)
-                    # 外键只记录 ID
+                    # 处理外键
                     if field.is_relation and value:
                         record[field.name] = value.pk
+                    # 处理日期时间
+                    elif isinstance(value, (datetime, date)):
+                        record[field.name] = value.isoformat()
+                    # 处理 UUID
+                    elif isinstance(value, uuid.UUID):
+                        record[field.name] = str(value)
                     else:
                         record[field.name] = value
 
@@ -380,6 +394,7 @@ class BackupImporter:
         self.metadata = backup_data.get('metadata', {})
         self.id_map: Dict[str, Dict[int, int]] = {}
         self.errors: List[str] = []
+        self.imported_counts: Dict[str, int] = {}
 
     def _log(self, msg: str):
         logger.info(f"[Restore] {msg}")
@@ -394,34 +409,40 @@ class BackupImporter:
 
         sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
 
-        # Phase 1: 创建基础实例（忽略所有 FK 和 M2M）
-        self._log("=== 阶段 1: 创建基础实例 ===")
-        for model_name, model_info in sorted_models:
-            records = self.data.get(model_name, [])
-            if records:
-                self._import_phase_1(model_name, model_info, records)
+        try:
+            with transaction.atomic():
+                # Phase 1: 创建基础实例（忽略所有 FK 和 M2M）
+                self._log("=== 阶段 1: 创建基础实例 ===")
+                for model_name, model_info in sorted_models:
+                    records = self.data.get(model_name, [])
+                    if records:
+                        self._import_phase_1(model_name, model_info, records)
 
-        # Phase 2: 回填 FK 关系
-        self._log("=== 阶段 2: 回填 FK 关系 ===")
-        for model_name, model_info in sorted_models:
-            records = self.data.get(model_name, [])
-            if records:
-                self._import_phase_2(model_name, model_info, records)
+                # Phase 2: 回填 FK 关系
+                self._log("=== 阶段 2: 回填 FK 关系 ===")
+                for model_name, model_info in sorted_models:
+                    records = self.data.get(model_name, [])
+                    if records:
+                        self._import_phase_2(model_name, model_info, records)
 
-        # Phase 3: 建立 M2M 关系
-        self._log("=== 阶段 3: 建立 M2M 关系 ===")
-        for model_name, model_info in sorted_models:
-            records = self.data.get(model_name, [])
-            if records:
-                self._import_phase_3(model_name, model_info, records)
+                # Phase 3: 建立 M2M 关系
+                self._log("=== 阶段 3: 建立 M2M 关系 ===")
+                for model_name, model_info in sorted_models:
+                    records = self.data.get(model_name, [])
+                    if records:
+                        self._import_phase_3(model_name, model_info, records)
+
+        except Exception as e:
+            self._error(f"恢复过程中发生严重错误: {str(e)}")
 
         return {
             'success': len(self.errors) == 0,
             'errors': self.errors,
+            'imported': self.imported_counts,
         }
 
     def _import_phase_1(self, model_name: str, model_info: ModelInfo, records: List[Dict]):
-        """阶段 1: 仅创建基础实例，忽略 FK 和 M2M"""
+        """阶段 1: 仅创建基础实例，忽略 FK 和 M2M (但为了满足 NOT NULL 约束，尝试提前填充已存在的 FK)"""
         from django.apps import apps
         Model = apps.get_model(model_info.app_label, model_info.model_name)
 
@@ -444,8 +465,15 @@ class BackupImporter:
                 for field_name, value in record.items():
                     if field_name.endswith('_ids'):
                         continue  # 跳过 M2M
+
                     if field_name in model_info.fk_fields:
-                        continue  # 跳过 FK
+                        # 尝试提前填充 FK，以满足 NOT NULL 约束
+                        rel_model, _ = model_info.fk_fields[field_name]
+                        new_fk_id = self.id_map.get(rel_model, {}).get(value)
+                        if new_fk_id:
+                            clean_data[field_name + '_id'] = new_fk_id
+                        continue
+
                     if field_name in model_info.exclude_fields:
                         continue
                     if field_name in model_info.encrypted_fields:
@@ -475,15 +503,20 @@ class BackupImporter:
                 else:
                     # 创建（可能因 UNIQUE 约束失败，改用 get_or_create）
                     try:
-                        obj = Model.objects.create(**clean_data)
-                        self._log(f"  创建: {model_name} id={obj.id} (旧id={old_id})")
+                        with transaction.atomic():
+                            obj = Model.objects.create(**clean_data)
+                            self._log(f"  创建: {model_name} id={obj.id} (旧id={old_id})")
                     except Exception:
                         # UNIQUE 约束失败时，改用 get_or_create（确保记录存在即可，不重复创建）
                         lookup = {k: record[k] for k in model_info.unique_fields if k in record}
-                        obj, _ = Model.objects.get_or_create(defaults=clean_data, **lookup)
-                        self._log(f"  创建(get_or_create): {model_name} id={obj.id} (旧id={old_id})")
+                        if lookup:
+                            obj, _ = Model.objects.get_or_create(defaults=clean_data, **lookup)
+                            self._log(f"  创建(get_or_create): {model_name} id={obj.id} (旧id={old_id})")
+                        else:
+                            raise
 
                 self.id_map.setdefault(model_name, {})[old_id] = obj.id
+                self.imported_counts[model_name] = self.imported_counts.get(model_name, 0) + 1
 
             except Exception as e:
                 self._error(f"  {model_name}[{old_id}] Phase1 失败: {str(e)}")
