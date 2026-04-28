@@ -558,30 +558,39 @@ class BackupImporter:
                         # 从 fk_lookups 中移除，避免干扰 update_or_create 的 filter
                         fk_lookups.pop(field_name, None)
 
-                # 创建或更新对象（避免 update_or_create 抛 UNIQUE 异常导致事务中断）
-                created = False  # 初始化，避免 fallback 分支中未定义
+                # 创建或更新对象
+                created = False
                 try:
-                    # 优先用 unique_fields + fk_lookups 查找已存在记录
+                    # 确定查找条件：优先 unique_fields，其次 fk_lookups，最后用 old_id
+                    if model_info.unique_fields:
+                        lookup = {}
+                        for k in model_info.unique_fields:
+                            if k in fk_lookups:
+                                lookup[k] = fk_lookups[k]
+                            elif k in record:
+                                lookup[k] = record[k]
+                        if lookup:
+                            lookup_kwargs = lookup
+                    elif not lookup_kwargs:
+                        # fk_lookups 被自引用 FK 清空后，使用 old_id 作为 fallback
+                        lookup_kwargs = {'id': old_id}
+
                     if lookup_kwargs:
                         obj = Model.objects.filter(**lookup_kwargs).first()
-                        if obj:
-                            # 更新已有记录（跳过 FK raw int）
-                            for k, v in create_data.items():
-                                if k in model_info.fk_fields and v is not None and not isinstance(v, bool):
-                                    continue  # 跳过未映射的 FK raw int
-                                setattr(obj, k, v)
-                            obj.save()
-                            created = False
-                        else:
-                            # 不存在则创建
-                            obj = Model.objects.create(**create_data)
-                            created = True
                     else:
-                        # 无 lookup 条件时用 update_or_create（不应走到这里）
-                        obj, created = Model.objects.update_or_create(
-                            defaults=create_data,
-                            **lookup_kwargs
-                        )
+                        obj = None
+
+                    if obj:
+                        # 更新已有记录
+                        for k, v in create_data.items():
+                            setattr(obj, k, v)
+                        obj.save()
+                        created = False
+                    else:
+                        # 不存在则创建
+                        obj = Model.objects.create(**create_data)
+                        created = True
+
                     # 单独处理自引用 FK（先获取实例再赋值）
                     for field_name, fk_id in self_referential_fk_values.items():
                         target = Model.objects.get(id=fk_id)
