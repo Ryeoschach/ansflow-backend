@@ -195,6 +195,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='pipeline_management', model_name='Pipeline', table_name='pipeline_template',
         fk_fields={'creator': ('User', 'id')},
         exclude_fields=['remark'],
+        unique_fields=['name'],  # name 是唯一的
         export_order=13,
     ),
     'PipelineVersion': ModelInfo(
@@ -204,6 +205,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'creator': ('User', 'id'),
         },
         exclude_fields=['remark'],
+        unique_fields=['pipeline', 'version_number'],  # unique_together
         export_order=13.5,
     ),
     'PipelineWebhook': ModelInfo(
@@ -286,6 +288,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'executor': ('User', 'id'),
         },
         exclude_fields=['remark'],
+        # 无唯一字段，用 FK 组合查找
         export_order=19.6,
     ),
     'AnsibleSchedule': ModelInfo(
@@ -520,7 +523,11 @@ class BackupImporter:
                 if model_info.unique_fields:
                     for field_name in model_info.unique_fields:
                         if field_name in record:
-                            lookup_kwargs[field_name] = record[field_name]
+                            # 如果是 FK 字段，优先使用 fk_lookups 中已映射的新 id
+                            if field_name in fk_lookups:
+                                lookup_kwargs[field_name] = fk_lookups[field_name]
+                            else:
+                                lookup_kwargs[field_name] = record[field_name]
                     if not lookup_kwargs:
                         # 没有唯一字段时，使用 FK 组合作为查找条件
                         lookup_kwargs = dict(fk_lookups)
@@ -560,8 +567,14 @@ class BackupImporter:
                     # 如果唯一字段查找失败（多条记录），尝试回退
                     if 'get() returned more than one' in str(e):
                         if model_info.unique_fields:
-                            # 尝试用唯一字段查找
-                            filter_kwargs = {k: record[k] for k in model_info.unique_fields if k in record}
+                            # 构建过滤条件时，对 FK 字段使用映射后的新 id
+                            filter_kwargs = {}
+                            for k in model_info.unique_fields:
+                                if k in record:
+                                    if k in fk_lookups:
+                                        filter_kwargs[k] = fk_lookups[k]
+                                    else:
+                                        filter_kwargs[k] = record[k]
                             if filter_kwargs:
                                 obj = Model.objects.filter(**filter_kwargs).first()
                                 if obj:
