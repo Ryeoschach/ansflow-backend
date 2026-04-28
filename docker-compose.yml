@@ -1,18 +1,141 @@
 services:
+  # --- 核心后端 API ---
+  ansflow-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["uv", "run", "gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.production
+      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
+      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
+      - REDIS_URL=redis://ansflow-redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./media:/app/media
+      - ./logs:/app/logs
+    depends_on:
+      ansflow-db:
+        condition: service_healthy
+      ansflow-redis:
+        condition: service_healthy
+    networks:
+      - ansflow-network
+    restart: always
+
+  # --- Celery Worker ---
   ansflow-worker:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile.worker
+    command: ["celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
     environment:
-      - DATABASE_URL=postgres://...
+      - DJANGO_SETTINGS_MODULE=config.settings.production
+      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
+      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
       - REDIS_URL=redis://ansflow-redis:6379/0
-      - SECRET_KEY=your_secret_key
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
+      - ANSFLOW_WORKER_NAME=default-worker
     volumes:
-      # 挂载临时工作目录，保证多个 Node 之间能共享 Git 源码
       - /tmp/ansflow_workspaces:/tmp/ansflow_workspaces
-      # 挂载 Helm 的持久化目录
-      - ./backend/helm_charts:/tmp/helm_charts
+      - ./helm_charts:/tmp/helm_charts
+      - ./media:/app/media
+      - ./logs:/app/logs
     depends_on:
-      - ansflow-redis
-      - ansflow-db
+      ansflow-db:
+        condition: service_healthy
+      ansflow-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ansflow-network
+    restart: always
 
+  # --- Celery Beat (定时任务) ---
+  ansflow-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["celery", "-A", "config", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.production
+      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
+      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
+      - REDIS_URL=redis://ansflow-redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      ansflow-db:
+        condition: service_healthy
+      ansflow-redis:
+        condition: service_healthy
+    networks:
+      - ansflow-network
+    restart: always
+
+  # --- Flower (Celery 监控面板) ---
+  ansflow-flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["celery", "-A", "config", "flower", "--port=5555"]
+    environment:
+      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
+      - REDIS_URL=redis://ansflow-redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      ansflow-redis:
+        condition: service_healthy
+    networks:
+      - ansflow-network
+    restart: always
+
+  # --- PostgreSQL 数据库 ---
+  ansflow-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=ansflow
+      - POSTGRES_USER=ansflow_user
+      - POSTGRES_PASSWORD=ansflow_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ansflow_user -d ansflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ansflow-network
+    restart: always
+
+  # --- Redis (Broker & Cache) ---
+  ansflow-redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ansflow-network
+    restart: always
+
+networks:
+  ansflow-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
