@@ -101,7 +101,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     'Permission': ModelInfo(
         app_label='rbac_permission', model_name='Permission', table_name='rbac_permission',
         exclude_fields=['remark'],
-        unique_fields=['code'],
+        unique_fields=['code'],  # 优先用 code 查找
         export_order=1,
     ),
     'Menu': ModelInfo(
@@ -539,7 +539,7 @@ class BackupImporter:
                     if 'get() returned more than one' in str(e):
                         if model_info.unique_fields:
                             # 尝试用唯一字段查找
-                            filter_kwargs = {k: v for k in model_info.unique_fields if k in record}
+                            filter_kwargs = {k: record[k] for k in model_info.unique_fields if k in record}
                             if filter_kwargs:
                                 obj = Model.objects.filter(**filter_kwargs).first()
                                 if obj:
