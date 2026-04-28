@@ -490,6 +490,7 @@ class BackupImporter:
                         create_data[field_name] = value
 
                 # 构建查找条件（排除自引用 FK，它们不适合做 lookup 条件）
+                lookup_kwargs = {}  # 必须初始化，否则 line 497 报错
                 self_referential_fk_values = {}  # 自引用 FK 的值（需要获取实例）
                 if model_info.unique_fields:
                     for field_name in model_info.unique_fields:
@@ -512,11 +513,11 @@ class BackupImporter:
                         # 从 fk_lookups 中移除，避免干扰 update_or_create 的 filter
                         fk_lookups.pop(field_name, None)
 
-                # 创建或更新对象
+                # 创建或更新对象（优先用唯一字段查找）
                 try:
                     obj, created = Model.objects.update_or_create(
                         defaults=create_data,
-                        **fk_lookups
+                        **lookup_kwargs
                     )
                     # 单独处理自引用 FK（先获取实例再赋值）
                     for field_name, fk_id in self_referential_fk_values.items():
