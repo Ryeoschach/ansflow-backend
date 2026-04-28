@@ -473,9 +473,15 @@ class BackupImporter:
                     obj.save()
                     self._log(f"  更新: {model_name} id={obj.id} (旧id={old_id})")
                 else:
-                    # 创建
-                    obj = Model.objects.create(**clean_data)
-                    self._log(f"  创建: {model_name} id={obj.id} (旧id={old_id})")
+                    # 创建（可能因 UNIQUE 约束失败，改用 get_or_create）
+                    try:
+                        obj = Model.objects.create(**clean_data)
+                        self._log(f"  创建: {model_name} id={obj.id} (旧id={old_id})")
+                    except Exception:
+                        # UNIQUE 约束失败时，改用 get_or_create（确保记录存在即可，不重复创建）
+                        lookup = {k: record[k] for k in model_info.unique_fields if k in record}
+                        obj, _ = Model.objects.get_or_create(defaults=clean_data, **lookup)
+                        self._log(f"  创建(get_or_create): {model_name} id={obj.id} (旧id={old_id})")
 
                 self.id_map.setdefault(model_name, {})[old_id] = obj.id
 
