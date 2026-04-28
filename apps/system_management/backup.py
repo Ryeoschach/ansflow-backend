@@ -567,7 +567,7 @@ class BackupImporter:
                         obj.save(update_fields=list(self_referential_fk_values.keys()))
                 except Exception as e:
                     # 如果唯一字段查找失败（多条记录），尝试回退
-                    if 'get() returned more than one' in str(e):
+                    if 'returned more than one' in str(e) or 'UNIQUE constraint failed' in str(e):
                         if model_info.unique_fields:
                             # 构建过滤条件时，对 FK 字段使用映射后的新 id
                             filter_kwargs = {}
@@ -582,8 +582,10 @@ class BackupImporter:
                                 if obj:
                                     # 避免将 FK 字段的 raw int 传入 setattr（Django FK 需要 model instance）
                                     for k, v in create_data.items():
-                                        if k in model_info.fk_fields and isinstance(v, int):
-                                            continue  # 跳过未映射的 FK raw int
+                                        if k in model_info.fk_fields and v is not None and not isinstance(v, bool):
+                                            # FK 字段只接受 None 或 model instance，不接受 raw int
+                                            self._log(f"  跳过 FK 字段 {k} 的无效值 (raw int={v})，该 FK 未被映射")
+                                            continue
                                         setattr(obj, k, v)
                                     obj.save()
                                     created = False
