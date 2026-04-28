@@ -2,6 +2,7 @@ import time
 import datetime
 import logging
 import subprocess
+from django.utils import timezone
 from django.db import connection
 from django_redis import get_redis_connection
 from django.conf import settings
@@ -77,16 +78,44 @@ class CeleryMonitor(BaseMonitor):
 
     def perform_check(self):
         from config.celery import app
-        # 耗时操作，增加超时控制
+        from django_celery_beat.models import PeriodicTask
+        from django_redis import get_redis_connection
+        
+        # 1. 检查 Worker 连通性
         i = app.control.inspect(timeout=3.0)
         pings = i.ping()
         active_workers = len(pings) if pings else 0
         
-        # 统计在线 Worker
+        # 2. 检查 Beat 存活状态 (通过检测是否有定期任务在过去 5 分钟内被调度)
+        # 这是一个启发式检查，如果没有任何任务在运行，可能无法准确判断，但通常系统会有内置的心跳任务
+        recent_tasks = PeriodicTask.objects.filter(enabled=True, last_run_at__isnull=False)
+        beat_active = False
+        if recent_tasks.exists():
+            last_run = recent_tasks.order_by('-last_run_at').first().last_run_at
+            if last_run and (timezone.now() - last_run).total_seconds() < 300:
+                beat_active = True
+        
+        # 3. 检查队列积压 (从 Redis 读取)
+        queue_length = 0
+        try:
+            conn = get_redis_connection("default")
+            # 默认队列名称通常为 'celery'
+            queue_length = conn.llen('celery')
+        except Exception as e:
+            logger.warning(f"Failed to get queue length: {e}")
+
+        status = "healthy"
+        if active_workers == 0:
+            status = "unhealthy"
+        elif not beat_active or queue_length > 100:
+            status = "warning"
+
         return {
             "active_workers": active_workers,
-            "status": "healthy" if active_workers > 0 else "warning",
-            "info": f"在线节点: {active_workers}"
+            "beat_status": "online" if beat_active else "offline",
+            "queue_length": queue_length,
+            "status": status,
+            "info": f"Worker: {active_workers}, Beat: {'在线' if beat_active else '离线'}, 积压: {queue_length}"
         }
 
 class KubernetesMonitor(BaseMonitor):
