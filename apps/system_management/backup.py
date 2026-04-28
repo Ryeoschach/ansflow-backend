@@ -535,14 +535,24 @@ class BackupImporter:
                     if self_referential_fk_values:
                         obj.save(update_fields=list(self_referential_fk_values.keys()))
                 except Exception as e:
-                    # 如果唯一字段查找失败（多条记录），尝试只用 fk_lookups 查找
-                    if 'get() returned more than one' in str(e) and fk_lookups:
-                        obj = Model.objects.filter(**fk_lookups).first()
-                        if obj:
-                            for k, v in create_data.items():
-                                setattr(obj, k, v)
-                            obj.save()
-                            created = False
+                    # 如果唯一字段查找失败（多条记录），尝试回退
+                    if 'get() returned more than one' in str(e):
+                        if model_info.unique_fields:
+                            # 尝试用唯一字段查找
+                            filter_kwargs = {k: v for k in model_info.unique_fields if k in record}
+                            if filter_kwargs:
+                                obj = Model.objects.filter(**filter_kwargs).first()
+                                if obj:
+                                    for k, v in create_data.items():
+                                        setattr(obj, k, v)
+                                    obj.save()
+                                    created = False
+                                else:
+                                    self._error(f"  导入 {model_info.model_name} id={old_id} 失败: 无法找到匹配记录 (unique_fields)")
+                                    continue
+                            else:
+                                self._error(f"  导入 {model_info.model_name} id={old_id} 失败: 无可用查找条件")
+                                continue
                         else:
                             raise
                     else:
