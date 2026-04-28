@@ -552,13 +552,30 @@ class BackupImporter:
                         # 从 fk_lookups 中移除，避免干扰 update_or_create 的 filter
                         fk_lookups.pop(field_name, None)
 
-                # 创建或更新对象（优先用唯一字段查找）
+                # 创建或更新对象（避免 update_or_create 抛 UNIQUE 异常导致事务中断）
                 created = False  # 初始化，避免 fallback 分支中未定义
                 try:
-                    obj, created = Model.objects.update_or_create(
-                        defaults=create_data,
-                        **lookup_kwargs
-                    )
+                    # 优先用 unique_fields + fk_lookups 查找已存在记录
+                    if lookup_kwargs:
+                        obj = Model.objects.filter(**lookup_kwargs).first()
+                        if obj:
+                            # 更新已有记录（跳过 FK raw int）
+                            for k, v in create_data.items():
+                                if k in model_info.fk_fields and v is not None and not isinstance(v, bool):
+                                    continue  # 跳过未映射的 FK raw int
+                                setattr(obj, k, v)
+                            obj.save()
+                            created = False
+                        else:
+                            # 不存在则创建
+                            obj = Model.objects.create(**create_data)
+                            created = True
+                    else:
+                        # 无 lookup 条件时用 update_or_create（不应走到这里）
+                        obj, created = Model.objects.update_or_create(
+                            defaults=create_data,
+                            **lookup_kwargs
+                        )
                     # 单独处理自引用 FK（先获取实例再赋值）
                     for field_name, fk_id in self_referential_fk_values.items():
                         target = Model.objects.get(id=fk_id)
@@ -566,39 +583,8 @@ class BackupImporter:
                     if self_referential_fk_values:
                         obj.save(update_fields=list(self_referential_fk_values.keys()))
                 except Exception as e:
-                    # 如果唯一字段查找失败（多条记录），尝试回退
-                    if 'returned more than one' in str(e) or 'UNIQUE constraint failed' in str(e):
-                        if model_info.unique_fields:
-                            # 构建过滤条件时，对 FK 字段使用映射后的新 id
-                            filter_kwargs = {}
-                            for k in model_info.unique_fields:
-                                if k in record:
-                                    if k in fk_lookups:
-                                        filter_kwargs[k] = fk_lookups[k]
-                                    else:
-                                        filter_kwargs[k] = record[k]
-                            if filter_kwargs:
-                                obj = Model.objects.filter(**filter_kwargs).first()
-                                if obj:
-                                    # 避免将 FK 字段的 raw int 传入 setattr（Django FK 需要 model instance）
-                                    for k, v in create_data.items():
-                                        if k in model_info.fk_fields and v is not None and not isinstance(v, bool):
-                                            # FK 字段只接受 None 或 model instance，不接受 raw int
-                                            self._log(f"  跳过 FK 字段 {k} 的无效值 (raw int={v})，该 FK 未被映射")
-                                            continue
-                                        setattr(obj, k, v)
-                                    obj.save()
-                                    created = False
-                                else:
-                                    self._error(f"  导入 {model_info.model_name} id={old_id} 失败: 无法找到匹配记录 (unique_fields)")
-                                    continue
-                            else:
-                                self._error(f"  导入 {model_info.model_name} id={old_id} 失败: 无可用查找条件")
-                                continue
-                        else:
-                            raise
-                    else:
-                        raise
+                    self._error(f"  导入 {model_info.model_name} id={old_id} 失败: {str(e)}")
+                    continue
 
                 # 记录新 ID 映射
                 self.id_map.setdefault(model_info.model_name, {})[old_id] = obj.id
