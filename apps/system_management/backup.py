@@ -92,6 +92,8 @@ class ModelInfo:
     export_order: int = 99
     # 包含加密字段的模型（导出时跳过这些字段，导入时需手动重新录入）
     encrypted_fields: List[str] = field(default_factory=list)
+    # 唯一标识字段（用于查找已存在记录），为空则仅用 pk 查找
+    unique_fields: List[str] = field(default_factory=list)
 
 
 # 定义所有需要备份的模型及其元信息
@@ -99,29 +101,34 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     'Permission': ModelInfo(
         app_label='rbac_permission', model_name='Permission', table_name='rbac_permission',
         exclude_fields=['remark'],
+        unique_fields=['code'],
         export_order=1,
     ),
     'Menu': ModelInfo(
         app_label='rbac_permission', model_name='Menu', table_name='rbac_permission_menu',
         fk_fields={'parent': ('Menu', 'id')},
         exclude_fields=['remark'],
+        unique_fields=['key'],
         export_order=2,
     ),
     'Credential': ModelInfo(
         app_label='credentials_management', model_name='Credential', table_name='sys_credential_vault',
         exclude_fields=['remark'],
         encrypted_fields=['secret_value'],
+        unique_fields=['name'],
         export_order=3,
     ),
     'SshCredential': ModelInfo(
         app_label='host_management', model_name='SshCredential', table_name='cmdb_ssh_credential',
         exclude_fields=['remark'],
         encrypted_fields=['password', 'private_key', 'passphrase'],
+        unique_fields=['name'],
         export_order=4,
     ),
     'Environment': ModelInfo(
         app_label='host_management', model_name='Environment', table_name='cmdb_environment',
         exclude_fields=['remark'],
+        unique_fields=['name'],
         export_order=5,
     ),
     'Role': ModelInfo(
@@ -133,6 +140,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'menus': 'Menu',
         },
         exclude_fields=['remark'],
+        unique_fields=['code'],
         export_order=6,
     ),
     'DataPolicy': ModelInfo(
@@ -476,11 +484,39 @@ class BackupImporter:
                     else:
                         create_data[field_name] = value
 
+                # 构建查找条件
+                lookup_kwargs = {}
+                if model_info.unique_fields:
+                    # 使用唯一字段查找（不依赖 id，避免外键不一致问题）
+                    for field_name in model_info.unique_fields:
+                        if field_name in record:
+                            lookup_kwargs[field_name] = record[field_name]
+                    if not lookup_kwargs:
+                        # 没有可用的唯一字段，回退到 id
+                        lookup_kwargs = {'id': old_id}
+                else:
+                    lookup_kwargs = {'id': old_id}
+
                 # 创建或更新对象
-                obj, created = Model.objects.update_or_create(
-                    defaults=create_data,
-                    **fk_lookups
-                )
+                try:
+                    obj, created = Model.objects.update_or_create(
+                        defaults=create_data,
+                        **lookup_kwargs
+                    )
+                except Exception as e:
+                    # 如果唯一字段查找失败（多条记录），尝试只用 fk_lookups 查找
+                    if 'get() returned more than one' in str(e) and fk_lookups:
+                        # 尝试用外键组合查找
+                        obj = Model.objects.filter(**fk_lookups).first()
+                        if obj:
+                            for k, v in create_data.items():
+                                setattr(obj, k, v)
+                            obj.save()
+                            created = False
+                        else:
+                            raise
+                    else:
+                        raise
 
                 # 记录新 ID 映射
                 self.id_map.setdefault(model_info.model_name, {})[old_id] = obj.id
