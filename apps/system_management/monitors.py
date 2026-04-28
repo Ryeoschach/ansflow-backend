@@ -78,7 +78,6 @@ class CeleryMonitor(BaseMonitor):
 
     def perform_check(self):
         from config.celery import app
-        from django_celery_beat.models import PeriodicTask
         from django_redis import get_redis_connection
         
         # 1. 检查 Worker 连通性
@@ -86,16 +85,7 @@ class CeleryMonitor(BaseMonitor):
         pings = i.ping()
         active_workers = len(pings) if pings else 0
         
-        # 2. 检查 Beat 存活状态 (通过检测是否有定期任务在过去 5 分钟内被调度)
-        # 这是一个启发式检查，如果没有任何任务在运行，可能无法准确判断，但通常系统会有内置的心跳任务
-        recent_tasks = PeriodicTask.objects.filter(enabled=True, last_run_at__isnull=False)
-        beat_active = False
-        if recent_tasks.exists():
-            last_run = recent_tasks.order_by('-last_run_at').first().last_run_at
-            if last_run and (timezone.now() - last_run).total_seconds() < 300:
-                beat_active = True
-        
-        # 3. 检查队列积压 (从 Redis 读取)
+        # 2. 检查队列积压 (从 Redis 读取)
         queue_length = 0
         try:
             conn = get_redis_connection("default")
@@ -107,15 +97,39 @@ class CeleryMonitor(BaseMonitor):
         status = "healthy"
         if active_workers == 0:
             status = "unhealthy"
-        elif not beat_active or queue_length > 100:
+        elif queue_length > 100:
             status = "warning"
 
         return {
             "active_workers": active_workers,
-            "beat_status": "online" if beat_active else "offline",
             "queue_length": queue_length,
             "status": status,
-            "info": f"Worker: {active_workers}, Beat: {'在线' if beat_active else '离线'}, 积压: {queue_length}"
+            "info": f"在线 Worker: {active_workers}, 队列积压: {queue_length}"
+        }
+
+class CeleryBeatMonitor(BaseMonitor):
+    name = "celery_beat"
+    label = "定时调度引擎"
+    icon = "ClockCircleOutlined"
+
+    def perform_check(self):
+        from django_celery_beat.models import PeriodicTask
+        
+        # 启发式检查：检查是否有定期任务在过去 5 分钟内被调度
+        recent_tasks = PeriodicTask.objects.filter(enabled=True, last_run_at__isnull=False)
+        beat_active = False
+        last_run_time = None
+        
+        if recent_tasks.exists():
+            last_run_task = recent_tasks.order_by('-last_run_at').first()
+            last_run_time = last_run_task.last_run_at
+            if last_run_time and (timezone.now() - last_run_time).total_seconds() < 300:
+                beat_active = True
+        
+        return {
+            "status": "healthy" if beat_active else "warning",
+            "last_run": last_run_time.isoformat() if last_run_time else None,
+            "info": f"调度状态: {'正常' if beat_active else '疑似离线 (5分钟内无调度)'}"
         }
 
 class KubernetesMonitor(BaseMonitor):
@@ -164,6 +178,7 @@ class SystemHealthManager:
         DatabaseMonitor(),
         RedisMonitor(),
         CeleryMonitor(),
+        CeleryBeatMonitor(),
         KubernetesMonitor()
     ]
     

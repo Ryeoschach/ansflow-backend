@@ -101,10 +101,23 @@ class SystemHealthViewSet(viewsets.ViewSet):
                     })
             except Exception:
                 pass
+            
+            # 4. Beat 状态 (复用 Monitor 中的逻辑)
+            from django_celery_beat.models import PeriodicTask
+            recent_task = PeriodicTask.objects.filter(enabled=True, last_run_at__isnull=False).order_by('-last_run_at').first()
+            beat_info = {
+                "status": "offline",
+                "last_run": None
+            }
+            if recent_task and recent_task.last_run_at:
+                if (timezone.now() - recent_task.last_run_at).total_seconds() < 300:
+                    beat_info["status"] = "online"
+                beat_info["last_run"] = recent_task.last_run_at.isoformat()
                 
             return Response({
                 "workers": worker_details,
                 "queues": queue_stats,
+                "beat": beat_info,
                 "timestamp": timezone.now().isoformat()
             })
         except Exception as e:
