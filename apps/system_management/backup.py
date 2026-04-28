@@ -269,6 +269,31 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         exclude_fields=['remark'],
         export_order=19,
     ),
+    # Ansible 任务相关
+    'AnsibleTask': ModelInfo(
+        app_label='task_management', model_name='AnsibleTask', table_name='task_ansible_template',
+        fk_fields={
+            'resource_pool': ('ResourcePool', 'id'),
+            'creator': ('User', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=19.5,
+    ),
+    'AnsibleExecution': ModelInfo(
+        app_label='task_management', model_name='AnsibleExecution', table_name='task_ansible_execution',
+        fk_fields={
+            'task': ('AnsibleTask', 'id'),
+            'executor': ('User', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=19.6,
+    ),
+    'AnsibleSchedule': ModelInfo(
+        app_label='task_management', model_name='AnsibleSchedule', table_name='task_ansible_schedule',
+        fk_fields={'task': ('AnsibleTask', 'id')},
+        exclude_fields=['remark'],
+        export_order=19.7,
+    ),
     'ConfigCategory': ModelInfo(
         app_label='config_center', model_name='ConfigCategory', table_name='config_center_category',
         exclude_fields=['remark'],
