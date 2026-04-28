@@ -147,6 +147,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='rbac_permission', model_name='DataPolicy', table_name='rbac_data_policy',
         fk_fields={'role': ('Role', 'id')},
         exclude_fields=['remark'],
+        unique_fields=['role', 'resource_type', 'action_type'],  # unique_together
         export_order=7,
     ),
     'User': ModelInfo(
@@ -186,6 +187,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='registry_management', model_name='ArtifactoryRepository', table_name='registry_artifactory_repository',
         fk_fields={'instance': ('ArtifactoryInstance', 'id')},
         exclude_fields=['remark'],
+        unique_fields=['instance', 'repo_key'],  # unique_together
         export_order=12,
     ),
     'Pipeline': ModelInfo(
@@ -222,7 +224,8 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     'PipelineNodeRun': ModelInfo(
         app_label='pipeline_management', model_name='PipelineNodeRun', table_name='pipeline_node_run_log',
         fk_fields={'run': ('PipelineRun', 'id')},
-        exclude_fields=['remark', 'logs'],  # logs 太大，不导出
+        exclude_fields=['remark', 'logs'],
+        unique_fields=['run', 'node_id'],  # unique_together
         export_order=14.5,
     ),
     'Artifact': ModelInfo(
@@ -274,8 +277,8 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='config_center', model_name='ConfigItem', table_name='config_center_item',
         fk_fields={'category': ('ConfigCategory', 'id')},
         exclude_fields=['remark'],
-        # value 字段是否加密取决于 ConfigItem.is_encrypted，这里在导出时统一跳过，由用户手动录入
         encrypted_fields=['value'],
+        unique_fields=['category', 'key'],  # unique_together
         export_order=21,
     ),
     'ApprovalPolicy': ModelInfo(
