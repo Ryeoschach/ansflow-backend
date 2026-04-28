@@ -506,9 +506,8 @@ class BackupImporter:
                         if value is not None:
                             new_related_id = self.id_map.get(related_model_name, {}).get(value)
                             if new_related_id is not None:
-                                # FK 引用可以映射，使用映射后的新 ID
+                                # FK 引用可以映射，存入 fk_lookups 用于 lookup，不放入 create_data（避免 raw int）
                                 fk_lookups[field_name] = new_related_id
-                                create_data[field_name] = new_related_id
                             else:
                                 # FK 引用在新库找不到映射，标记为 None（避免 Django FK 字段收到 raw int）
                                 create_data[field_name] = None
@@ -554,6 +553,7 @@ class BackupImporter:
                         fk_lookups.pop(field_name, None)
 
                 # 创建或更新对象（优先用唯一字段查找）
+                created = False  # 初始化，避免 fallback 分支中未定义
                 try:
                     obj, created = Model.objects.update_or_create(
                         defaults=create_data,
@@ -580,7 +580,10 @@ class BackupImporter:
                             if filter_kwargs:
                                 obj = Model.objects.filter(**filter_kwargs).first()
                                 if obj:
+                                    # 避免将 FK 字段的 raw int 传入 setattr（Django FK 需要 model instance）
                                     for k, v in create_data.items():
+                                        if k in model_info.fk_fields and isinstance(v, int):
+                                            continue  # 跳过未映射的 FK raw int
                                         setattr(obj, k, v)
                                     obj.save()
                                     created = False
