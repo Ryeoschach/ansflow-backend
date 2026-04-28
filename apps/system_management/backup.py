@@ -156,6 +156,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         # 排除密码、最后登录、三方登录字段、头像等
         exclude_fields=['password', 'last_login', 'remark', 'date_joined',
                         'github_id', 'wechat_openid', 'ldap_dn', 'ldap_uid', 'login_type', 'avatar'],
+        unique_fields=['username'],  # AbstractUser 的 username 是唯一的
         export_order=8,
     ),
     'Platform': ModelInfo(
@@ -488,21 +489,7 @@ class BackupImporter:
                     else:
                         create_data[field_name] = value
 
-                # 构建查找条件
-                lookup_kwargs = {}
-                if model_info.unique_fields:
-                    # 使用唯一字段查找（不依赖 id，避免外键不一致问题）
-                    for field_name in model_info.unique_fields:
-                        if field_name in record:
-                            lookup_kwargs[field_name] = record[field_name]
-                    if not lookup_kwargs:
-                        # 没有可用的唯一字段，回退到 id
-                        lookup_kwargs = {'id': old_id}
-                else:
-                    lookup_kwargs = {'id': old_id}
-
                 # 构建查找条件（排除自引用 FK，它们不适合做 lookup 条件）
-                lookup_kwargs = {}
                 self_referential_fk_values = {}  # 自引用 FK 的值（需要获取实例）
                 if model_info.unique_fields:
                     for field_name in model_info.unique_fields:
