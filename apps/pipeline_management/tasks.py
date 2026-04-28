@@ -729,3 +729,49 @@ def advance_pipeline_engine(self, run_id):
             import shutil
             workspace_dir = f"/tmp/ansflow_workspaces/run_{run_id}"
             shutil.rmtree(workspace_dir, ignore_errors=True)
+
+
+@shared_task(name='apps.pipeline_management.tasks.cleanup_old_workspaces')
+def cleanup_old_workspaces(days=1):
+    """
+    定期清理过期的工作空间目录。
+    默认清理 1 天前创建的目录。
+    """
+    import shutil
+    import time
+    
+    base_dir = "/tmp/ansflow_workspaces"
+    if not os.path.exists(base_dir):
+        return "Workspace directory does not exist."
+        
+    now = time.time()
+    seconds = days * 86400
+    cleaned_count = 0
+    
+    for dirname in os.listdir(base_dir):
+        # 仅处理形如 run_{id} 的目录
+        if not dirname.startswith("run_"):
+            continue
+            
+        dir_path = os.path.join(base_dir, dirname)
+        if not os.path.isdir(dir_path):
+            continue
+            
+        # 检查目录的修改时间
+        if (now - os.path.getmtime(dir_path)) > seconds:
+            try:
+                # 尝试解析 ID 以检查流水线是否真的结束了 (可选，这里采用更通用的时间判断)
+                run_id = dirname.replace("run_", "")
+                if run_id.isdigit():
+                    run = PipelineRun.objects.filter(id=int(run_id)).first()
+                    # 如果流水线还在运行中，暂时跳过清理，除非目录实在太老了（如超过 3 天）
+                    if run and run.status == 'running' and (now - os.path.getmtime(dir_path)) < (seconds * 3):
+                        continue
+                
+                shutil.rmtree(dir_path)
+                cleaned_count += 1
+                logger.info(f"[Cleanup] Deleted expired workspace: {dir_path}")
+            except Exception as e:
+                logger.error(f"[Cleanup] Failed to delete {dir_path}: {str(e)}")
+                
+    return f"Cleaned up {cleaned_count} workspaces."
