@@ -388,7 +388,6 @@ class BackupImporter:
         self.errors.append(msg)
         logger.error(f"[Restore] 错误: {msg}")
 
-    @transaction.atomic
     def import_all(self) -> Dict[str, Any]:
         """执行全量恢复（三阶段）"""
         from django.apps import apps
