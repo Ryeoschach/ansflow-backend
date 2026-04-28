@@ -3,24 +3,31 @@
 
 功能：
 - 全量备份：导出所有业务数据为 JSON 文件
-- 恢复导入：支持选择性地恢复指定模块数据
-- 加密字段处理：加密字段以密文存储，导入时用目标实例的 KEY 重新加密
+- 恢复导入：支持选择性恢复指定模块数据
+- 加密字段：导出时跳过，导入时需手动录入（避免 SECRET_KEY 不一致导致解密失败）
 
 导出顺序（按外键依赖排序）：
 1. Permission, Menu (无依赖)
-2. Credential, SshCredential, Environment (无依赖)
+2. SshCredential, Environment (无依赖)
 3. Role (依赖 Permission, Menu)
 4. DataPolicy (依赖 Role)
 5. User (依赖 Role)
 6. Platform (依赖 SshCredential)
-7. K8sCluster, ImageRegistry (独立，有加密)
-8. Host (依赖 Environment, Platform, SshCredential)
-9. ResourcePool (依赖 Host, M2M)
-10. Pipeline (依赖 User)
-11. CIEnvironment
-12. ConfigCategory
-13. ConfigItem (依赖 ConfigCategory)
-14. ApprovalPolicy (独立)
+7. K8sCluster, ImageRegistry, ArtifactoryInstance (独立，有加密)
+8. ArtifactoryRepository (依赖 ArtifactoryInstance)
+9. Pipeline, PipelineVersion, PipelineWebhook (依赖 User)
+10. PipelineRun, PipelineNodeRun (依赖 Pipeline, User)
+11. Artifact, ArtifactVersion (依赖 ImageRegistry/ArtifactoryRepository, Pipeline, PipelineRun)
+12. Host (依赖 Environment, Platform, SshCredential)
+13. ResourcePool (依赖 Host, M2M)
+14. CIEnvironment
+15. ConfigCategory, ConfigItem (依赖 ConfigCategory，含加密字段)
+16. ApprovalPolicy, ApprovalTicket (依赖 Role)
+
+注意事项：
+- 加密字段（密码/Token/Kubeconfig等）在导出时会被跳过
+- 导入后需手动重新录入这些敏感字段
+- 超级用户(id=1)不会被覆盖
 """
 
 import json
@@ -83,6 +90,8 @@ class ModelInfo:
     m2m_fields: Dict[str, str] = field(default_factory=dict)
     # 依赖顺序（越小越先导出）
     export_order: int = 99
+    # 包含加密字段的模型（导出时跳过这些字段，导入时需手动重新录入）
+    encrypted_fields: List[str] = field(default_factory=list)
 
 
 # 定义所有需要备份的模型及其元信息
@@ -101,11 +110,13 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     'Credential': ModelInfo(
         app_label='credentials_management', model_name='Credential', table_name='sys_credential_vault',
         exclude_fields=['remark'],
+        encrypted_fields=['secret_value'],
         export_order=3,
     ),
     'SshCredential': ModelInfo(
         app_label='host_management', model_name='SshCredential', table_name='cmdb_ssh_credential',
         exclude_fields=['remark'],
+        encrypted_fields=['password', 'private_key', 'passphrase'],
         export_order=4,
     ),
     'Environment': ModelInfo(
@@ -142,21 +153,25 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='host_management', model_name='Platform', table_name='cmdb_platform',
         fk_fields={'default_credential': ('SshCredential', 'id')},
         exclude_fields=['remark'],
+        encrypted_fields=['access_key', 'secret_key'],
         export_order=9,
     ),
     'K8sCluster': ModelInfo(
         app_label='k8s_management', model_name='K8sCluster', table_name='k8s_clusters',
         exclude_fields=['remark'],
+        encrypted_fields=['kubeconfig_content', 'token'],
         export_order=10,
     ),
     'ImageRegistry': ModelInfo(
         app_label='registry_management', model_name='ImageRegistry', table_name='registry_image_registry',
         exclude_fields=['remark'],
+        encrypted_fields=['password'],
         export_order=11,
     ),
     'ArtifactoryInstance': ModelInfo(
         app_label='registry_management', model_name='ArtifactoryInstance', table_name='registry_artifactory_instance',
         exclude_fields=['remark'],
+        encrypted_fields=['api_key', 'password'],
         export_order=11.5,
     ),
     'ArtifactoryRepository': ModelInfo(
@@ -171,6 +186,21 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         exclude_fields=['remark'],
         export_order=13,
     ),
+    'PipelineVersion': ModelInfo(
+        app_label='pipeline_management', model_name='PipelineVersion', table_name='pipeline_version',
+        fk_fields={
+            'pipeline': ('Pipeline', 'id'),
+            'creator': ('User', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=13.5,
+    ),
+    'PipelineWebhook': ModelInfo(
+        app_label='pipeline_management', model_name='PipelineWebhook', table_name='pipeline_webhook',
+        fk_fields={'pipeline': ('Pipeline', 'id')},
+        exclude_fields=['remark'],
+        export_order=13.6,
+    ),
     'PipelineRun': ModelInfo(
         app_label='pipeline_management', model_name='PipelineRun', table_name='pipeline_pipelinerun',
         fk_fields={
@@ -179,6 +209,12 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         },
         exclude_fields=['remark'],
         export_order=14,
+    ),
+    'PipelineNodeRun': ModelInfo(
+        app_label='pipeline_management', model_name='PipelineNodeRun', table_name='pipeline_node_run_log',
+        fk_fields={'run': ('PipelineRun', 'id')},
+        exclude_fields=['remark', 'logs'],  # logs 太大，不导出
+        export_order=14.5,
     ),
     'Artifact': ModelInfo(
         app_label='registry_management', model_name='Artifact', table_name='pipeline_artifact',
@@ -229,12 +265,25 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='config_center', model_name='ConfigItem', table_name='config_center_item',
         fk_fields={'category': ('ConfigCategory', 'id')},
         exclude_fields=['remark'],
+        # value 字段是否加密取决于 ConfigItem.is_encrypted，这里在导出时统一跳过，由用户手动录入
+        encrypted_fields=['value'],
         export_order=21,
     ),
     'ApprovalPolicy': ModelInfo(
-        app_label='approval_center', model_name='ApprovalPolicy', table_name='approval_center_policy',
+        app_label='approval_center', model_name='ApprovalPolicy', table_name='approval_policy',
+        fk_fields={},
+        m2m_fields={'approver_roles': 'Role'},
         exclude_fields=['remark'],
         export_order=22,
+    ),
+    'ApprovalTicket': ModelInfo(
+        app_label='approval_center', model_name='ApprovalTicket', table_name='approval_ticket',
+        fk_fields={
+            'submitter': ('User', 'id'),
+            'approver': ('User', 'id'),
+        },
+        exclude_fields=['remark'],
+        export_order=23,
     ),
 }
 
@@ -277,9 +326,11 @@ class BackupExporter:
         from django.apps import apps
         Model = apps.get_model(model_info.app_label, model_info.model_name)
 
-        # 获取所有字段
+        # 获取所有字段（排除系统字段、exclude_fields、加密字段）
         fields = [f.name for f in Model._meta.get_fields() if not f.many_to_many and not f.one_to_many]
-        fields = [f for f in fields if f not in model_info.exclude_fields and f not in ['id', 'create_time', 'update_time']]
+        fields = [f for f in fields if f not in model_info.exclude_fields
+                  and f not in ['id', 'create_time', 'update_time']
+                  and f not in model_info.encrypted_fields]
 
         records = []
         for obj in Model.objects.all().only(*fields):
@@ -401,6 +452,11 @@ class BackupImporter:
 
                     # 跳过排除字段
                     if field_name in model_info.exclude_fields:
+                        continue
+
+                    # 跳过加密字段（需手动重新录入）
+                    if field_name in model_info.encrypted_fields:
+                        self._log(f"  跳过加密字段 {model_info.model_name}.{field_name} (旧id={old_id})，需手动录入")
                         continue
 
                     # 处理外键引用
