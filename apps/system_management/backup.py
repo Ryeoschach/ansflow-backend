@@ -214,6 +214,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         fk_fields={
             'pipeline': ('Pipeline', 'id'),
             'trigger_user': ('User', 'id'),
+            'parent_run': ('PipelineRun', 'id'),
         },
         exclude_fields=['remark'],
         export_order=14,
@@ -497,16 +498,45 @@ class BackupImporter:
                 else:
                     lookup_kwargs = {'id': old_id}
 
+                # 构建查找条件（排除自引用 FK，它们不适合做 lookup 条件）
+                lookup_kwargs = {}
+                self_referential_fk_values = {}  # 自引用 FK 的值（需要获取实例）
+                if model_info.unique_fields:
+                    for field_name in model_info.unique_fields:
+                        if field_name in record:
+                            lookup_kwargs[field_name] = record[field_name]
+                    if not lookup_kwargs:
+                        lookup_kwargs = {'id': old_id}
+                else:
+                    lookup_kwargs = {'id': old_id}
+
+                # 预先获取自引用 FK 的实例（自引用 FK 不能用 raw id 做 lookup）
+                for field_name in model_info.fk_fields:
+                    related_model_name, _ = model_info.fk_fields[field_name]
+                    if related_model_name == model_info.model_name:  # 自引用
+                        if field_name in record and record[field_name]:
+                            old_fk_id = record[field_name]
+                            new_fk_id = self.id_map.get(model_info.model_name, {}).get(old_fk_id)
+                            if new_fk_id:
+                                self_referential_fk_values[field_name] = new_fk_id
+                        # 从 fk_lookups 中移除，避免干扰 update_or_create 的 filter
+                        fk_lookups.pop(field_name, None)
+
                 # 创建或更新对象
                 try:
                     obj, created = Model.objects.update_or_create(
                         defaults=create_data,
-                        **lookup_kwargs
+                        **fk_lookups
                     )
+                    # 单独处理自引用 FK（先获取实例再赋值）
+                    for field_name, fk_id in self_referential_fk_values.items():
+                        target = Model.objects.get(id=fk_id)
+                        setattr(obj, field_name, target)
+                    if self_referential_fk_values:
+                        obj.save(update_fields=list(self_referential_fk_values.keys()))
                 except Exception as e:
                     # 如果唯一字段查找失败（多条记录），尝试只用 fk_lookups 查找
                     if 'get() returned more than one' in str(e) and fk_lookups:
-                        # 尝试用外键组合查找
                         obj = Model.objects.filter(**fk_lookups).first()
                         if obj:
                             for k, v in create_data.items():
