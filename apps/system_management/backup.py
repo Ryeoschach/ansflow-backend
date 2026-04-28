@@ -522,9 +522,15 @@ class BackupImporter:
                         if field_name in record:
                             lookup_kwargs[field_name] = record[field_name]
                     if not lookup_kwargs:
-                        lookup_kwargs = {'id': old_id}
+                        # 没有唯一字段时，使用 FK 组合作为查找条件
+                        lookup_kwargs = dict(fk_lookups)
+                        if not lookup_kwargs:
+                            lookup_kwargs = {'id': old_id}
                 else:
-                    lookup_kwargs = {'id': old_id}
+                    # 没有唯一字段时，使用 FK 组合作为查找条件
+                    lookup_kwargs = dict(fk_lookups)
+                    if not lookup_kwargs:
+                        lookup_kwargs = {'id': old_id}
 
                 # 预先获取自引用 FK 的实例（自引用 FK 不能用 raw id 做 lookup）
                 for field_name in model_info.fk_fields:
