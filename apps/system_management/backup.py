@@ -6,41 +6,22 @@
 - 恢复导入：支持选择性恢复指定模块数据
 - 加密字段：导出时跳过，导入时需手动录入（避免 SECRET_KEY 不一致导致解密失败）
 
-导出顺序（按外键依赖排序）：
-1. Permission, Menu (无依赖)
-2. SshCredential, Environment (无依赖)
-3. Role (依赖 Permission, Menu)
-4. DataPolicy (依赖 Role)
-5. User (依赖 Role)
-6. Platform (依赖 SshCredential)
-7. K8sCluster, ImageRegistry, ArtifactoryInstance (独立，有加密)
-8. ArtifactoryRepository (依赖 ArtifactoryInstance)
-9. Pipeline, PipelineVersion, PipelineWebhook (依赖 User)
-10. PipelineRun, PipelineNodeRun (依赖 Pipeline, User)
-11. Artifact, ArtifactVersion (依赖 ImageRegistry/ArtifactoryRepository, Pipeline, PipelineRun)
-12. Host (依赖 Environment, Platform, SshCredential)
-13. ResourcePool (依赖 Host, M2M)
-14. CIEnvironment
-15. ConfigCategory, ConfigItem (依赖 ConfigCategory，含加密字段)
-16. ApprovalPolicy, ApprovalTicket (依赖 Role)
+导入采用三阶段策略：
+1. Phase 1: 仅创建基础实例（忽略所有 FK 和 M2M）
+2. Phase 2: 回填 FK 关系（直接操作 _id 字段）
+3. Phase 3: 建立 M2M 关系
 
-注意事项：
-- 加密字段（密码/Token/Kubeconfig等）在导出时会被跳过
-- 导入后需手动重新录入这些敏感字段
-- 超级用户(id=1)不会被覆盖
+这样避免 FK 依赖问题和事务中断。
 """
 
 import json
 import gzip
-import base64
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 
 from django.db import transaction
-from django.conf import settings
-from django.contrib.auth.hashers import make_password
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +44,7 @@ def get_encrypted_field_names() -> set:
         'ImageRegistry.password',
         'ArtifactoryInstance.api_key',
         'ArtifactoryInstance.password',
-        'ConfigItem.value',  # 当 is_encrypted=True 时
+        'ConfigItem.value',
     }
 
 
@@ -72,36 +53,28 @@ def is_encrypted_field(model_name: str, field_name: str) -> bool:
 
 
 # ============================================================
-# 数据模型映射（用于 JSON 序列化/反序列化）
+# 数据模型映射
 # ============================================================
 
 @dataclass
 class ModelInfo:
-    """模型元信息"""
     app_label: str
     model_name: str
     table_name: str
     pk_field: str = 'id'
-    # 导出时排除的字段（如执行日志、审计日志等）
     exclude_fields: List[str] = field(default_factory=list)
-    # 外键映射: field_name -> (related_model_name, id_field)
     fk_fields: Dict[str, Tuple[str, str]] = field(default_factory=dict)
-    # M2M 字段: field_name -> related_model_name
     m2m_fields: Dict[str, str] = field(default_factory=dict)
-    # 依赖顺序（越小越先导出）
     export_order: int = 99
-    # 包含加密字段的模型（导出时跳过这些字段，导入时需手动重新录入）
     encrypted_fields: List[str] = field(default_factory=list)
-    # 唯一标识字段（用于查找已存在记录），为空则仅用 pk 查找
     unique_fields: List[str] = field(default_factory=list)
 
 
-# 定义所有需要备份的模型及其元信息
 MODEL_INFOS: Dict[str, ModelInfo] = {
     'Permission': ModelInfo(
         app_label='rbac_permission', model_name='Permission', table_name='rbac_permission',
         exclude_fields=['remark'],
-        unique_fields=['code'],  # 优先用 code 查找
+        unique_fields=['code'],
         export_order=1,
     ),
     'Menu': ModelInfo(
@@ -147,16 +120,15 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='rbac_permission', model_name='DataPolicy', table_name='rbac_data_policy',
         fk_fields={'role': ('Role', 'id')},
         exclude_fields=['remark'],
-        unique_fields=['role', 'resource_type', 'action_type'],  # unique_together
+        unique_fields=['role', 'resource_type', 'action_type'],
         export_order=7,
     ),
     'User': ModelInfo(
         app_label='rbac_permission', model_name='User', table_name='rbac_permission_user',
         m2m_fields={'roles': 'Role'},
-        # 排除密码、最后登录、三方登录字段、头像等
         exclude_fields=['password', 'last_login', 'remark', 'date_joined',
                         'github_id', 'wechat_openid', 'ldap_dn', 'ldap_uid', 'login_type', 'avatar'],
-        unique_fields=['username'],  # AbstractUser 的 username 是唯一的
+        unique_fields=['username'],
         export_order=8,
     ),
     'Platform': ModelInfo(
@@ -188,14 +160,14 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='registry_management', model_name='ArtifactoryRepository', table_name='registry_artifactory_repository',
         fk_fields={'instance': ('ArtifactoryInstance', 'id')},
         exclude_fields=['remark'],
-        unique_fields=['instance', 'repo_key'],  # unique_together
+        unique_fields=['instance', 'repo_key'],
         export_order=12,
     ),
     'Pipeline': ModelInfo(
         app_label='pipeline_management', model_name='Pipeline', table_name='pipeline_template',
         fk_fields={'creator': ('User', 'id')},
         exclude_fields=['remark'],
-        unique_fields=['name'],  # name 是唯一的
+        unique_fields=['name'],
         export_order=13,
     ),
     'PipelineVersion': ModelInfo(
@@ -205,7 +177,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'creator': ('User', 'id'),
         },
         exclude_fields=['remark'],
-        unique_fields=['pipeline', 'version_number'],  # unique_together
+        unique_fields=['pipeline', 'version_number'],
         export_order=13.5,
     ),
     'PipelineWebhook': ModelInfo(
@@ -222,13 +194,14 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'parent_run': ('PipelineRun', 'id'),
         },
         exclude_fields=['remark'],
+        unique_fields=['id'],  # 用 id 精确匹配
         export_order=14,
     ),
     'PipelineNodeRun': ModelInfo(
         app_label='pipeline_management', model_name='PipelineNodeRun', table_name='pipeline_node_run_log',
         fk_fields={'run': ('PipelineRun', 'id')},
         exclude_fields=['remark', 'logs'],
-        unique_fields=['run', 'node_id'],  # unique_together
+        unique_fields=['id'],
         export_order=14.5,
     ),
     'Artifact': ModelInfo(
@@ -271,7 +244,6 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         exclude_fields=['remark'],
         export_order=19,
     ),
-    # Ansible 任务相关
     'AnsibleTask': ModelInfo(
         app_label='task_management', model_name='AnsibleTask', table_name='task_ansible_template',
         fk_fields={
@@ -279,6 +251,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'creator': ('User', 'id'),
         },
         exclude_fields=['remark'],
+        unique_fields=['id'],
         export_order=19.5,
     ),
     'AnsibleExecution': ModelInfo(
@@ -288,13 +261,14 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'executor': ('User', 'id'),
         },
         exclude_fields=['remark'],
-        # 无唯一字段，用 FK 组合查找
+        unique_fields=['id'],
         export_order=19.6,
     ),
     'AnsibleSchedule': ModelInfo(
         app_label='task_management', model_name='AnsibleSchedule', table_name='task_ansible_schedule',
         fk_fields={'task': ('AnsibleTask', 'id')},
         exclude_fields=['remark'],
+        unique_fields=['id'],
         export_order=19.7,
     ),
     'ConfigCategory': ModelInfo(
@@ -307,7 +281,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         fk_fields={'category': ('ConfigCategory', 'id')},
         exclude_fields=['remark'],
         encrypted_fields=['value'],
-        unique_fields=['category', 'key'],  # unique_together
+        unique_fields=['category', 'key'],
         export_order=21,
     ),
     'ApprovalPolicy': ModelInfo(
@@ -324,6 +298,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'approver': ('User', 'id'),
         },
         exclude_fields=['remark'],
+        unique_fields=['id'],
         export_order=23,
     ),
 }
@@ -334,8 +309,6 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
 # ============================================================
 
 class BackupExporter:
-    """系统数据备份导出器"""
-
     VERSION = '1.0'
 
     def __init__(self):
@@ -348,11 +321,40 @@ class BackupExporter:
 
     def export(self) -> Dict[str, Any]:
         """执行全量导出"""
-        # 按依赖顺序导出每个模型
+        from django.apps import apps
+
         sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
 
         for model_name, model_info in sorted_models:
-            records = self._export_model(model_info)
+            Model = apps.get_model(model_info.app_label, model_name)
+            records = []
+
+            # 基础排除字段
+            base_excludes = {'create_time', 'update_time'} | set(model_info.exclude_fields) | set(model_info.encrypted_fields)
+
+            for obj in Model.objects.all():
+                record = {'id': obj.id}
+
+                # 处理普通字段和外键
+                for field in obj._meta.fields:
+                    if field.name in base_excludes or field.name == 'id':
+                        continue
+
+                    value = getattr(obj, field.name)
+                    # 外键只记录 ID
+                    if field.is_relation and value:
+                        record[field.name] = value.pk
+                    else:
+                        record[field.name] = value
+
+                # 处理 M2M
+                for m2m_field in model_info.m2m_fields:
+                    record[f"{m2m_field}_ids"] = list(
+                        getattr(obj, m2m_field).values_list('pk', flat=True)
+                    )
+
+                records.append(record)
+
             if records:
                 self.data[model_name] = records
                 logger.info(f"[Backup] 导出 {model_name}: {len(records)} 条")
@@ -362,50 +364,6 @@ class BackupExporter:
             'data': self.data,
         }
 
-    def _export_model(self, model_info: ModelInfo) -> List[Dict]:
-        """导出单个模型的数据"""
-        from django.apps import apps
-        Model = apps.get_model(model_info.app_label, model_info.model_name)
-
-        # 获取所有字段（排除系统字段、exclude_fields、加密字段）
-        fields = [f.name for f in Model._meta.get_fields() if not f.many_to_many and not f.one_to_many]
-        fields = [f for f in fields if f not in model_info.exclude_fields
-                  and f not in ['id', 'create_time', 'update_time']
-                  and f not in model_info.encrypted_fields]
-
-        records = []
-        for obj in Model.objects.all().only(*fields):
-            record = {'id': obj.id}
-
-            for field_name in fields:
-                value = getattr(obj, field_name, None)
-
-                # 处理外键（包括未在 fk_fields 中声明的反向关系）
-                if hasattr(value, 'id') and hasattr(value, '_meta') and not isinstance(value, (str, int, float, bool, type(None))):
-                    record[field_name] = value.id if value is not None else None
-                # 处理普通字段
-                elif value is not None:
-                    if isinstance(value, (datetime,)):
-                        record[field_name] = value.isoformat()
-                    elif isinstance(value, (list, dict)):
-                        record[field_name] = value
-                    else:
-                        record[field_name] = value
-                else:
-                    record[field_name] = None
-
-            # 处理 M2M 字段
-            for m2m_field, related_model in model_info.m2m_fields.items():
-                try:
-                    m2m_ids = list(getattr(obj, m2m_field).all().values_list('id', flat=True))
-                    record[f'{m2m_field}_ids'] = m2m_ids
-                except Exception:
-                    record[f'{m2m_field}_ids'] = []
-
-            records.append(record)
-
-        return records
-
     def export_to_file(self, file_path: str):
         """导出为 gzip 压缩的 JSON 文件"""
         with gzip.open(file_path, 'wt', encoding='utf-8') as f:
@@ -413,28 +371,17 @@ class BackupExporter:
 
 
 # ============================================================
-# 备份恢复导入器
+# 备份恢复导入器 (三阶段)
 # ============================================================
 
 class BackupImporter:
-    """系统数据备份恢复导入器"""
-
     def __init__(self, backup_data: Dict[str, Any]):
-        self.backup_data = backup_data
         self.data = backup_data.get('data', {})
         self.metadata = backup_data.get('metadata', {})
-
-        # ID 映射: model_name -> {old_id: new_id}
         self.id_map: Dict[str, Dict[int, int]] = {}
-
-        # M2M 关系缓冲: (model_name, obj_id, m2m_field) -> [related_ids]
-        self.m2m_buffer: Dict[Tuple, List[int]] = {}
-
-        self.import_log: List[str] = []
         self.errors: List[str] = []
 
     def _log(self, msg: str):
-        self.import_log.append(msg)
         logger.info(f"[Restore] {msg}")
 
     def _error(self, msg: str):
@@ -443,212 +390,172 @@ class BackupImporter:
 
     @transaction.atomic
     def import_all(self) -> Dict[str, Any]:
-        """执行全量恢复（原子事务）"""
-        # 按依赖顺序导入
+        """执行全量恢复（三阶段）"""
+        from django.apps import apps
+
         sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
 
+        # Phase 1: 创建基础实例（忽略所有 FK 和 M2M）
+        self._log("=== 阶段 1: 创建基础实例 ===")
         for model_name, model_info in sorted_models:
             records = self.data.get(model_name, [])
             if records:
-                try:
-                    self._import_model(model_info, records)
-                except Exception as e:
-                    self._error(f"  模型 {model_name} 导入失败: {str(e)}，继续处理下一个模型")
+                self._import_phase_1(model_name, model_info, records)
 
-        # 第二遍：处理 M2M 关系
-        for (model_name, obj_id, m2m_field), related_ids in self.m2m_buffer.items():
-            try:
-                self._attach_m2m(model_name, obj_id, m2m_field, related_ids)
-            except Exception as e:
-                self._error(f"  建立 M2M 关系失败 {model_name}.{m2m_field}: {str(e)}，继续")
+        # Phase 2: 回填 FK 关系
+        self._log("=== 阶段 2: 回填 FK 关系 ===")
+        for model_name, model_info in sorted_models:
+            records = self.data.get(model_name, [])
+            if records:
+                self._import_phase_2(model_name, model_info, records)
+
+        # Phase 3: 建立 M2M 关系
+        self._log("=== 阶段 3: 建立 M2M 关系 ===")
+        for model_name, model_info in sorted_models:
+            records = self.data.get(model_name, [])
+            if records:
+                self._import_phase_3(model_name, model_info, records)
 
         return {
             'success': len(self.errors) == 0,
-            'imported': self.import_log,
             'errors': self.errors,
         }
 
-    def _import_model(self, model_info: ModelInfo, records: List[Dict]):
-        """导入单个模型的数据"""
+    def _import_phase_1(self, model_name: str, model_info: ModelInfo, records: List[Dict]):
+        """阶段 1: 仅创建基础实例，忽略 FK 和 M2M"""
         from django.apps import apps
         Model = apps.get_model(model_info.app_label, model_info.model_name)
 
-        self._log(f"开始导入 {model_info.model_name}，共 {len(records)} 条")
+        self._log(f"Phase 1: {model_name} ({len(records)} 条)")
 
         for record in records:
             old_id = record.get('id')
             if old_id is None:
                 continue
 
+            # 跳过超级用户
+            if model_name == 'User' and old_id == 1:
+                self.id_map.setdefault(model_name, {})[old_id] = 1
+                self._log(f"  跳过超级用户 (id=1)")
+                continue
+
             try:
-                # 跳过管理员账户（id=1 的超级用户不覆盖）
-                if model_info.model_name == 'User' and old_id == 1:
-                    self._log(f"  跳过超级用户 (id=1)")
-                    # 但仍需建立映射，避免外键断裂
-                    self.id_map.setdefault(model_info.model_name, {})[old_id] = 1
-                    continue
-
-                # 准备创建数据
-                create_data = {}
-                fk_lookups = {}
-
+                # 构建仅包含非 FK/M2M 字段的数据
+                clean_data = {}
                 for field_name, value in record.items():
-                    # 跳过 M2M 字段（后面统一处理）
                     if field_name.endswith('_ids'):
-                        continue
-
-                    # 跳过排除字段
+                        continue  # 跳过 M2M
+                    if field_name in model_info.fk_fields:
+                        continue  # 跳过 FK
                     if field_name in model_info.exclude_fields:
                         continue
-
-                    # 跳过加密字段（需手动重新录入）
                     if field_name in model_info.encrypted_fields:
-                        self._log(f"  跳过加密字段 {model_info.model_name}.{field_name} (旧id={old_id})，需手动录入")
                         continue
-
-                    # 处理外键引用
-                    if field_name in model_info.fk_fields:
-                        related_model_name, _ = model_info.fk_fields[field_name]
-                        if value is not None:
-                            new_related_id = self.id_map.get(related_model_name, {}).get(value)
-                            if new_related_id is not None:
-                                # FK 可映射，同时加入 fk_lookups（lookup用）和 create_data（创建用）
-                                fk_lookups[field_name] = new_related_id
-                                create_data[field_name] = new_related_id
-                            else:
-                                # FK 不可映射，设为 None（Django 会验证 FK nullable）
-                                create_data[field_name] = None
-                        # None 值不设置，跳过
-                    # 处理 User.password（不迁移密码）
-                    elif model_info.model_name == 'User' and field_name == 'password':
+                    if field_name == 'id':
                         continue
-                    else:
-                        create_data[field_name] = value
+                    if model_name == 'User' and field_name == 'password':
+                        continue
+                    clean_data[field_name] = value
 
-                # 构建查找条件（排除自引用 FK，它们不适合做 lookup 条件）
-                lookup_kwargs = {}  # 必须初始化，否则 line 497 报错
-                self_referential_fk_values = {}  # 自引用 FK 的值（需要获取实例）
+                # 查找或创建
+                obj = None
                 if model_info.unique_fields:
-                    for field_name in model_info.unique_fields:
-                        if field_name in record:
-                            # 如果是 FK 字段，优先使用 fk_lookups 中已映射的新 id
-                            if field_name in fk_lookups:
-                                lookup_kwargs[field_name] = fk_lookups[field_name]
-                            else:
-                                lookup_kwargs[field_name] = record[field_name]
-                    if not lookup_kwargs:
-                        # 没有唯一字段时，使用 FK 组合作为查找条件
-                        lookup_kwargs = dict(fk_lookups)
-                        if not lookup_kwargs:
-                            lookup_kwargs = {'id': old_id}
+                    lookup = {}
+                    for k in model_info.unique_fields:
+                        if k in record:
+                            lookup[k] = record[k]
+                    if lookup:
+                        obj = Model.objects.filter(**lookup).first()
+
+                if obj:
+                    # 更新
+                    for k, v in clean_data.items():
+                        setattr(obj, k, v)
+                    obj.save()
+                    self._log(f"  更新: {model_name} id={obj.id} (旧id={old_id})")
                 else:
-                    # 没有唯一字段时，使用 FK 组合作为查找条件
-                    lookup_kwargs = dict(fk_lookups)
-                    if not lookup_kwargs:
-                        lookup_kwargs = {'id': old_id}
+                    # 创建
+                    obj = Model.objects.create(**clean_data)
+                    self._log(f"  创建: {model_name} id={obj.id} (旧id={old_id})")
 
-                # 预先获取自引用 FK 的实例（自引用 FK 不能用 raw id 做 lookup）
-                for field_name in model_info.fk_fields:
-                    related_model_name, _ = model_info.fk_fields[field_name]
-                    if related_model_name == model_info.model_name:  # 自引用
-                        if field_name in record and record[field_name]:
-                            old_fk_id = record[field_name]
-                            new_fk_id = self.id_map.get(model_info.model_name, {}).get(old_fk_id)
-                            if new_fk_id:
-                                self_referential_fk_values[field_name] = new_fk_id
-                        # 从 fk_lookups 中移除，避免干扰 update_or_create 的 filter
-                        fk_lookups.pop(field_name, None)
-
-                # 创建或更新对象
-                created = False
-                try:
-                    # 确定查找条件：优先 unique_fields，其次 fk_lookups，最后用 old_id
-                    if model_info.unique_fields:
-                        lookup = {}
-                        for k in model_info.unique_fields:
-                            if k in fk_lookups:
-                                lookup[k] = fk_lookups[k]
-                            elif k in record:
-                                lookup[k] = record[k]
-                        if lookup:
-                            lookup_kwargs = lookup
-                    elif not lookup_kwargs:
-                        # fk_lookups 被自引用 FK 清空后，使用 old_id 作为 fallback
-                        lookup_kwargs = {'id': old_id}
-
-                    if lookup_kwargs:
-                        obj = Model.objects.filter(**lookup_kwargs).first()
-                    else:
-                        obj = None
-
-                    if obj:
-                        # 更新已有记录
-                        for k, v in create_data.items():
-                            setattr(obj, k, v)
-                        obj.save()
-                        created = False
-                    else:
-                        # 不存在则创建
-                        obj = Model.objects.create(**create_data)
-                        created = True
-
-                    # 单独处理自引用 FK（先获取实例再赋值）
-                    for field_name, fk_id in self_referential_fk_values.items():
-                        target = Model.objects.get(id=fk_id)
-                        setattr(obj, field_name, target)
-                    if self_referential_fk_values:
-                        obj.save(update_fields=list(self_referential_fk_values.keys()))
-                except Exception as e:
-                    self._error(f"  导入 {model_info.model_name} id={old_id} 失败: {str(e)}")
-                    continue
-
-                # 记录新 ID 映射
-                self.id_map.setdefault(model_info.model_name, {})[old_id] = obj.id
-
-                # 缓冲 M2M 关系
-                for field_name, value in record.items():
-                    if field_name.endswith('_ids'):
-                        m2m_field = field_name[:-4]  # 去掉 _ids 后缀
-                        if m2m_field in model_info.m2m_fields:
-                            self.m2m_buffer[(model_info.model_name, obj.id, m2m_field)] = value
-
-                action = '创建' if created else '更新'
-                self._log(f"  {action}: {model_info.model_name} id={obj.id} (旧id={old_id})")
+                self.id_map.setdefault(model_name, {})[old_id] = obj.id
 
             except Exception as e:
-                self._error(f"  导入 {model_info.model_name} id={old_id} 失败: {str(e)}")
+                self._error(f"  {model_name}[{old_id}] Phase1 失败: {str(e)}")
 
-    def _attach_m2m(self, model_name: str, obj_id: int, m2m_field: str, related_ids: List[int]):
-        """建立 M2M 关系"""
+    def _import_phase_2(self, model_name: str, model_info: ModelInfo, records: List[Dict]):
+        """阶段 2: 回填 FK 关系"""
+        if not model_info.fk_fields:
+            return
+
         from django.apps import apps
+        Model = apps.get_model(model_info.app_label, model_info.model_name)
 
-        model_info = MODEL_INFOS.get(model_name)
-        if not model_info:
+        self._log(f"Phase 2: {model_name} ({len(records)} 条)")
+
+        for record in records:
+            old_id = record.get('id')
+            new_id = self.id_map.get(model_name, {}).get(old_id)
+            if not new_id:
+                continue
+
+            try:
+                update_data = {}
+                for field_name, (rel_model, _) in model_info.fk_fields.items():
+                    old_fk_id = record.get(field_name)
+                    if old_fk_id is None:
+                        continue
+
+                    new_fk_id = self.id_map.get(rel_model, {}).get(old_fk_id)
+                    if new_fk_id is not None:
+                        update_data[field_name + '_id'] = new_fk_id
+                    else:
+                        self._log(f"  {model_name}[{old_id}] {field_name}: 旧 id={old_fk_id} 无法映射")
+
+                if update_data:
+                    Model.objects.filter(pk=new_id).update(**update_data)
+                    self._log(f"  回填 FK: {model_name} id={new_id}")
+
+            except Exception as e:
+                self._error(f"  {model_name}[{old_id}] Phase2 失败: {str(e)}")
+
+    def _import_phase_3(self, model_name: str, model_info: ModelInfo, records: List[Dict]):
+        """阶段 3: 建立 M2M 关系"""
+        if not model_info.m2m_fields:
             return
 
-        related_model_name = model_info.m2m_fields.get(m2m_field)
-        if not related_model_name:
-            return
+        from django.apps import apps
+        Model = apps.get_model(model_info.app_label, model_name)
 
-        try:
-            Model = apps.get_model(model_info.app_label, model_name)
-            RelatedModel = apps.get_model(MODEL_INFOS[related_model_name].app_label, related_model_name)
+        self._log(f"Phase 3: {model_name} ({len(records)} 条)")
 
-            obj = Model.objects.get(id=obj_id)
-            related_ids = [self.id_map.get(related_model_name, {}).get(rid, rid) for rid in related_ids]
-            related_objs = RelatedModel.objects.filter(id__in=related_ids)
+        for record in records:
+            old_id = record.get('id')
+            new_id = self.id_map.get(model_name, {}).get(old_id)
+            if not new_id:
+                continue
 
-            getattr(obj, m2m_field).set(related_objs)
-            self._log(f"  建立 M2M: {model_name}.{m2m_field} -> {related_model_name} (ids={related_ids})")
+            try:
+                obj = Model.objects.get(pk=new_id)
+                for field_name, rel_model_name in model_info.m2m_fields.items():
+                    old_m2m_ids = record.get(f"{field_name}_ids", [])
+                    new_m2m_ids = []
+                    for oid in old_m2m_ids:
+                        mapped = self.id_map.get(rel_model_name, {}).get(oid)
+                        if mapped:
+                            new_m2m_ids.append(mapped)
 
-        except Exception as e:
-            self._error(f"  建立 M2M 关系失败 {model_name}.{m2m_field}: {str(e)}")
+                    if new_m2m_ids:
+                        getattr(obj, field_name).set(new_m2m_ids)
+                        self._log(f"  M2M: {model_name}.{field_name} -> {rel_model_name} ({len(new_m2m_ids)} 条)")
+
+            except Exception as e:
+                self._error(f"  {model_name}[{old_id}] Phase3 失败: {str(e)}")
 
     def import_from_file(self, file_path: str) -> Dict[str, Any]:
         """从 gzip 压缩的 JSON 文件恢复"""
         with gzip.open(file_path, 'rt', encoding='utf-8') as f:
             backup_data = json.load(f)
-        self.backup_data = backup_data
         self.data = backup_data.get('data', {})
         self.metadata = backup_data.get('metadata', {})
         return self.import_all()
