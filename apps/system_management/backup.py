@@ -505,9 +505,9 @@ class BackupImporter:
                             if new_related_id is not None:
                                 fk_lookups[field_name] = new_related_id
                             else:
-                                fk_lookups[field_name] = value  # 使用原 ID
-                        else:
-                            fk_lookups[field_name] = None
+                                # FK 引用在新库找不到映射，保留原始值（尝试创建或关联）
+                                create_data[field_name] = value
+                        # None 值不设置，跳过
                     # 处理 User.password（不迁移密码）
                     elif model_info.model_name == 'User' and field_name == 'password':
                         continue
