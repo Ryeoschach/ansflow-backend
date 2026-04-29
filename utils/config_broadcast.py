@@ -24,7 +24,17 @@ class ConfigBroadcaster:
         """获取 Redis 连接"""
         try:
             from django_redis import get_redis_connection
-            return get_redis_connection('default')
+            # 获取默认配置以进行调试打印
+            conn = get_redis_connection('default')
+            try:
+                # 尝试获取连接参数进行日志记录
+                client = conn.client
+                # 不同的 django-redis 版本获取方式不同，这里做简单兼容
+                params = getattr(conn, 'connection_pool', {}).get('connection_kwargs', {})
+                logger.info(f"Config broadcast connecting to Redis: {params.get('host', 'unknown')}:{params.get('port', 'unknown')}")
+            except:
+                pass
+            return conn
         except Exception as e:
             logger.warning(f'Failed to get Redis connection: {e}')
             return None
@@ -109,6 +119,12 @@ def init_config_broadcast_subscriber():
     """初始化配置广播订阅者"""
     if not getattr(settings, 'ANSFLOW_CONFIG_BROADCAST_ENABLED', True):
         logger.info('Config broadcast disabled')
+        return
+
+    # 如果在运行管理命令（如 migrate），跳过订阅
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ['migrate', 'createsuperuser', 'makemigrations', 'init_notification_config']:
+        logger.info(f'Skipping config broadcast subscriber for command: {sys.argv[1]}')
         return
 
     try:
