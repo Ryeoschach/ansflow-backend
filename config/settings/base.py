@@ -235,22 +235,18 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),                # 请求头前缀：Authorization: Bearer <token>
     'ROTATE_REFRESH_TOKENS': True,  # 每次刷新 access 时，也换一个新的 refresh
     'BLACKLIST_AFTER_ROTATION': False, # 设为 True 可以让旧 Token 彻底失效
-}
-
 # 缓存设置
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        # 统一改为 db 0，兼容集群
-        "LOCATION": "redis://127.0.0.1:6379/6",
+        # 优先从环境变量读取
+        "LOCATION": env('REDIS_URL', default="redis://127.0.0.1:6379/0"),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "SERIALIZER": "django_redis.serializers.json.JSONSerializer",
         },
-        # 增加全局前缀 ‘项目名:版本:用户id’
-        # 存入 Redis 的键变成 "demo_0304:1:user_perms_1"
-        "KEY_PREFIX": "ansFlow",
-        "VERSION": 1, # 用于版本迭代，修改它能一次性失效所有旧缓存
+        "KEY_PREFIX": "ansflow",
+        "VERSION": 1,
     }
 }
 
