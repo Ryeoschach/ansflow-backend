@@ -33,7 +33,6 @@ RUN pip install --no-cache-dir .
 # 6. 拷贝项目代码
 COPY . .
 
-# 7. 启动 Celery Worker
-# 环境变量通过 Docker Compose 或 K8s 注入
-ENTRYPOINT ["celery", "-A", "config", "worker", "-l", "info"]
+# 7. 默认启动命令 (会被 docker-compose.yml 中的 command 覆盖)
+CMD ["uv", "run", "celery", "-A", "config", "worker", "-l", "info"]
 
