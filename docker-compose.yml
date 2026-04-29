@@ -170,6 +170,7 @@ services:
 
 networks:
   ansflow-network:
+    name: ansflow-common-network
     driver: bridge
 
 volumes:
