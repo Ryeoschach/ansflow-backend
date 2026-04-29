@@ -7,48 +7,44 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.stdout.write("开始初始化 RBAC 数据...")
 
-        # 1. 创建基础菜单
+        # 1. 基础菜单数据 (同步自 db.sqlite3)
         menus_data = [
-            {"title": "仪表盘", "key": "dashboard", "path": "/dashboard", "icon": "DashboardOutlined", "order": 10},
-            
-            {"title": "主机管理", "key": "host", "path": "/host", "icon": "ServerOutlined", "order": 20, "children": [
-                {"title": "资产环境", "key": "host:env", "path": "/host/env", "order": 1},
-                {"title": "资源池", "key": "host:pool", "path": "/host/pool", "order": 2},
-                {"title": "主机列表", "key": "host:list", "path": "/host/list", "order": 3},
-                {"title": "平台接入", "key": "host:platform", "path": "/host/platform", "order": 4},
-                {"title": "凭据管理", "key": "host:credential", "path": "/host/credential", "order": 5},
+            {"title": "Dashboard", "title_en": "", "key": "dashboard", "path": "v1/dashboard", "icon": "DashboardOutlined", "order": 0},
+            {"title": "状态监控", "title_en": "Monitoring", "key": "system-monitor", "path": "v1/system/monitor", "icon": "HeartOutlined", "order": 1},
+            {"title": "Ansible任务", "title_en": "Ansible Management", "key": "ansible", "path": "ansible", "icon": "carbon:logo-red-hat-ansible", "order": 2, "children": [
+                {"title": "Ansible模版", "title_en": "Ansble Template", "key": "ansible_template", "path": "v1/task/ansible", "icon": "gg:template", "order": 0},
+                {"title": "Ansible执行历史", "title_en": "Ansible History", "key": "ansible_history", "path": "v1/task/executions", "icon": "icon-park-outline:history-query", "order": 1},
+                {"title": "ansible调度", "title_en": "Ansible Schedules", "key": "ansible-schedules", "path": "/v1/task/schedules", "icon": "hugeicons:time-schedule", "order": 2},
             ]},
-            
-            {"title": "任务中心", "key": "task", "path": "/task", "icon": "ConsoleSqlOutlined", "order": 30, "children": [
-                {"title": "Ansible 任务", "key": "task:ansible", "path": "/task/ansible", "order": 1},
-                {"title": "执行历史", "key": "task:history", "path": "/task/history", "order": 2},
-                {"title": "周期任务", "key": "task:periodic", "path": "/task/periodic", "order": 3},
+            {"title": "编排流水线", "title_en": "Pipeline Edit", "key": "pipeline", "path": "Pipelines", "icon": "carbon:pipelines", "order": 3, "children": [
+                {"title": "流水线列表", "title_en": "Pipeline List", "key": "pipeline_list", "path": "v1/pipeline/list", "icon": "hugeicons:timeline-list", "order": 0},
+                {"title": "流水线配置", "title_en": "Pipeline Design", "key": "pipeline_designer", "path": "v1/pipeline/designer", "icon": "f7:hand-draw", "order": 1},
+                {"title": "制品管理", "title_en": "Artifacts", "key": "artifacts", "path": "v1/pipeline/artifacts", "icon": "carbon:repo-artifact", "order": 2},
+                {"title": "Webhook触发器", "title_en": "Webhook", "key": "webhook", "path": "v1/pipeline/webhooks", "icon": "mingcute:webhook-line", "order": 3},
             ]},
-            
-            {"title": "流水线", "key": "pipeline", "path": "/pipeline", "icon": "PartitionOutlined", "order": 40, "children": [
-                {"title": "流水线编排", "key": "pipeline:template", "path": "/pipeline/template", "order": 1},
-                {"title": "运行记录", "key": "pipeline:run", "path": "/pipeline/run", "order": 2},
-                {"title": "CI 环境", "key": "pipeline:env", "path": "/pipeline/env", "order": 3},
+            {"title": "容器配置", "title_en": "Container Center", "key": "ContainerCenter", "path": "ContainerCenter", "icon": "carbon:web-services-container", "order": 4, "children": [
+                {"title": "构建镜像", "title_en": "Builder Container", "key": "CIEnvironments", "path": "v1/ci-envs", "icon": "streamline-logos:docker-logo", "order": 0},
             ]},
-            
-            {"title": "容器化", "key": "k8s", "path": "/k8s", "icon": "ClusterOutlined", "order": 50, "children": [
-                {"title": "集群管理", "key": "k8s:cluster", "path": "/k8s/cluster", "order": 1},
-                {"title": "Helm 应用", "key": "k8s:helm", "path": "/k8s/helm", "order": 2},
+            {"title": "K8S中心", "title_en": "K8S Center", "key": "k8s", "path": "k8smanagement", "icon": "ant-design:kubernetes-outlined", "order": 5, "children": [
+                {"title": "k8s集群管理", "title_en": "k8s Management", "key": "cluster", "path": "v1/k8s/management", "icon": "carbon:kubernetes-worker-node", "order": 0},
+                {"title": "helm管理", "title_en": "helm Management", "key": "helm", "path": "v1/k8s/helm", "icon": "simple-icons:helm", "order": 1},
             ]},
-            
-            {"title": "发布审批", "key": "approval", "path": "/approval", "icon": "CheckCircleOutlined", "order": 60, "children": [
-                {"title": "审批中心", "key": "approval:center", "path": "/approval/center", "order": 1},
-                {"title": "策略配置", "key": "approval:policy", "path": "/approval/policy", "order": 2},
+            {"title": "操作审计", "title_en": "Audit Center", "key": "AuditLog", "path": "v1/system/audit-logs", "icon": "hugeicons:audit-01", "order": 6},
+            {"title": "审批表", "title_en": "Approvals", "key": "approvals", "path": "v1/system/approvals", "icon": "fluent:approvals-app-48-filled", "order": 7},
+            {"title": "资源管理", "title_en": "Resources Management", "key": "resources", "path": "resources", "icon": "grommet-icons:resources", "order": 888, "children": [
+                {"title": "平台管理", "title_en": "Platform Management", "key": "platform", "path": "v1/system/platforms", "icon": "tdesign:control-platform", "order": 0},
+                {"title": "环境管理", "title_en": "Envs Management", "key": "envs", "path": "v1/system/envs", "icon": "fluent-mdl2:server-enviroment", "order": 1},
+                {"title": "资源池", "title_en": "Resource Pool", "key": "resourcepool", "path": "v1/system/resourcepool", "icon": "clarity:resource-pool-outline-alerted", "order": 2},
+                {"title": "主机管理", "title_en": "Host Management", "key": "hosts", "path": "v1/system/hosts", "icon": "material-symbols-light:host-outline", "order": 3},
+                {"title": "SSH 凭据", "title_en": "Credentials Management", "key": "credentials", "path": "v1/system/credentials", "icon": "KeyOutlined", "order": 50},
             ]},
-            
-            {"title": "系统管理", "key": "system", "path": "/system", "icon": "SettingOutlined", "order": 100, "children": [
-                {"title": "用户管理", "key": "system:user", "path": "/system/user", "order": 1},
-                {"title": "角色权限", "key": "system:role", "path": "/system/role", "order": 2},
-                {"title": "菜单管理", "key": "system:menu", "path": "/system/menu", "order": 3},
-                {"title": "配置中心", "key": "system:config", "path": "/system/config", "order": 4},
-                {"title": "健康状态", "key": "system:health", "path": "/system/health", "order": 5},
-                {"title": "备份恢复", "key": "system:backup", "path": "/system/backup", "order": 6},
-                {"title": "审计日志", "key": "system:audit", "path": "/system/audit", "order": 7},
+            {"title": "配置中心", "title_en": "Config Center", "key": "config center", "path": "v1/system/config", "icon": "carbon:document-configuration", "order": 889},
+            {"title": "系统管理", "title_en": "System Management", "key": "system", "path": "system", "icon": "SettingOutlined", "order": 999, "children": [
+                {"title": "菜单管理", "title_en": "Menu Management", "key": "menu", "path": "v1/system/menus", "icon": "MenuOutlined", "order": 0},
+                {"title": "用户管理", "title_en": "User Management", "key": "users", "path": "v1/system/users", "icon": "UserOutlined", "order": 1},
+                {"title": "权限管理", "title_en": "Permission Management", "key": "permissions", "path": "v1/system/permissions", "icon": "SafetyCertificateOutlined", "order": 2},
+                {"title": "角色管理", "title_en": "Roles Management", "key": "roles", "path": "v1/system/roles", "icon": "TeamOutlined", "order": 3},
+                {"title": "系统备份/还原", "title_en": "System Backup", "key": "backup", "path": "/v1/system/backup", "icon": "iconoir:database-backup", "order": 4},
             ]},
         ]
 
