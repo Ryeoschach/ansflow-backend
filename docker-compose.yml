@@ -7,6 +7,8 @@ services:
     command: >
       sh -c "python manage.py migrate --noinput &&
              python manage.py createsuperuser --noinput || true &&
+             python manage.py sync_perms &&
+             python manage.py init_rbac &&
              python manage.py init_notification_config"
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.production
@@ -170,7 +172,6 @@ services:
 
 networks:
   ansflow-network:
-    name: ansflow-common-network
     driver: bridge
 
 volumes:
