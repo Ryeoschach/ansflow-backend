@@ -12,6 +12,8 @@ services:
       - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
       - REDIS_URL=redis://ansflow-redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
+    env_file:
+      - .env
     depends_on:
       ansflow-db:
         condition: service_healthy
@@ -33,6 +35,8 @@ services:
       - REDIS_URL=redis://ansflow-redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     volumes:
@@ -62,6 +66,8 @@ services:
       - REDIS_URL=redis://ansflow-redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
       - ANSFLOW_WORKER_NAME=default-worker
+    env_file:
+      - .env
     volumes:
       - /tmp/ansflow_workspaces:/tmp/ansflow_workspaces
       - ./helm_charts:/tmp/helm_charts
@@ -95,6 +101,8 @@ services:
       - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
       - REDIS_URL=redis://ansflow-redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
+    env_file:
+      - .env
     volumes:
       - ./logs:/app/logs
     depends_on:
