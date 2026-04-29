@@ -235,6 +235,8 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),                # 请求头前缀：Authorization: Bearer <token>
     'ROTATE_REFRESH_TOKENS': True,  # 每次刷新 access 时，也换一个新的 refresh
     'BLACKLIST_AFTER_ROTATION': False, # 设为 True 可以让旧 Token 彻底失效
+}
+
 # 缓存设置
 CACHES = {
     "default": {
