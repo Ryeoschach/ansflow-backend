@@ -69,6 +69,19 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
         触发该模板运行，生成执行记录实例
         """
         task = self.get_object()
+
+        # --- 🚀 审批拦截逻辑集成 ---
+        from apps.approval_center.engine import ProxyApprovalEngine
+        is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
+            request, 
+            resource_type="ansible:execution", 
+            action_title=f"Ansible执行: {task.name}",
+            target_id=str(task.id)
+        )
+        if is_blocked:
+            return approval_res
+        # --- End 拦截 ---
+
         execution = AnsibleExecution.objects.create(
             task=task,
             executor=request.user,

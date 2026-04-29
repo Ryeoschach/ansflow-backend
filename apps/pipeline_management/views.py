@@ -69,7 +69,7 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         from apps.approval_center.engine import ProxyApprovalEngine
         is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
             request, 
-            resource_type='pipeline:execute', 
+            resource_type='pipeline:run', 
             action_title=f"申请运行流水线模板 #{pk}",
             target_id=pk
         )

@@ -2,6 +2,7 @@ from rest_framework import viewsets, mixins, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 
 from .models import ApprovalPolicy, ApprovalTicket
 from .serializers import ApprovalPolicySerializer, ApprovalTicketSerializer
@@ -9,6 +10,13 @@ from .engine import ProxyApprovalEngine
 
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 
+@extend_schema_view(
+    list=extend_schema(summary="查看审批策略列表"),
+    create=extend_schema(summary="创建新的审批策略"),
+    retrieve=extend_schema(summary="查看策略详情"),
+    update=extend_schema(summary="修改策略内容"),
+    destroy=extend_schema(summary="删除策略"),
+)
 class ApprovalPolicyViewSet(viewsets.ModelViewSet):
     """
     配置中心的审批阻断策略开关
@@ -25,9 +33,11 @@ class ApprovalPolicyViewSet(viewsets.ModelViewSet):
         'delete': {'name': '删除阻断策略', 'danger': 'high'},
     }
 
-
 from django.core.cache import cache
 
+@extend_schema_view(
+    list=extend_schema(summary="获取可拦截资源模板列表"),
+)
 class ApprovalTemplateViewSet(viewsets.ViewSet):
     """
     暴露系统支持审批拦截的资源模版类型
@@ -45,6 +55,12 @@ class ApprovalTemplateViewSet(viewsets.ViewSet):
         ]
         return Response(templates)
 
+@extend_schema_view(
+    list=extend_schema(summary="获取审批工单列表"),
+    retrieve=extend_schema(summary="查看工单详情及 Payload 快照"),
+    approve=extend_schema(summary="批准并执行拦截的任务"),
+    reject=extend_schema(summary="拒绝并作废拦截的任务"),
+)
 class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
     """
     审批总控台: 这里只允许列表查看，拦截通过/拒绝通过特有接口操作
