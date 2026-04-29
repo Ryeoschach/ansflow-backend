@@ -29,27 +29,21 @@ RUN curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/s
     && rm get_helm.sh
 
 # 4. 配置 uv 环境变量
-# 强制 uv 将虚拟环境创建在 /app/.venv
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv
-# 将虚拟环境的 bin 目录加入 PATH，这样可以直接运行安装的工具
 ENV PATH="/app/.venv/bin:$PATH"
-# 禁用编译字节码以加快构建速度
 ENV UV_COMPILE_BYTECODE=1
 
 # 5. 仅拷贝依赖定义文件以利用 Docker 缓存
 COPY pyproject.toml uv.lock ./
 
-# 6. 使用 uv sync 同步依赖
-# --frozen: 确保不更新 lock 文件
-# --no-dev: 生产环境不安装开发依赖
-# --no-install-project: 此时还不拷贝源码，只安装第三方包，最大化缓存命中率
-RUN uv sync --frozen --no-dev --no-install-project
+# 6. 使用 uv sync 同步依赖 (移除 --frozen 以提高容错性)
+RUN uv sync --no-dev --no-install-project
 
-# 7. 拷贝项目代码 (代码变动只会触发这一层及之后的步骤)
+# 7. 拷贝项目代码
 COPY . .
 
-# 8. 安装项目本身 (如果是以可编辑模式或需要安装项目元数据)
-RUN uv sync --frozen --no-dev
+# 8. 安装项目本身
+RUN uv sync --no-dev
 
 # 9. 默认启动命令
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
