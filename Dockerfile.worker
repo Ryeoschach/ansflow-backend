@@ -18,26 +18,38 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 uv
+# 2. 安装 uv (从官方镜像拷贝)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uv/bin/uv
 ENV PATH="/uv/bin:${PATH}"
 
-# 2. 安装 Helm 二进制工具
+# 3. 安装 Helm 二进制工具
 RUN curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
     && chmod 700 get_helm.sh \
     && ./get_helm.sh \
     && rm get_helm.sh
 
-# 3. 安装 Ansible
-RUN pip install --no-cache-dir ansible-core ansible-runner
+# 4. 配置 uv 环境变量
+# 强制 uv 将虚拟环境创建在 /app/.venv
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv
+# 将虚拟环境的 bin 目录加入 PATH，这样可以直接运行安装的工具
+ENV PATH="/app/.venv/bin:$PATH"
+# 禁用编译字节码以加快构建速度
+ENV UV_COMPILE_BYTECODE=1
 
-# 5. 安装 Python 项目依赖
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+# 5. 仅拷贝依赖定义文件以利用 Docker 缓存
+COPY pyproject.toml uv.lock ./
 
-# 6. 拷贝项目代码
+# 6. 使用 uv sync 同步依赖
+# --frozen: 确保不更新 lock 文件
+# --no-dev: 生产环境不安装开发依赖
+# --no-install-project: 此时还不拷贝源码，只安装第三方包，最大化缓存命中率
+RUN uv sync --frozen --no-dev --no-install-project
+
+# 7. 拷贝项目代码 (代码变动只会触发这一层及之后的步骤)
 COPY . .
 
-# 7. 默认启动命令 (会被 docker-compose.yml 中的 command 覆盖)
-CMD ["uv", "run", "celery", "-A", "config", "worker", "-l", "info"]
+# 8. 安装项目本身 (如果是以可编辑模式或需要安装项目元数据)
+RUN uv sync --frozen --no-dev
 
+# 9. 默认启动命令
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
