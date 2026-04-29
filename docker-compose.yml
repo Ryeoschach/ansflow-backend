@@ -1,4 +1,25 @@
 services:
+  # --- 数据库初始化 (仅运行一次) ---
+  ansflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: >
+      sh -c "uv run python manage.py migrate --noinput &&
+             uv run python manage.py init_notification_config"
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.production
+      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
+      - REDIS_URL=redis://ansflow-redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
+    depends_on:
+      ansflow-db:
+        condition: service_healthy
+      ansflow-redis:
+        condition: service_healthy
+    networks:
+      - ansflow-network
+
   # --- 核心后端 API ---
   ansflow-api:
     build:
@@ -18,6 +39,8 @@ services:
       - ./media:/app/media
       - ./logs:/app/logs
     depends_on:
+      ansflow-init:
+        condition: service_completed_successfully
       ansflow-db:
         condition: service_healthy
       ansflow-redis:
@@ -31,7 +54,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    command: ["celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
+    command: ["uv", "run", "celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.production
       - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
@@ -45,12 +68,14 @@ services:
       - ./media:/app/media
       - ./logs:/app/logs
     depends_on:
+      ansflow-init:
+        condition: service_completed_successfully
       ansflow-db:
         condition: service_healthy
       ansflow-redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$HOSTNAME"]
+      test: ["CMD-SHELL", "uv run celery -A config inspect ping -d celery@$HOSTNAME"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -63,7 +88,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    command: ["celery", "-A", "config", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
+    command: ["uv", "run", "celery", "-A", "config", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.production
       - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
@@ -73,6 +98,8 @@ services:
     volumes:
       - ./logs:/app/logs
     depends_on:
+      ansflow-init:
+        condition: service_completed_successfully
       ansflow-db:
         condition: service_healthy
       ansflow-redis:
@@ -86,7 +113,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    command: ["celery", "-A", "config", "flower", "--port=5555"]
+    command: ["uv", "run", "celery", "-A", "config", "flower", "--port=5555"]
     environment:
       - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
       - REDIS_URL=redis://ansflow-redis:6379/0
