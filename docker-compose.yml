@@ -23,7 +23,7 @@ services:
       ansflow-redis:
         condition: service_healthy
     networks:
-      - ansflow-network
+      - ansflow-common-network
 
   # --- 核心后端 API ---
   ansflow-api:
@@ -53,7 +53,7 @@ services:
       ansflow-redis:
         condition: service_healthy
     networks:
-      - ansflow-network
+      - ansflow-common-network
     restart: always
 
   # --- Celery Worker ---
@@ -89,7 +89,7 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - ansflow-network
+      - ansflow-common-network
     restart: always
 
   # --- Celery Beat (定时任务) ---
@@ -116,7 +116,7 @@ services:
       ansflow-redis:
         condition: service_healthy
     networks:
-      - ansflow-network
+      - ansflow-common-network
     restart: always
 
   # --- Flower (Celery 监控面板) ---
@@ -134,7 +134,7 @@ services:
       ansflow-redis:
         condition: service_healthy
     networks:
-      - ansflow-network
+      - ansflow-common-network
     restart: always
 
   # --- PostgreSQL 数据库 ---
@@ -152,7 +152,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - ansflow-network
+      - ansflow-common-network
     restart: always
 
   # --- Redis (Broker & Cache) ---
@@ -167,11 +167,12 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - ansflow-network
+      - ansflow-common-network
     restart: always
 
 networks:
-  ansflow-network:
+  ansflow-common-network:
+    name: ansflow-common-network
     driver: bridge
 
 volumes:
