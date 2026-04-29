@@ -8,7 +8,7 @@ from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewS
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
 from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet
-from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet
+from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalTemplateViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
@@ -49,6 +49,7 @@ router.register(r'config/change-logs', ConfigChangeLogViewSet, basename='config-
 app_router = DefaultRouter()
 router.register(r'approval_policies', ApprovalPolicyViewSet, basename='approval_policies')
 router.register(r'approval_tickets', ApprovalTicketViewSet, basename='approval_tickets')
+router.register(r'approval_templates', ApprovalTemplateViewSet, basename='approval_templates')
 
 
 

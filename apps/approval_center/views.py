@@ -28,6 +28,23 @@ class ApprovalPolicyViewSet(viewsets.ModelViewSet):
 
 from django.core.cache import cache
 
+class ApprovalTemplateViewSet(viewsets.ViewSet):
+    """
+    暴露系统支持审批拦截的资源模版类型
+    """
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'system:approval_policy' # 复用策略权限
+
+    def list(self, request):
+        # 预定义的受支持资源列表
+        templates = [
+            {"code": "pipeline:run", "name": "流水线运行 (生产环境发布拦截)", "icon": "PartitionOutlined"},
+            {"code": "ansible:execution", "name": "Ansible 任务执行 (高危指令拦截)", "icon": "ConsoleSqlOutlined"},
+            {"code": "k8s:helm_install", "name": "Helm 应用安装/升级 (K8s 环境变更拦截)", "icon": "ClusterOutlined"},
+            {"code": "host:terminal_access", "name": "SSH 终端登录 (远程访问审批)", "icon": "KeyOutlined"},
+        ]
+        return Response(templates)
+
 class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
     """
     审批总控台: 这里只允许列表查看，拦截通过/拒绝通过特有接口操作
