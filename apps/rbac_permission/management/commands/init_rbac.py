@@ -2,13 +2,22 @@ from django.core.management.base import BaseCommand
 from apps.rbac_permission.models import Menu, Permission, Role, User
 
 class Command(BaseCommand):
-    help = "初始化 RBAC 基础数据：菜单、角色、权限关联"
+    help = "初始化/重置 RBAC 基础数据（菜单、角色、权限）"
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--force',
+            action='store_true',
+            help='强制覆盖已存在的菜单属性（如标题、图标、路径、排序）',
+        )
 
     def handle(self, *args, **options):
-        self.stdout.write("开始初始化 RBAC 数据...")
+        force = options['force']
+        self.stdout.write(f"开始同步 RBAC 数据 (强制模式: {'开启' if force else '关闭'})...")
 
-        # 1. 基础菜单数据 (同步自 db.sqlite3)
-        menus_data = [
+        # 1. 深度嵌套的菜单树 (同步自生产库 db.sqlite3)
+        # 结构：[{ title, title_en, key, path, icon, order, children: [...] }]
+        menus_tree = [
             {"title": "Dashboard", "title_en": "", "key": "dashboard", "path": "v1/dashboard", "icon": "DashboardOutlined", "order": 0},
             {"title": "状态监控", "title_en": "Monitoring", "key": "system-monitor", "path": "v1/system/monitor", "icon": "HeartOutlined", "order": 1},
             {"title": "Ansible任务", "title_en": "Ansible Management", "key": "ansible", "path": "ansible", "icon": "carbon:logo-red-hat-ansible", "order": 2, "children": [
@@ -48,42 +57,56 @@ class Command(BaseCommand):
             ]},
         ]
 
-        def create_menus(data, parent=None):
+        def sync_menus(data, parent=None):
             for item in data:
                 children = item.pop("children", [])
-                menu, created = Menu.objects.update_or_create(
-                    key=item["key"],
-                    defaults={**item, "parent": parent}
-                )
-                if created:
-                    self.stdout.write(f"  创建菜单: {menu.title}")
+                key = item["key"]
+                
+                # 查找是否已存在
+                menu = Menu.objects.filter(key=key).first()
+                
+                if menu:
+                    if force:
+                        # 强制覆盖模式：更新所有属性
+                        for field, value in item.items():
+                            setattr(menu, field, value)
+                        menu.parent = parent
+                        menu.save()
+                        self.stdout.write(f"  [OVERWRITE] 菜单: {menu.title} ({key})")
+                    else:
+                        self.stdout.write(f"  [SKIP] 菜单已存在: {menu.title} ({key})")
+                else:
+                    # 不存在则创建
+                    menu = Menu.objects.create(**item, parent=parent)
+                    self.stdout.write(self.style.SUCCESS(f"  [NEW] 创建菜单: {menu.title} ({key})"))
+                
                 if children:
-                    create_menus(children, parent=menu)
+                    sync_menus(children, parent=menu)
 
-        create_menus(menus_data)
+        # 执行同步
+        sync_menus(menus_tree)
 
-        # 2. 创建超级管理员角色
+        # 2. 角色同步
         admin_role, created = Role.objects.get_or_create(
             code="superuser",
             defaults={"name": "超级管理员"}
         )
         if created:
-            self.stdout.write("创建角色: 超级管理员")
+            self.stdout.write(self.style.SUCCESS("创建角色: 超级管理员"))
 
-        # 3. 为超级管理员分配所有权限和菜单
+        # 3. 关联全量资源 (总是同步以确保管理员有权)
         all_perms = Permission.objects.all()
         admin_role.permissions.set(all_perms)
         
         all_menus = Menu.objects.all()
         admin_role.menus.set(all_menus)
-        self.stdout.write(f"已为超级管理员分配 {all_perms.count()} 个权限和 {all_menus.count()} 个菜单")
+        self.stdout.write(f"已确保超级管理员角色拥有全量权限({all_perms.count()})和菜单({all_menus.count()})")
 
-        # 4. 将 admin 用户关联到超级管理员角色
+        # 4. 用户关联
         admin_user = User.objects.filter(username="admin").first()
         if admin_user:
-            admin_user.roles.add(admin_role)
-            self.stdout.write("已将 admin 用户关联至超级管理员角色")
-        else:
-            self.stdout.write(self.style.WARNING("未找到 admin 用户，请手动关联角色"))
-
-        self.stdout.write(self.style.SUCCESS("RBAC 数据初始化完成！"))
+            if not admin_user.roles.filter(code="superuser").exists():
+                admin_user.roles.add(admin_role)
+                self.stdout.write(self.style.SUCCESS("已将 admin 用户提升为超级管理员角色"))
+        
+        self.stdout.write(self.style.SUCCESS("RBAC 数据同步完成！"))
