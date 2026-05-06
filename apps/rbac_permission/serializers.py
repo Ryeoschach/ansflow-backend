@@ -74,22 +74,11 @@ class UserSerializer(serializers.ModelSerializer):
         return [{"id": r.id, "name": r.name} for r in obj.roles.all()]
 
     def get_avatar_url(self, obj) -> str:
-        # 构建头像的完整 URL
+        # 返回相对路径，由前端/浏览器自动补全域名和端口，确保请求经过 Nginx
         if not obj.avatar:
             return None
             
-        # 优先使用配置的 BACKEND_URL 拼接，防止 Docker 内部环境自动推导域名失败（如 127.0.0.1）
-        backend_url = getattr(settings, 'BACKEND_URL', '').rstrip('/')
         media_url = settings.MEDIA_URL
-        
-        if backend_url:
-            return f"{backend_url}{media_url}{obj.avatar.name}"
-            
-        # 降级：如果未配置 BACKEND_URL，尝试从 request 自动推导
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(media_url + obj.avatar.name)
-            
         return f"{media_url}{obj.avatar.name}"
 
     # 因为是继承Django的User表，需要重写create来处理密码

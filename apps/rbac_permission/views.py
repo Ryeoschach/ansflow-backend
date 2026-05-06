@@ -58,10 +58,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 cache.set(cache_key, perms, timeout=3600)
 
         # 构建头像 URL
-        avatar_url = None
-        if user.avatar:
-            backend_url = getattr(settings, 'BACKEND_URL', '').rstrip('/')
-            avatar_url = f"{backend_url}{settings.MEDIA_URL}{user.avatar.name}" if backend_url else request.build_absolute_uri(settings.MEDIA_URL + user.avatar.name)
+        avatar_url = f"{settings.MEDIA_URL}{user.avatar.name}" if user.avatar else None
 
         return Response({
             "username": user.username,
@@ -86,8 +83,7 @@ class UserViewSet(viewsets.ModelViewSet):
         user.avatar = serializer.validated_data['avatar']
         user.save(update_fields=['avatar'])
 
-        backend_url = getattr(settings, 'BACKEND_URL', '').rstrip('/')
-        avatar_url = f"{backend_url}{settings.MEDIA_URL}{user.avatar.name}" if backend_url else request.build_absolute_uri(settings.MEDIA_URL + user.avatar.name)
+        avatar_url = f"{settings.MEDIA_URL}{user.avatar.name}"
         return Response({
             "message": "头像上传成功",
             "avatar": avatar_url,
