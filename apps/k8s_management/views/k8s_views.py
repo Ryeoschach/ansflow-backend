@@ -162,6 +162,77 @@ class K8sManagementMixin(K8sBaseMixin):
             return Response({"error": f"获取 Service 失败: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['get'])
+    def metrics_nodes(self, request, pk=None):
+        """
+        获取节点 Metrics (CPU/Memory)
+        """
+        cluster = self.get_object()
+        try:
+            api_client = get_k8s_client(cluster)
+            custom_api = k8s_client.CustomObjectsApi(api_client)
+            metrics = custom_api.list_cluster_custom_object("metrics.k8s.io", "v1beta1", "nodes")
+            return Response(metrics.get('items', []))
+        except Exception as e:
+            print(f"K8s Metrics Error (Nodes): {str(e)}")
+            # 直接返回空列表，通过 Header 告知前端错误类型
+            return Response([], headers={'X-Metrics-Error': 'NotAvailable'})
+
+    @action(detail=True, methods=['get'])
+    def metrics_pods(self, request, pk=None):
+        """
+        获取 Pod Metrics
+        """
+        cluster = self.get_object()
+        namespace = request.query_params.get('namespace')
+        try:
+            api_client = get_k8s_client(cluster)
+            custom_api = k8s_client.CustomObjectsApi(api_client)
+            if namespace:
+                metrics = custom_api.list_namespaced_custom_object("metrics.k8s.io", "v1beta1", namespace, "pods")
+            else:
+                metrics = custom_api.list_cluster_custom_object("metrics.k8s.io", "v1beta1", "pods")
+            return Response(metrics.get('items', []))
+        except Exception as e:
+            print(f"K8s Metrics Error (Pods): {str(e)}")
+            return Response([])
+
+    @action(detail=True, methods=['get'])
+    def events_list(self, request, pk=None):
+        """
+        获取事件列表
+        """
+        cluster = self.get_object()
+        namespace = request.query_params.get('namespace')
+        try:
+            api_instance = k8s_client.CoreV1Api(get_k8s_client(cluster))
+            if namespace:
+                events = api_instance.list_namespaced_event(namespace)
+            else:
+                events = api_instance.list_event_for_all_namespaces()
+            
+            data = []
+            for ev in events.items:
+                data.append({
+                    "name": ev.metadata.name,
+                    "namespace": ev.metadata.namespace,
+                    "reason": ev.reason,
+                    "message": ev.message,
+                    "type": ev.type,
+                    "source": ev.source.component if ev.source else 'Unknown',
+                    "first_timestamp": ev.first_timestamp,
+                    "last_timestamp": ev.last_timestamp,
+                    "count": ev.count,
+                    "object": f"{ev.involved_object.kind}/{ev.involved_object.name}"
+                })
+            # 按最后发生时间排序
+            from django.utils import timezone
+            min_date = timezone.make_aware(datetime.datetime.min)
+            data.sort(key=lambda x: (x['last_timestamp'] or x['first_timestamp'] or min_date), reverse=True)
+            return Response(data[:100]) # 仅返回最近 100 条
+        except Exception as e:
+            return Response({"error": f"获取事件失败: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'])
     def pod_logs_list(self, request, pk=None):
         """
         获取 Pod 日志 (增强型：支持在未就绪时自动回退到事件日志或 Init 容器日志)
