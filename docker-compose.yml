@@ -42,8 +42,9 @@ services:
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
     env_file:
       - .env
-    ports:
-      - "8000:8000"
+    # 生产环境建议通过 Nginx 访问 80 端口，不再直接暴露 8000
+    expose:
+      - "8000"
     volumes:
       - ./media:/app/media
       - ./logs:/app/logs
@@ -54,6 +55,24 @@ services:
         condition: service_healthy
       ansflow-redis:
         condition: service_healthy
+    networks:
+      - ansflow-common-network
+    restart: always
+
+  # --- 前端服务 & Nginx 网关 ---
+  ansflow-frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    volumes:
+      # 共享媒体文件目录，让 Nginx 直接加速头像/附件下载
+      - ./media:/usr/share/nginx/media:ro
+      # 如果后端执行了 collectstatic，也可以共享静态资源目录
+      - ./static:/usr/share/nginx/static:ro
+    depends_on:
+      - ansflow-api
     networks:
       - ansflow-common-network
     restart: always
