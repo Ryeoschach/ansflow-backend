@@ -9,7 +9,8 @@ services:
              python manage.py createsuperuser --noinput || true &&
              python manage.py sync_perms &&
              python manage.py init_rbac &&
-             python manage.py init_notification_config"
+             python manage.py init_notification_config &&
+             python manage.py collectstatic --noinput"
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.production
       - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
@@ -18,6 +19,8 @@ services:
       - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
     env_file:
       - .env
+    volumes:
+      - ansflow-static:/app/static
     depends_on:
       ansflow-db:
         condition: service_healthy
@@ -42,11 +45,10 @@ services:
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
     env_file:
       - .env
-    # 生产环境建议通过 Nginx 访问 80 端口，不再直接暴露 8000
     expose:
       - "8000"
     volumes:
-      - ./media:/app/media
+      - ansflow-media:/app/media
       - ./logs:/app/logs
     depends_on:
       ansflow-init:
@@ -67,10 +69,9 @@ services:
     ports:
       - "80:80"
     volumes:
-      # 共享媒体文件目录，让 Nginx 直接加速头像/附件下载
-      - ./media:/usr/share/nginx/media:ro
-      # 如果后端执行了 collectstatic，也可以共享静态资源目录
-      - ./static:/usr/share/nginx/static:ro
+      # 共享命名卷：确保与后端容器读写一致
+      - ansflow-media:/usr/share/nginx/media:ro
+      - ansflow-static:/usr/share/nginx/static:ro
     depends_on:
       - ansflow-api
     networks:
@@ -96,7 +97,7 @@ services:
     volumes:
       - /tmp/ansflow_workspaces:/tmp/ansflow_workspaces
       - ./helm_charts:/tmp/helm_charts
-      - ./media:/app/media
+      - ansflow-media:/app/media
       - ./logs:/app/logs
     depends_on:
       ansflow-init:
@@ -114,7 +115,7 @@ services:
       - ansflow-common-network
     restart: always
 
-  # --- Celery Beat (定时任务) ---
+  # --- Celery Beat ---
   ansflow-beat:
     build:
       context: .
@@ -142,7 +143,7 @@ services:
       - ansflow-common-network
     restart: always
 
-  # --- Flower (Celery 监控面板) ---
+  # --- Flower ---
   ansflow-flower:
     build:
       context: .
@@ -160,7 +161,7 @@ services:
       - ansflow-common-network
     restart: always
 
-  # --- PostgreSQL 数据库 ---
+  # --- PostgreSQL ---
   ansflow-db:
     image: postgres:16-alpine
     environment:
@@ -178,7 +179,7 @@ services:
       - ansflow-common-network
     restart: always
 
-  # --- Redis (Broker & Cache) ---
+  # --- Redis ---
   ansflow-redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
@@ -201,3 +202,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  ansflow-media:
+    name: ansflow-media
+  ansflow-static:
+    name: ansflow-static
