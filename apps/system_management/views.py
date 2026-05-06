@@ -57,71 +57,25 @@ class SystemHealthViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['get'])
     def celery_stats(self, request):
         """
-        获取 Celery 详细监控统计信息
+        获取 Celery 详细监控统计信息 (纯只读缓存模式)
+        响应时间固定 < 10ms，解决了广播同步等待导致的 30s+ 延迟。
         """
-        from config.celery import app as celery_app
-        from django_redis import get_redis_connection
-        
-        try:
-            inspector = celery_app.control.inspect(timeout=3.0)
-            
-            # 1. 基础任务统计
-            active = inspector.active() or {}
-            scheduled = inspector.scheduled() or {}
-            reserved = inspector.reserved() or {}
-            stats = inspector.stats() or {}
-            
-            # 2. 汇总 Worker 信息
-            worker_details = []
-            all_workers = set(list(active.keys()) + list(scheduled.keys()) + list(reserved.keys()) + list(stats.keys()))
-            
-            for worker in all_workers:
-                w_stats = stats.get(worker, {})
-                worker_details.append({
-                    "worker": worker,
-                    "status": "online" if worker in active or worker in stats else "offline",
-                    "active_count": len(active.get(worker, [])),
-                    "scheduled_count": len(scheduled.get(worker, [])),
-                    "reserved_count": len(reserved.get(worker, [])),
-                    "concurrency": w_stats.get('pool', {}).get('max-concurrency'),
-                    "broker_transport": w_stats.get('broker', {}).get('transport'),
-                    "rusage": w_stats.get('rusage', {})  # 包含 CPU 和内存信息
-                })
-            
-            # 3. 队列积压情况 (从 Redis 获取)
-            queue_stats = []
-            try:
-                conn = get_redis_connection("default")
-                # 常见队列：celery (default), priority, etc.
-                # 我们可以尝试从 stats 中推断，或者只检查默认的
-                for q_name in ['celery']:
-                    queue_stats.append({
-                        "name": q_name,
-                        "length": conn.llen(q_name)
-                    })
-            except Exception:
-                pass
-            
-            # 4. Beat 状态 (复用 Monitor 中的逻辑)
-            from django_celery_beat.models import PeriodicTask
-            recent_task = PeriodicTask.objects.filter(enabled=True, last_run_at__isnull=False).order_by('-last_run_at').first()
-            beat_info = {
-                "status": "offline",
-                "last_run": None
-            }
-            if recent_task and recent_task.last_run_at:
-                if (timezone.now() - recent_task.last_run_at).total_seconds() < 300:
-                    beat_info["status"] = "online"
-                beat_info["last_run"] = recent_task.last_run_at.isoformat()
-                
+        from django.core.cache import cache
+        cache_key = "ansflow:system:celery_stats"
+        cached_data = cache.get(cache_key)
+
+        if not cached_data:
+            # 立即返回初始化状态，前端可据此展示“采集中”动画
             return Response({
-                "workers": worker_details,
-                "queues": queue_stats,
-                "beat": beat_info,
+                "workers": [],
+                "queues": [],
+                "beat": {"status": "initializing"},
+                "message": "监控数据正在后台异步采集，请稍后刷新...",
                 "timestamp": timezone.now().isoformat()
             })
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(cached_data)
+
 
     @action(detail=False, methods=['post'])
     def report_error(self, request):

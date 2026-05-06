@@ -310,6 +310,10 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
 
 # Celery Beat 定时任务配置
 CELERY_BEAT_SCHEDULE = {
+    'collect-celery-stats-every-60s': {
+        'task': 'apps.system_management.tasks.collect_celery_stats',
+        'schedule': 60.0,
+    },
     'verify-platforms-every-hour': {
         'task': 'verify_platform_connectivity',
         # 'schedule': 3600.0,  # 每小时执行一次 (单位: 秒)
