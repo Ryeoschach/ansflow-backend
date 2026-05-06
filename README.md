@@ -51,10 +51,12 @@ backend/
 │   │   ├── serializers.py
 │   │   ├── urls.py
 │   │   └── tasks.py                         # advance_pipeline_engine / execute_pipeline_node
-│   ├── k8s_management/                      # Kubernetes 多集群 + Helm 应用管理
-│   │   ├── models.py                        # K8sCluster
-│   │   ├── views.py
-│   │   └── tasks.py
+├── k8s_management/                      # Kubernetes 多集群 + Helm 应用管理
+│   ├── models.py                        # K8sCluster
+│   ├── views.py                         # 资源 CRUD + 指标采集 + 事件中心
+│   ├── consumers.py                     # WebSocket (WebTTY / 实时日志流)
+│   └── tasks.py
+
 │   ├── registry_management/                  # Docker 镜像仓库 + 产物管理
 │   │   ├── models.py                        # ImageRegistry/Artifact/ArtifactVersion
 │   │   └── views.py
@@ -596,10 +598,15 @@ curl -X POST "https://your-domain/api/v1/pipeline/webhooks/1/trigger/" \
 
 **功能**：
 
-- **多集群接入**：通过 KubeConfig 文件接入多个 K8s 集群
-- **Helm 应用管理**：部署 / 升级 / 回滚 Helm Chart
-- **资源查看**：Deployment / Service / Ingress / ConfigMap / Secret / Pod 等
-- **健康检查**：实时检测集群连接状态（5 秒超时，不阻塞页面渲染）
+- **多集群接入**：通过 KubeConfig 文件或 Token 接入多个 K8s 集群。
+- **交互式 WebTTY**：通过 WebSocket 实现真正的 `kubectl exec -it` 交互式终端。
+- **实时滚动日志**：支持 `follow` 模式的 Pod 日志流推送，自动处理 Init 容器和诊断信息。
+- **监控与指标 (Metrics)**：对接 `metrics-server`，实时采集节点与 Pod 的 CPU/内存利用率。
+- **事件中心 (Events)**：聚合展示集群/命名空间范围内的实时事件流。
+- **YAML 深度集成**：支持资源的 YAML 获取与动态 Patch 更新。
+- **Helm 应用管理**：部署 / 升级 / 回滚 Helm Chart。
+- **资源查看**：Deployment / Service / Ingress / ConfigMap / Secret / Pod 等资源全生命周期巡检。
+- **健康检查**：实时检测集群连接状态。
 
 **Helm 部署**：
 ```json
