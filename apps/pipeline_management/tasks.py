@@ -2,6 +2,7 @@ import time
 import os
 import logging
 import requests
+import subprocess
 from celery import shared_task
 from django.utils import timezone
 from apps.pipeline_management.models import Pipeline, PipelineRun, PipelineNodeRun
@@ -58,11 +59,66 @@ def push_pipeline_status_to_ws(run_obj):
         }
     )
 
+def push_node_log_to_ws(run_id, node_id, log_content):
+    """
+    增量推送节点日志给前端
+    """
+    if not log_content: return
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"pipeline_run_{run_id}",
+        {
+            "type": "pipeline_node_log_append",
+            "data": {
+                "node_id": node_id,
+                "content": log_content
+            }
+        }
+    )
+
+def run_command_with_streaming_logs(cmd, node_run, cwd=None):
+    """
+    执行命令并实时流式推送日志
+    """
+    # 打印执行命令本身
+    start_msg = f"[$] {' '.join(cmd) if isinstance(cmd, list) else cmd}\n"
+    node_run.logs = (node_run.logs or "") + start_msg
+    node_run.save(update_fields=['logs'])
+    push_node_log_to_ws(node_run.run_id, node_run.node_id, start_msg)
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+        cwd=cwd
+    )
+
+    # 累计本次执行的所有新日志
+    current_exec_logs = ""
+    # 实时读取
+    for line in process.stdout:
+        if line:
+            current_exec_logs += line
+            # 推送到 WebSocket
+            push_node_log_to_ws(node_run.run_id, node_run.node_id, line)
+            
+    process.wait()
+    
+    # 最后将本次执行的日志追加回 node_run.logs 并持久化
+    node_run.logs = (node_run.logs or "") + current_exec_logs
+    node_run.save(update_fields=['logs'])
+    
+    return process.returncode == 0
+
 @shared_task(bind=True)
 def execute_pipeline_node(self, node_run_id):
     """
     具体的单个节点执行器，执行完后不管成败，均回调引擎继续决策调度
     """
+    logger.info(f"🚀 开始执行节点任务: node_run_id={node_run_id}")
     node_run = PipelineNodeRun.objects.get(id=node_run_id)
     
     # --- 增加：如果流水线已被取消，则直接退出 ---
@@ -117,21 +173,22 @@ def execute_pipeline_node(self, node_run_id):
             if not repo_url:
                 raise ValueError("Git 节点未配置仓库地址(URL)")
                 
-            node_run.logs = f"准备克隆拉取代码: {repo_url} (分支: {branch})...\n工作区挂载: {source_dir}\n"
-            node_run.save()
+            init_msg = f"准备克隆拉取代码: {repo_url} (分支: {branch})...\n工作区挂载: {source_dir}\n"
+            node_run.logs = (node_run.logs or "") + init_msg
+            node_run.save(update_fields=['logs'])
+            push_node_log_to_ws(node_run.run_id, node_run.node_id, init_msg)
             
             # 保证拉取前目录干净
             if os.path.exists(source_dir):
                 shutil.rmtree(source_dir, ignore_errors=True)
                 
-            try:
-                cmd = ["git", "clone", "-b", branch, repo_url, source_dir]
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                node_run.logs += result.stdout + "\n代码拉取成功！已放入统一工作区。"
-                success = True
-            except subprocess.CalledProcessError as e:
-                node_run.logs += f"代码拉取失败:\n{e.stderr}"
-                success = False
+            cmd = ["git", "clone", "-b", branch, repo_url, source_dir]
+            success = run_command_with_streaming_logs(cmd, node_run)
+            if success:
+                finish_msg = "\n✨ 代码拉取成功！已放入统一工作区。"
+                node_run.logs += finish_msg
+                node_run.save(update_fields=['logs'])
+                push_node_log_to_ws(node_run.run_id, node_run.node_id, finish_msg)
                 
         elif node_type == 'docker_build':
             pipeline_graph = node_run.run.pipeline.graph_data
@@ -153,55 +210,34 @@ def execute_pipeline_node(self, node_run_id):
                 
             image_name = env_obj.image
             
-            node_run.logs = f"正在启动 Docker 容器沙箱编译...\n> 工作区映射: {source_dir} -> /workspace\n> 拉起底层镜像: {image_name}\n> 注入的构建指令:\n{build_script}\n"
-            node_run.save()
+            init_msg = f"正在启动 Docker 容器沙箱编译...\n> 工作区映射: {source_dir} -> /workspace\n> 拉起底层镜像: {image_name}\n> 注入的构建指令:\n{build_script}\n"
+            node_run.logs = (node_run.logs or "") + init_msg
+            node_run.save(update_fields=['logs'])
+            push_node_log_to_ws(node_run.run_id, node_run.node_id, init_msg)
             
             if not os.path.exists(source_dir):
                 raise ValueError("代码工作区为空，请检查本节点上方是否正确连接了 Git 拉取节点！")
                 
-            try:
-                # --rm: 用完即毁, -v: 挂载代码, -w: 切换工作目录
-                cmd = [
-                    "docker", "run", "--rm",
-                    "-v", f"{source_dir}:/workspace",
-                    "-w", "/workspace",
-                    image_name,
-                    "/bin/sh", "-c", build_script
-                ]
-                
-                logger.info(f"[DEBUG] docker_build 开始执行 node={node_run.node_id} workspace={workspace_dir} source_dir={source_dir}")
-                logger.info(f"[DEBUG] cmd = {' '.join(cmd)}")
-
-                node_run.logs += f"\n[$] {' '.join(cmd)}\n"
-
-                # 避免 capture_output=True 死锁（maven 输出量大时 PIPE 缓冲会满）
-                # 改用文件中转：实时写入文件，结束后读回日志
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode='w+', suffix='.log', delete=False) as tmp:
-                    tmp_path = tmp.name
-
-                logger.info(f"[DEBUG] subprocess 开始，等待完成... tmp_path={tmp_path}")
-                with open(tmp_path, 'w', buffering=1) as stdout_f:
-                    result = subprocess.run(cmd, stdout=stdout_f, stderr=subprocess.STDOUT)
-                logger.info(f"[DEBUG] subprocess 完成，returncode={result.returncode}")
-
-                with open(tmp_path, 'r') as f:
-                    node_run.logs += "\n--- 容器内的输出日志 ---\n"
-                    node_run.logs += f.read()
-
-                import os
-                os.unlink(tmp_path)
-                logger.info(f"[DEBUG] docker_build 完成，returncode={result.returncode}")
-
-                if result.returncode == 0:
-                    node_run.logs += "\n✨ 隔离沙箱编译执行成功！所有编译产物均已落回宿主机的工作区中。"
-                    success = True
-                else:
-                    node_run.logs += f"\n❌ 沙箱编译失败，容器退出异常状态码: {result.returncode}"
-                    success = False
-            except Exception as e:
-                node_run.logs += f"\n调用宿主机 Docker Daemon 失败: {str(e)}。请检查服务器是否安装并启动了 Docker。"
-                success = False
+            # --rm: 用完即毁, -v: 挂载代码, -w: 切换工作目录
+            cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{source_dir}:/workspace",
+                "-w", "/workspace",
+                image_name,
+                "/bin/sh", "-c", build_script
+            ]
+            
+            success = run_command_with_streaming_logs(cmd, node_run)
+            if success:
+                finish_msg = "\n✨ 隔离沙箱编译执行成功！所有编译产物均已落回宿主机的工作区中。"
+                node_run.logs += finish_msg
+                node_run.save(update_fields=['logs'])
+                push_node_log_to_ws(node_run.run_id, node_run.node_id, finish_msg)
+            else:
+                fail_msg = "\n❌ 沙箱编译失败。"
+                node_run.logs += fail_msg
+                node_run.save(update_fields=['logs'])
+                push_node_log_to_ws(node_run.run_id, node_run.node_id, fail_msg)
 
         elif node_type == 'kaniko_build':
             pipeline_graph = node_run.run.pipeline.graph_data
@@ -261,8 +297,9 @@ def execute_pipeline_node(self, node_run_id):
             else:
                 full_image = f"{push_host}/{image_name}:{image_tag}"
                 
-            node_run.logs = f"正在启动 Kaniko 构建...\n> 挂载代码: {source_dir}\n> 目标镜像: {full_image}\n"
-            node_run.save()
+            node_run.logs = (node_run.logs or "") + init_msg
+            node_run.save(update_fields=['logs'])
+            push_node_log_to_ws(node_run.run_id, node_run.node_id, init_msg)
             
             auth_string = f"{registry.username}:{registry.password}"
             auth_b64 = base64.b64encode(auth_string.encode('utf-8')).decode('utf-8')
@@ -280,81 +317,66 @@ def execute_pipeline_node(self, node_run_id):
             with open(config_json_path, 'w') as f:
                 json.dump(auth_config, f)
                 
-            try:
-                cmd = [
-                    "docker", "run", "--rm",
-                    "-v", f"{source_dir}:/workspace",
-                    "-v", f"{config_json_path}:/kaniko/.docker/config.json",
-                    "gcr.io/kaniko-project/executor:debug",
-                    "--context", f"dir:///workspace/{context_path}",
-                    "--dockerfile", f"/workspace/{dockerfile_path}",
-                    "--destination", full_image
-                ]
+            cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{source_dir}:/workspace",
+                "-v", f"{config_json_path}:/kaniko/.docker/config.json",
+                "gcr.io/kaniko-project/executor:debug",
+                "--context", f"dir:///workspace/{context_path}",
+                "--dockerfile", f"/workspace/{dockerfile_path}",
+                "--destination", full_image
+            ]
 
-                node_run.logs += f"\n[$] {' '.join(cmd)}\n"
+            success = run_command_with_streaming_logs(cmd, node_run)
+            
+            if success:
+                finish_msg = f"\n✨ Kaniko 镜像构建成功！并已推送到: {full_image}"
+                node_run.logs += finish_msg
+                node_run.save(update_fields=['logs'])
+                push_node_log_to_ws(node_run.run_id, node_run.node_id, finish_msg)
+                
+                node_run.output_data = {
+                    "repository": full_image.split(':')[0],
+                    "tag": image_tag,
+                    "full_image": full_image
+                }
+                node_run.save(update_fields=['output_data'])
 
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode='w+', suffix='.log', delete=False) as tmp:
-                    tmp_path = tmp.name
+                # 自动记录产物到 Artifact 表
+                try:
+                    from apps.registry_management.models import Artifact, ArtifactVersion
+                    artifact_name = image_name.split('/')[-1] if '/' in image_name else image_name
+                    artifact, created = Artifact.objects.get_or_create(
+                        name=artifact_name,
+                        image_registry=registry,
+                        defaults={
+                            'source_type': 'docker',
+                            'type': 'docker_image',
+                            'repository': image_name,
+                            'latest_tag': image_tag,
+                            'pipeline': node_run.run.pipeline,
+                        }
+                    )
+                    if not created:
+                        artifact.latest_tag = image_tag
+                        artifact.repository = image_name
+                        artifact.save(update_fields=['latest_tag', 'repository', 'update_time'])
 
-                with open(tmp_path, 'w', buffering=1) as stdout_f:
-                    result = subprocess.run(cmd, stdout=stdout_f, stderr=subprocess.STDOUT)
-
-                with open(tmp_path, 'r') as f:
-                    node_run.logs += "\n--- Kaniko 构建输出 ---\n"
-                    node_run.logs += f.read()
-
-                import os
-                os.unlink(tmp_path)
-
-                if result.stderr:
-                    node_run.logs += "\n--- Kaniko 标准异常 ---\n"
-                    node_run.logs += result.stderr
-                    
-                if result.returncode == 0:
-                    node_run.logs += f"\n Kaniko 镜像构建成功！并已推送到: {full_image}"
-                    node_run.output_data = {
-                        "repository": full_image.split(':')[0],
-                        "tag": image_tag,
-                        "full_image": full_image
-                    }
-                    success = True
-
-                    # 自动记录产物到 Artifact 表
-                    try:
-                        from apps.registry_management.models import Artifact, ArtifactVersion
-                        artifact_name = image_name.split('/')[-1] if '/' in image_name else image_name
-                        artifact, created = Artifact.objects.get_or_create(
-                            name=artifact_name,
-                            image_registry=registry,
-                            defaults={
-                                'source_type': 'docker',
-                                'type': 'docker_image',
-                                'repository': image_name,
-                                'latest_tag': image_tag,
-                                'pipeline': node_run.run.pipeline,
-                            }
-                        )
-                        if not created:
-                            artifact.latest_tag = image_tag
-                            artifact.repository = image_name
-                            artifact.save(update_fields=['latest_tag', 'repository', 'update_time'])
-
-                        # 创建版本记录
-                        ArtifactVersion.objects.create(
-                            artifact=artifact,
-                            tag=image_tag,
-                            pipeline_run=node_run.run,
-                            build_user=node_run.run.trigger_user.username if node_run.run.trigger_user else None,
-                        )
-                        node_run.logs += f"\n[产物记录] 已创建/更新 Artifact: {artifact.name}:{image_tag}"
-                    except Exception as art_err:
-                        node_run.logs += f"\n[产物记录] 记录失败: {str(art_err)}"
-                else:
-                    node_run.logs += f"\n Kaniko 编译失败，退出码: {result.returncode}"
-                    success = False
-            except Exception as e:
-                node_run.logs += f"\n执行 Kaniko 失败: {str(e)}"
+                    # 创建版本记录
+                    ArtifactVersion.objects.create(
+                        artifact=artifact,
+                        tag=image_tag,
+                        pipeline_run=node_run.run,
+                        build_user=node_run.run.trigger_user.username if node_run.run.trigger_user else None,
+                    )
+                    node_run.logs += f"\n[产物记录] 已创建/更新 Artifact: {artifact.name}:{image_tag}"
+                    node_run.save(update_fields=['logs'])
+                except Exception as art_err:
+                    node_run.logs += f"\n[产物记录] 记录失败: {str(art_err)}"
+                    node_run.save(update_fields=['logs'])
+            else:
+                node_run.logs += "\n❌ Kaniko 编译失败。"
+                node_run.save(update_fields=['logs'])
                 success = False
             
         elif node_type == 'ansible':
@@ -579,156 +601,145 @@ def advance_pipeline_engine(self, run_id):
     流水线引擎(DAG Engine)- 大脑
     每次某个节点成功后被调用，或者初始化流水线时被调用。
     """
-    run = PipelineRun.objects.get(id=run_id)
-    
-    # 记录大脑的任务 ID
-    run.celery_task_id = self.request.id
-    run.save()
-    
-    # 实时推送：大脑已接管（状态可能是 pending 或由于之前重入还是 running）
-    push_pipeline_status_to_ws(run)
-    
-    # 如果处于 pending 状态，说明是首次进入引擎，发送启动通知（飞书/钉钉）
-    if run.status == 'pending':
-        from apps.system_management.notifiers import notify_pipeline_start
-        try:
-            notify_pipeline_start(run)
-        except Exception:
-            pass
-    
-    if run.status in ['success', 'failed', 'cancelled']:
-        return # 已经终态的流水线直接返回
-    
-    pipeline = run.pipeline
-    graph_data = pipeline.graph_data
-    
-    nodes_config = graph_data.get('nodes', [])
-    edges_config = graph_data.get('edges', [])
-    
-    # 获取此 Run 已生成的所有节点状态字典
-    node_runs = list(run.nodes.all())
-    node_status_map = { nr.node_id: nr for nr in node_runs }
-    
-    # 第一步判断：如果初始化时没有任何 node_run 记录，先根据 graph_data 生成全部 pending 记录
-    if not node_runs and nodes_config:
+    logger.info(f"🧠 流水线引擎已唤醒: run_id={run_id}")
+    try:
+        run = PipelineRun.objects.get(id=run_id)
+        
+        # 记录大脑的任务 ID
+        run.celery_task_id = self.request.id
+        run.save(update_fields=['celery_task_id'])
+        
+        if run.status in ['success', 'failed', 'cancelled']:
+            return 
+        
+        pipeline = run.pipeline
+        graph_data = pipeline.graph_data or {}
+        if not isinstance(graph_data, dict):
+            import json
+            if isinstance(graph_data, str):
+                try:
+                    graph_data = json.loads(graph_data)
+                except: graph_data = {}
+            else: graph_data = {}
+
+        nodes_config = graph_data.get('nodes', [])
+        edges_config = graph_data.get('edges', [])
+        
+        if not nodes_config:
+            run.status = 'failed'
+            run.save(update_fields=['status'])
+            push_pipeline_status_to_ws(run)
+            logger.error(f"流水线 #{run_id} 没有任何节点配置，无法执行。")
+            return
+
+        # 获取此 Run 已生成的所有节点 ID 集合
+        existing_node_ids = set(run.nodes.values_list('node_id', flat=True))
+        
+        # 初始化缺失的节点记录
         new_records = []
         for nc in nodes_config:
-            new_records.append(PipelineNodeRun(
-                run=run,
-                node_id=nc.get('id'),
-                node_type=nc.get('type'),
-                node_label=nc.get('data', {}).get('label', ''),
-                status='pending'
-            ))
-        PipelineNodeRun.objects.bulk_create(new_records)
-        # 刷新一遍 node_runs 和 node_status_map
+            if nc.get('id') not in existing_node_ids:
+                new_records.append(PipelineNodeRun(
+                    run=run,
+                    node_id=nc.get('id'),
+                    node_type=nc.get('type'),
+                    node_label=nc.get('data', {}).get('label', ''),
+                    status='pending'
+                ))
+        
+        if new_records:
+            try:
+                # ignore_conflicts=True 即使并发写入也能保证不崩溃
+                PipelineNodeRun.objects.bulk_create(new_records, ignore_conflicts=True)
+            except Exception as be:
+                logger.warning(f"批量创建节点时发生冲突（可能由于并发）：{str(be)}")
+
+        # 重新获取完整的节点运行列表（确保包含刚创建的和已有的）
         node_runs = list(run.nodes.all())
         node_status_map = { nr.node_id: nr for nr in node_runs }
 
-    # 将 Run 状态置为 running（首次执行和重试执行都要设置）
-    if run.status == 'pending':
-        run.status = 'running'
-        run.start_time = timezone.now()
-        run.save()
-        # 实时推送：流水线大脑初始化并启动
-        push_pipeline_status_to_ws(run)
-
-    # 重试时：从父运行复制工作区产物到新工作区（无论首次执行还是重试都要执行）
-    if run.parent_run_id:
-        parent_workspace = f"/tmp/ansflow_workspaces/run_{run.parent_run_id}"
-        current_workspace = f"/tmp/ansflow_workspaces/run_{run_id}"
-        if os.path.exists(parent_workspace) and not os.path.exists(current_workspace):
-            import shutil
-            # 复制父运行的工作区到新运行（保留 git clone 等产物）
-            shutil.copytree(parent_workspace, current_workspace, dirs_exist_ok=True)
-
-    # ======= 状态评估核心 =======
-    
-    # 检查是否有失败节点，有一个失败则整个 pipeline 失败 (默认开启 fail-fast)
-    failed_nodes = [nr for nr in node_runs if nr.status == 'failed']
-    if failed_nodes:
-        run.status = 'failed'
-        run.end_time = timezone.now()
-        run.save()
-        
-        # 实时推送与通知
-        push_pipeline_status_to_ws(run)
-        
-        from apps.system_management.notifiers import notify_pipeline_result
-        try:
-            notify_pipeline_result(run)
-        except Exception:
-            pass
-        return
-
-    # 寻找本轮所有准备就绪的节点
-    # 规则：该节点自身处于 pending 状态，并且它"所有的"前置依赖节点都处于 success 状态
-    
-    ready_nodes = []
-    has_running_or_pending = False
-
-    for nr in node_runs:
-        if nr.status in ['running']:
-            has_running_or_pending = True
+        # --- 👑 核心：状态流转优先 ---
+        is_initial_start = (run.status == 'pending')
+        if is_initial_start:
+            run.status = 'running'
+            run.start_time = timezone.now()
+            run.save(update_fields=['status', 'start_time'])
+            push_pipeline_status_to_ws(run)
             
-        if nr.status == 'pending':
-            has_running_or_pending = True
-            # 去连线里面找：哪些线的 target 是本节点？
-            incoming_edges = [e for e in edges_config if e.get('target') == nr.node_id]
-            
-            # 如果没有前置依赖，代表这是首发节点
-            if not incoming_edges:
-                ready_nodes.append(nr)
-                continue
-            
-            # 否则，检查所有上游节点的当前状态
-            all_upstream_success = True
-            for edge in incoming_edges:
-                source_id = edge.get('source')
-                source_run = node_status_map.get(source_id)
-                if not source_run or source_run.status not in ('success', 'skipped'):
-                    all_upstream_success = False
-                    break
-            
-            if all_upstream_success:
-                ready_nodes.append(nr)
+            try:
+                from apps.system_management.notifiers import notify_pipeline_start
+                notify_pipeline_start(run)
+            except Exception as e:
+                logger.error(f"[Notify Error] 启动通知失败: {str(e)}")
 
-    # 触发就绪的节点执行
-    if ready_nodes:
-        # 统一使用流水线的全局超时时间
-        pipeline_timeout = run.pipeline.timeout or 3600
-        
-        # 为了防止并发条件下的重复派发，先将这些节点标记为 dispatched
-        for nr in ready_nodes:
-            nr.status = 'running' # 提前占坑，让后续大脑扫描不再视其为 pending
-            nr.save(update_fields=['status'])
-            # 使用 apply_async 下发任务并注入超时限制
-            execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
-        
-        # 批量下发后实时推送一次总体进展
-        push_pipeline_status_to_ws(run)
-            
-    else:
-        # 如果没有就绪，判断是否是完全胜利结束了
-        if not has_running_or_pending:
-            # 说明所有的均不是 pending/running，只剩 success 了！
+        # 重试时：从父运行复制工作区产物
+        if run.parent_run_id:
+            parent_workspace = f"/tmp/ansflow_workspaces/run_{run.parent_run_id}"
+            current_workspace = f"/tmp/ansflow_workspaces/run_{run_id}"
+            if os.path.exists(parent_workspace) and not os.path.exists(current_workspace):
+                import shutil
+                shutil.copytree(parent_workspace, current_workspace, dirs_exist_ok=True)
+
+        # ======= 状态评估核心 =======
+        # ... (后续逻辑不变，但放入 try 中)
+        # 寻找就绪节点
+        ready_nodes = []
+        has_running_or_pending = False
+
+        for nr in node_runs:
+            if nr.status == 'running':
+                has_running_or_pending = True
+            elif nr.status == 'pending':
+                has_running_or_pending = True
+                incoming_edges = [e for e in edges_config if e.get('target') == nr.node_id]
+                
+                if not incoming_edges:
+                    ready_nodes.append(nr)
+                else:
+                    all_upstream_success = True
+                    for edge in incoming_edges:
+                        source_id = edge.get('source')
+                        source_run = node_status_map.get(source_id)
+                        if not source_run or source_run.status not in ('success', 'skipped'):
+                            all_upstream_success = False
+                            break
+                    if all_upstream_success:
+                        ready_nodes.append(nr)
+
+        # 触发就绪节点
+        if ready_nodes:
+            pipeline_timeout = run.pipeline.timeout or 3600
+            for nr in ready_nodes:
+                nr.status = 'running'
+                nr.save(update_fields=['status'])
+                execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
+            push_pipeline_status_to_ws(run)
+                
+        elif not has_running_or_pending:
+            # 全部成功结束
             run.status = 'success'
             run.end_time = timezone.now()
-            run.save()
-            
-            # 实时推送：整条流水线胜利完成
+            run.save(update_fields=['status', 'end_time'])
             push_pipeline_status_to_ws(run)
 
-            from apps.system_management.notifiers import notify_pipeline_result
             try:
+                from apps.system_management.notifiers import notify_pipeline_result
                 notify_pipeline_result(run)
-            except Exception:
-                pass
+            except Exception: pass
             
-            # 流水线全局终态清理：清理挂载在宿主机的工作区
             import shutil
             workspace_dir = f"/tmp/ansflow_workspaces/run_{run_id}"
             shutil.rmtree(workspace_dir, ignore_errors=True)
+
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ 流水线引擎崩溃 [Run #{run_id}]: {str(e)}\n{traceback.format_exc()}")
+        try:
+            run = PipelineRun.objects.get(id=run_id)
+            run.status = 'failed'
+            run.save(update_fields=['status'])
+            push_pipeline_status_to_ws(run)
+        except: pass
 
 
 @shared_task(name='apps.pipeline_management.tasks.cleanup_old_workspaces')

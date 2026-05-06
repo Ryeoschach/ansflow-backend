@@ -65,7 +65,7 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
     def execute(self, request, pk=None):
         """触发执行流水线"""
         
-        # 👑 【核心介入】挂载审批代理探针
+        # 1. 审批拦截检查
         from apps.approval_center.engine import ProxyApprovalEngine
         is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
             request, 
@@ -73,20 +73,22 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
             action_title=f"申请运行流水线模板 #{pk}",
             target_id=pk
         )
-        # 如果命中安全策略，引擎将其冻结并打包为工单，直接返回 202 挂起响应
         if is_blocked:
             return approval_res
 
+        # 2. 创建运行记录
         pipeline = self.get_object()
-        run = PipelineRun.objects.create(
-            pipeline=pipeline,
-            status='pending',
-            trigger_user=request.user,
-            trigger_type='manual'
-        )
-        
-        # 触发 Celery DAG 引擎进行拓扑遍历调度
-        advance_pipeline_engine.delay(run.id)
+        from django.db import transaction
+        with transaction.atomic():
+            run = PipelineRun.objects.create(
+                pipeline=pipeline,
+                status='pending',
+                trigger_user=request.user,
+                trigger_type='manual'
+            )
+            # 3. 事务提交后再触发任务
+            print(f"[DEBUG] 准备下发任务 advance_pipeline_engine.delay({run.id})")
+            transaction.on_commit(lambda: advance_pipeline_engine.delay(run.id))
         
         return Response({'msg': '流水线已启动', 'run_id': run.id})
 
