@@ -1,5 +1,18 @@
 from rest_framework import serializers
-from .models import K8sCluster
+from .models import K8sCluster, HelmRepository
+
+
+class HelmRepositorySerializer(serializers.ModelSerializer):
+    """
+    Helm 仓库序列化器
+    """
+    class Meta:
+        model = HelmRepository
+        fields = ['id', 'name', 'url', 'username', 'password', 'description', 'create_time', 'update_time']
+        read_only_fields = ['create_time', 'update_time']
+        extra_kwargs = {
+            'password': {'write_only': True, 'required': False}
+        }
 
 
 class K8sClusterSerializer(serializers.ModelSerializer):

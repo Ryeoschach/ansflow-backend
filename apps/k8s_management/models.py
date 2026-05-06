@@ -25,3 +25,18 @@ class K8sCluster(BaseModel):
     class Meta:
         db_table = 'k8s_clusters'
         verbose_name = "K8s 集群"
+
+
+class HelmRepository(BaseModel):
+    name = models.CharField(max_length=100, unique=True, verbose_name="仓库名称")
+    url = models.URLField(verbose_name="仓库 URL")
+    
+    # 认证信息
+    username = models.CharField(max_length=100, null=True, blank=True, verbose_name="用户名")
+    password = EncryptedTextField(null=True, blank=True, verbose_name="密码/Token")
+    
+    description = models.TextField(null=True, blank=True, verbose_name="备注")
+
+    class Meta:
+        db_table = 'helm_repositories'
+        verbose_name = "Helm 仓库"

@@ -140,13 +140,35 @@ class HelmManagementMixin(K8sBaseMixin):
         chart = request.data.get('chart')
         namespace = request.data.get('namespace', 'default')
         version = request.data.get('version')
+        repo_id = request.data.get('repo_id')
 
         if not all([name, chart]):
             return Response({"error": "缺少 Release 名称或 Chart 路径"}, status=status.HTTP_400_BAD_REQUEST)
 
         kubeconfig_path = self._get_temp_kubeconfig(cluster)
+        temp_dir = tempfile.mkdtemp()
         try:
+            config_p = os.path.join(temp_dir, 'config.yaml')
+            
+            # 如果提供了 repo_id，先进行 repo add
+            if repo_id:
+                try:
+                    from ..models import HelmRepository
+                    repo = HelmRepository.objects.get(id=repo_id)
+                    add_cmd = ['helm', 'repo', 'add', repo.name, repo.url, '--repository-config', config_p, '--repository-cache', temp_dir]
+                    if repo.username and repo.password:
+                        add_cmd.extend(['--username', repo.username, '--password', repo.password])
+                    subprocess.run(add_cmd, capture_output=True, check=True)
+                    # 修正 chart 名称为 repo/chart
+                    if not chart.startswith(f"{repo.name}/"):
+                        chart = f"{repo.name}/{chart}"
+                except Exception as e:
+                    return Response({"error": f"Helm 仓库配置失败: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
             cmd = ['helm', 'install', name, chart, '-n', namespace, '--kubeconfig', kubeconfig_path]
+            if repo_id:
+                cmd.extend(['--repository-config', config_p, '--repository-cache', temp_dir])
+            
             if version:
                 cmd.extend(['--version', str(version)])
                 
@@ -161,6 +183,8 @@ class HelmManagementMixin(K8sBaseMixin):
         finally:
             if os.path.exists(kubeconfig_path):
                 os.remove(kubeconfig_path)
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     @action(detail=True, methods=['post'])
     def helm_uninstall(self, request, pk=None):
@@ -200,14 +224,32 @@ class HelmManagementMixin(K8sBaseMixin):
         namespace = request.data.get('namespace', 'default')
         force = request.data.get('force', False)
         values_content = request.data.get('values')
+        repo_id = request.data.get('repo_id')
 
         if not name:
             return Response({"error": "缺少 Release 名称"}, status=status.HTTP_400_BAD_REQUEST)
 
         kubeconfig_path = self._get_temp_kubeconfig(cluster)
+        temp_dir = tempfile.mkdtemp()
         temp_val_path = None
 
         try:
+            config_p = os.path.join(temp_dir, 'config.yaml')
+            
+            # 仓库处理逻辑
+            if repo_id:
+                try:
+                    from ..models import HelmRepository
+                    repo = HelmRepository.objects.get(id=repo_id)
+                    add_cmd = ['helm', 'repo', 'add', repo.name, repo.url, '--repository-config', config_p, '--repository-cache', temp_dir]
+                    if repo.username and repo.password:
+                        add_cmd.extend(['--username', repo.username, '--password', repo.password])
+                    subprocess.run(add_cmd, capture_output=True, check=True)
+                    if chart and not chart.startswith(f"{repo.name}/"):
+                        chart = f"{repo.name}/{chart}"
+                except Exception as e:
+                    return Response({"error": f"Helm 仓库配置失败: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
             if not chart:
                 list_cmd = ['helm', 'list', '-n', namespace, '--filter', f'^{name}$', '--output', 'json', '--kubeconfig', kubeconfig_path]
                 list_res = subprocess.run(list_cmd, capture_output=True, text=True)
@@ -225,12 +267,14 @@ class HelmManagementMixin(K8sBaseMixin):
                 return Response({"error": "未能定位到该 Release 的 Chart 存储副本。"}, status=status.HTTP_400_BAD_REQUEST)
 
             cmd = ['helm', 'upgrade', name, chart, '-n', namespace, '--kubeconfig', kubeconfig_path, '--install']
+            if repo_id:
+                cmd.extend(['--repository-config', config_p, '--repository-cache', temp_dir])
             
             if version:
                 cmd.extend(['--version', str(version)])
 
             if values_content:
-                fd, temp_val_path = tempfile.mkstemp(suffix='.yaml')
+                fd, temp_val_path = tempfile.mkstemp(suffix='.yaml', dir=temp_dir)
                 with os.fdopen(fd, 'w') as f:
                     f.write(values_content)
                 cmd.extend(['-f', temp_val_path])
@@ -247,7 +291,8 @@ class HelmManagementMixin(K8sBaseMixin):
             return Response({"error": f"升级异常: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
         finally:
             if os.path.exists(kubeconfig_path): os.remove(kubeconfig_path)
-            if temp_val_path and os.path.exists(temp_val_path): os.remove(temp_val_path)
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     @action(detail=True, methods=['post'])
     def helm_rollback(self, request, pk=None):

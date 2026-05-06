@@ -52,11 +52,10 @@ backend/
 │   │   ├── urls.py
 │   │   └── tasks.py                         # advance_pipeline_engine / execute_pipeline_node
 ├── k8s_management/                      # Kubernetes 多集群 + Helm 应用管理
-│   ├── models.py                        # K8sCluster
-│   ├── views.py                         # 资源 CRUD + 指标采集 + 事件中心
+│   ├── models.py                        # K8sCluster, HelmRepository
+│   ├── views.py                         # 资源 CRUD + 仓库管理 + 指标采集 + 事件中心
 │   ├── consumers.py                     # WebSocket (WebTTY / 实时日志流)
 │   └── tasks.py
-
 │   ├── registry_management/                  # Docker 镜像仓库 + 产物管理
 │   │   ├── models.py                        # ImageRegistry/Artifact/ArtifactVersion
 │   │   └── views.py
@@ -599,6 +598,7 @@ curl -X POST "https://your-domain/api/v1/pipeline/webhooks/1/trigger/" \
 **功能**：
 
 - **多集群接入**：通过 KubeConfig 文件或 Token 接入多个 K8s 集群。
+- **Helm 仓库管理**：支持公共/私有 Helm Repository 的持久化管理与连通性测试。
 - **交互式 WebTTY**：通过 WebSocket 实现真正的 `kubectl exec -it` 交互式终端。
 - **实时滚动日志**：支持 `follow` 模式的 Pod 日志流推送，自动处理 Init 容器和诊断信息。
 - **监控与指标 (Metrics)**：对接 `metrics-server`，实时采集节点与 Pod 的 CPU/内存利用率。
