@@ -1,10 +1,9 @@
 # AnsFlow Backend
 
-企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。
+企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。集成了 **RAG 知识库**、**智能诊断**与 **SRE 自愈**能力。
 
-**当前版本**：v1.4.0 (build: 2026-04-28)  
-**在线 Demo**：https://ansflow.cyfee.com:10443  
-**默认账号**：admin / ansflow
+**当前版本**：v2.0.0 (build: 2026-05-08)  
+**核心能力**：DevOps + SRE + RAG 智能助手  
 
 ---
 
@@ -13,16 +12,14 @@
 | 类别 | 技术 | 说明 |
 |------|------|------|
 | 框架 | Django 5.2 + DRF 3.16 | 核心 Web 框架 |
-| 语言 | Python 3.12+ | 类型提示 / 异步支持 |
-| ORM | Django ORM | SQLite（开发）/ PostgreSQL（生产） |
-| 认证 | JWT via SimpleJWT | Cookie 存储，Access 60min / Refresh 7d |
+| AI 编排 | LangChain | RAG 链路与 LLM 交互驱动 |
+| 向量数据库 | ChromaDB | 本地向量存储，支持语义检索 |
+| 向量化引擎 | FastEmbed | 轻量级 ONNX 运行时，无 PyTorch 依赖 |
+| 大语言模型 | DeepSeek-V3 | 核心推理引擎（兼容 OpenAI SDK） |
 | 异步任务 | Celery 5.x + Redis | 分布式任务队列 |
 | 实时通信 | Django Channels + WebSocket | 流水线日志实时推送 |
-| 缓存 | Redis + django-redis | 高速缓存层 |
 | 容器编排 | Kubernetes Python Client | K8s 集群管理 |
 | 基础设施即代码 | Ansible Runner | 批量主机任务执行 |
-| 镜像管理 | Docker Registry API | 镜像仓库操作 |
-| API 文档 | drf-spectacular | Swagger / OpenAPI 3.0 |
 
 ---
 
@@ -31,75 +28,79 @@
 ```
 backend/
 ├── apps/                                   # 业务应用模块
+│   ├── ai_engine/                           # AI 智能中枢 (RAG + LLM)
+│   │   ├── models.py                        # KnowledgeBase / ChatHistory / Message
+│   │   ├── rag_service.py                   # RAG 核心逻辑 (Vector/Embedding/LLM)
+│   │   ├── views.py                         # 对话、诊断、AIGC 编排接口
+│   │   └── tasks.py                         # 文档向量化异步任务
+│   ├── sre_management/                      # SRE 智能运维 (告警/自愈)
+│   │   ├── models.py                        # AlertEvent / SelfHealingPolicy
+│   │   ├── views.py                         # 告警 Webhook 接收网关
+│   │   └── tasks.py                         # 异步 AI 诊断与匹配自愈流水线
 │   ├── rbac_permission/                     # 用户/角色/权限/菜单/审计日志
-│   │   ├── models.py                        # User/Role/Permission/Menu/AuditLog
-│   │   ├── views.py                         # 用户/角色/权限 API
-│   │   ├── serializers.py
-│   │   ├── urls.py
-│   │   └── tasks.py                         # 定时同步用户状态
-│   ├── host_management/                     # 主机管理/平台接入/环境/资源池
-│   │   ├── models.py                        # Host/Environment/Platform/ResourcePool
-│   │   ├── views.py
-│   │   └── tasks.py                         # 平台连接检测
-│   ├── task_management/                     # Ansible 任务中心
-│   │   ├── models.py                        # AnsibleTask/AnsibleExecution/TaskLog
-│   │   ├── views.py
-│   │   └── tasks.py                         # run_ansible_task Celery 任务
 │   ├── pipeline_management/                 # 流水线 DAG 编排 + 定时调度（核心模块）
-│   │   ├── models.py                        # Pipeline/PipelineRun/PipelineNodeRun/CIEnvironment/PipelineWebhook/PipelineVersion
-│   │   ├── views.py
-│   │   ├── serializers.py
-│   │   ├── urls.py
-│   │   └── tasks.py                         # advance_pipeline_engine / execute_pipeline_node
-├── k8s_management/                      # Kubernetes 多集群 + Helm 应用管理
-│   ├── models.py                        # K8sCluster, HelmRepository
-│   ├── views.py                         # 资源 CRUD + 仓库管理 + 指标采集 + 事件中心
-│   ├── consumers.py                     # WebSocket (WebTTY / 实时日志流)
-│   └── tasks.py
+│   ├── host_management/                     # 主机管理/平台接入/环境/资源池
+│   ├── task_management/                     # Ansible 任务中心
+│   ├── k8s_management/                      # Kubernetes 多集群 + Helm 管理
 │   ├── registry_management/                  # Docker 镜像仓库 + 产物管理
-│   │   ├── models.py                        # ImageRegistry/Artifact/ArtifactVersion
-│   │   └── views.py
 │   ├── approval_center/                      # 发布审批工作流引擎
-│   │   ├── models.py                        # ApprovalPolicy/ApprovalTicket
-│   │   └── views.py
-│   ├── credentials_management/              # 敏感凭据安全存储
-│   │   ├── models.py                        # Credential（Fernet 加密）
-│   │   └── views.py
-│   ├── config_center/                        # 配置中心（分类/项/变更审计/热更新）
-│   │   ├── models.py                        # ConfigCategory/ConfigItem/ConfigChangeLog
-│   │   ├── views.py
-│   │   └── tasks.py
-│   └── system_management/                    # 系统设置/健康检查/备份恢复/通知
-│       ├── models.py
-│       ├── views.py                         # Health/Dashboard/Backup/Notification
-│       └── notifiers.py                     # 飞书/钉钉通知发送器
-├── config/                                   # Django 项目配置
-│   ├── __init__.py                          # Celery app 导入 + 版本信息
-│   ├── settings/
-│   │   ├── base.py                          # 基础配置（所有环境共用）
-│   │   ├── development.py                   # 开发环境覆盖（DEBUG=True 等）
-│   │   └── production.py                    # 生产环境覆盖（安全强化）
-│   ├── asgi.py                              # ASGI 配置（支持 WebSocket via Channels）
-│   ├── celery.py                            # Celery 异步任务配置
-│   ├── routing.py                           # Channels 路由（WebSocket URL 映射）
-│   └── urls.py                              # 全局 URL 路由（API 前缀 /api/v1/）
+│   ├── credentials_management/              # 凭据安全存储
+│   ├── config_center/                        # 配置中心 (热更新)
+│   └── system_management/                    # 系统设置/健康检查/通知
+├── config/                                   # 项目配置
 ├── utils/                                   # 公共工具
-│   ├── base_model.py                        # BaseModel 基类（id/create_time/update_time）
-│   ├── auth_views.py                        # 认证视图（CookieTokenObtainPairView 等）
-│   ├── encryption.py                        # Fernet 对称加密工具
-│   ├── exception_handler.py                  # 全局 DRF 异常处理
-│   ├── middleware.py                         # 审计日志中间件
-│   ├── pagination.py                        # 分页器（PageNumberPagination）
-│   ├── rbac_permission.py                   # SmartRBAC 权限核心
-│   ├── renderers.py                         # JSON 渲染器
-│   ├── schema.py                            # DRF Schema（权限感知）
-│   ├── signals.py                           # Django 信号定义
-│   ├── config_manager.py                    # 配置缓存与订阅者管理
-│   ├── config_subscribers.py                 # 内置配置订阅者（Redis/Logging/Cache/Notification）
-│   └── config_broadcast.py                  # 多实例 Pub/Sub 广播
-├── helm_charts/                              # Helm 部署 chart
-├── docker-compose.yml                       # 基础设施编排（Redis/PostgreSQL）
-└── manage.py
+├── chroma_db/                               # 向量数据库持久化目录
+└── .model_cache/                            # Embedding 模型缓存目录
+```
+
+---
+
+## 智能运维特性
+
+### 1. RAG 知识助手 (AI Engine)
+- **语义问答**：基于本地运维手册（Markdown/Text）进行向量化存储，支持通过大模型进行精准问答。
+- **文档向量化**：支持通过 `manage.py ingest_docs` 批量导入技术文档。
+- **流式对话**：基于 SSE (Server-Sent Events) 的流式响应。
+
+### 2. 智能诊断 (DevOps + AI)
+- **日志根因分析**：流水线节点执行失败或 Ansible 任务失败时，AI 自动抓取最后 Error Log。
+- **三段式诊断**：自动输出“故障根因”、“修复建议”和“预防措施”。
+
+### 3. SRE 告警自愈 (SRE Center)
+- **告警网关**：接收 Prometheus/Alertmanager 告警 Webhook。
+- **异步诊断**：告警进入后自动触发 AI 诊断，分析告警标签并匹配自愈知识。
+- **闭环执行**：自动推荐匹配的自愈流水线（DAG），支持一键执行修复。
+
+### 4. AIGC 意图编排 (Pipeline Gen)
+- **自然语言编排**：用户输入需求文字，AI 自动生成符合 ReactFlow 规范的 DAG JSON 结构并反馈给前端画布。
+
+---
+
+## 快速开始
+
+### 核心环境配置 (.env)
+
+新增 AI 模块需要配置以下环境变量：
+
+```bash
+# DeepSeek / OpenAI 配置
+LLM_API_KEY=sk-xxxx
+LLM_API_BASE=https://api.deepseek.com
+
+# macOS 环境下 Celery 兼容性配置
+OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+TOKENIZERS_PARALLELISM=false
+```
+
+### 启动服务
+
+```bash
+# 启动 API 服务
+uv run python manage.py runserver
+
+# 启动 Celery Worker (必须开启，用于 AI 异步诊断)
+# macOS 推荐使用 threads 或 solo 模式以保证 AI 库稳定性
+uv run celery -A config worker --loglevel=info -P threads
 ```
 
 ---
