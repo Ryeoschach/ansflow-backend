@@ -92,6 +92,7 @@ INSTALLED_APPS = [
     'apps.approval_center',
     'apps.credentials_management',
     'apps.config_center',
+    'apps.ai_engine',
 ]
 
 MIDDLEWARE = [

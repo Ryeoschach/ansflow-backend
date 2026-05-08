@@ -11,6 +11,7 @@ from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, 
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalTemplateViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
+from apps.ai_engine.views import KnowledgeBaseViewSet, AIChatHistoryViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
 
 router = DefaultRouter()
@@ -46,6 +47,10 @@ router.register(r'credentials', CredentialViewSet, basename='credentials')
 router.register(r'config/categories', ConfigCategoryViewSet, basename='config-categories')
 router.register(r'config/items', ConfigItemViewSet, basename='config-items')
 router.register(r'config/change-logs', ConfigChangeLogViewSet, basename='config-change-logs')
+
+# AI Engine
+router.register(r'ai/knowledge-bases', KnowledgeBaseViewSet, basename='ai-knowledge-bases')
+router.register(r'ai/chat-histories', AIChatHistoryViewSet, basename='ai-chat-histories')
 
 app_router = DefaultRouter()
 router.register(r'approval_policies', ApprovalPolicyViewSet, basename='approval_policies')

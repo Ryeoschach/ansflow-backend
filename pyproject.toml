@@ -37,6 +37,16 @@ dependencies = [
     "croniter>=6.2.2",
     "psycopg[binary]>=3.2.4",
     "gunicorn>=23.0.0",
+    "langchain>=1.2.17",
+    "langchain-community>=0.4.1",
+    "openai>=2.35.1",
+    "chromadb>=1.5.9",
+    "tiktoken>=0.12.0",
+    "sentence-transformers>=5.4.1",
+    "langchain-openai>=1.2.1",
+    "unstructured>=0.22.27",
+    "langchain-huggingface>=1.2.2",
+    "langchain-chroma>=1.1.0",
 ]
 
 [dependency-groups]
