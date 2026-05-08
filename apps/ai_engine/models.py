@@ -15,6 +15,12 @@ class AIChatHistory(BaseModel):
     user_id = models.CharField(max_length=255, verbose_name="用户ID")
     session_id = models.CharField(max_length=255, unique=True, verbose_name="会话ID")
     title = models.CharField(max_length=255, verbose_name="对话标题", blank=True)
+    personality = models.CharField(
+        max_length=50, 
+        choices=(("professional", "Professional"), ("concise", "Concise"), ("humorous", "Humorous")), 
+        default="professional", 
+        verbose_name="助手性格"
+    )
 
     class Meta:
         db_table = "ai_chat_history"

@@ -26,6 +26,14 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
     resource_type = "ai"
     resource_owner_field = "user_id"
 
+    @action(detail=True, methods=['get'])
+    def messages(self, request, pk=None):
+        chat_history = self.get_object()
+        messages = chat_history.messages.all().order_by('create_time')
+        from .serializers import AIChatMessageSerializer
+        serializer = AIChatMessageSerializer(messages, many=True)
+        return Response(serializer.data)
+
     @action(detail=True, methods=['post'])
     def chat(self, request, pk=None):
         chat_history = self.get_object()
@@ -35,6 +43,11 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         if not question:
             return Response({"error": "Question is required"}, status=status.HTTP_400_BAD_REQUEST)
             
+        # Update personality if it changed
+        if chat_history.personality != personality:
+            chat_history.personality = personality
+            chat_history.save(update_fields=['personality'])
+
         # Save user message
         AIChatMessage.objects.create(history=chat_history, role='user', content=question)
         
