@@ -79,3 +79,5 @@ node_modules/
 .claude/settings.local.json
 memory/
 
+.model_cache/
+chroma_db/

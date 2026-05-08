@@ -51,6 +51,28 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
 
         return StreamingHttpResponse(stream_response(), content_type='text/event-stream')
 
+    @action(detail=False, methods=['post'], url_path='generate-pipeline')
+    def generate_pipeline(self, request):
+        prompt_text = request.data.get('prompt')
+        if not prompt_text:
+            return Response({"error": "Prompt is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        rag_service = RAGService()
+        try:
+            dag_json_str = rag_service.generate_dag(prompt_text)
+            # LLM might return JSON wrapped in backticks, clean it
+            clean_json = dag_json_str.strip()
+            if clean_json.startswith("```json"):
+                clean_json = clean_json[7:]
+            if clean_json.endswith("```"):
+                clean_json = clean_json[:-3]
+            
+            import json
+            dag_data = json.loads(clean_json.strip())
+            return Response(dag_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to generate pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=False, methods=['post'])
     def diagnose(self, request):
         target_type = request.data.get('target_type') # 'pipeline' or 'task'

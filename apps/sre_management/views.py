@@ -25,7 +25,7 @@ class AlertEventViewSet(viewsets.ModelViewSet):
         for alert in alerts:
             # 提取指纹，用于幂等
             fingerprint = alert.get('fingerprint')
-            status = alert.get('status', 'firing')
+            alert_status = alert.get('status', 'firing')
             labels = alert.get('labels', {})
             annotations = alert.get('annotations', {})
             alert_name = labels.get('alertname', 'Unknown Alert')
@@ -37,15 +37,15 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                 defaults={
                     'alert_name': alert_name,
                     'severity': severity,
-                    'status': status,
+                    'status': alert_status,
                     'labels': labels,
                     'annotations': annotations,
-                    'healing_status': 'analyzing' if status == 'firing' else 'none'
+                    'healing_status': 'analyzing' if alert_status == 'firing' else 'none'
                 }
             )
             
             # 触发 AI 分析 Celery 任务
-            if status == 'firing':
+            if alert_status == 'firing':
                 from .tasks import analyze_alert_event
                 analyze_alert_event.delay(obj.id)
             
