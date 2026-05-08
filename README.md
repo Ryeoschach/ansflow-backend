@@ -1,5 +1,7 @@
 # AnsFlow Backend
 
+[English](./README_EN.md) | 中文说明
+
 企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。集成了 **RAG 知识库**、**智能诊断**与 **SRE 自愈**能力。
 
 **当前版本**：v2.0.0 (build: 2026-05-08)  

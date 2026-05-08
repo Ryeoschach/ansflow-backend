@@ -1,5 +1,7 @@
 # AnsFlow Backend
 
+English | [中文说明](./README.md)
+
 Enterprise-level DevOps pipeline platform backend, built with Django 5.2 + DRF. Integrated with **RAG Knowledge Base**, **Intelligent Diagnosis**, and **SRE Self-healing** capabilities.
 
 **Current Version**: v2.0.0 (build: 2026-05-08)  
