@@ -57,9 +57,18 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         if not prompt_text:
             return Response({"error": "Prompt is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # 准备动态上下文：获取当前的 Ansible 任务和 K8s 集群
+        from apps.task_management.models import AnsibleTask
+        from apps.k8s_management.models import K8sCluster
+        
+        context_data = {
+            'ansible_tasks': list(AnsibleTask.objects.all().values('id', 'name')),
+            'k8s_clusters': list(K8sCluster.objects.all().values('id', 'name')),
+        }
+
         rag_service = RAGService()
         try:
-            dag_json_str = rag_service.generate_dag(prompt_text)
+            dag_json_str = rag_service.generate_dag(prompt_text, context_data=context_data)
             # LLM might return JSON wrapped in backticks, clean it
             clean_json = dag_json_str.strip()
             if clean_json.startswith("```json"):

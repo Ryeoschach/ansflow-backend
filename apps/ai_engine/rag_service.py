@@ -120,11 +120,23 @@ class RAGService:
             "error_summary": context_info.get("summary", "Execution failed")
         })
 
-    def generate_dag(self, prompt_text: str):
+    def generate_dag(self, prompt_text: str, context_data: dict = None):
         """Generates a ReactFlow compatible DAG structure based on user prompt."""
+        context_str = ""
+        if context_data:
+            if 'ansible_tasks' in context_data:
+                context_str += "\n【可用 Ansible 任务列表】\n"
+                for t in context_data['ansible_tasks']:
+                    context_str += f"- ID: {t['id']}, 名称: {t['name']}\n"
+            
+            if 'k8s_clusters' in context_data:
+                context_str += "\n【可用 K8s 集群列表】\n"
+                for c in context_data['k8s_clusters']:
+                    context_str += f"- ID: {c['id']}, 名称: {c['name']}\n"
+
         template = """你是一个专业的 AnsFlow 流水线设计专家。
 请根据用户的需求，生成一个符合 ReactFlow 规范的 JSON 格式 DAG 流水线数据。
-
+{dynamic_context}
 【节点类型规范】
 - ansible: 执行 Ansible 任务。参数: {{'ansible_task_id': int, 'label': string}}
 - k8s_deploy: 部署 K8s 资源。参数: {{'cluster_id': int, 'manifest': string, 'label': string}}
@@ -134,12 +146,16 @@ class RAGService:
 【输出要求】
 1. 只输出纯 JSON 格式，不要包含 Markdown 标记或任何解释。
 2. JSON 结构必须包含 'nodes' 和 'edges'。
-3. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
-4. 边(edges)的 id 格式为 'e-source-target'。
+3. 如果用户提到的任务名称或集群名称在【可用列表】中存在，请务必使用对应的正确 ID。
+4. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
+5. 边(edges)的 id 格式为 'e-source-target'。
 
 用户需求：{prompt_text}
 
 JSON 输出："""
         prompt = ChatPromptTemplate.from_template(template)
         chain = prompt | self.llm | StrOutputParser()
-        return chain.invoke({"prompt_text": prompt_text})
+        return chain.invoke({
+            "prompt_text": prompt_text,
+            "dynamic_context": context_str
+        })
