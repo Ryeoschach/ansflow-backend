@@ -17,13 +17,20 @@ def run_ansible_task(self, execution_id, extra_vars=None):
     """
     异步执行 Ansible 任务实例，支持传入外部变量
     """
+    # 兼容直接调用：如果第一个参数不是 Task 实例（比如在 pipeline 中直接调用），则进行参数位移
+    if not hasattr(self, 'request'):
+        extra_vars = execution_id
+        execution_id = self
+        self = None
+
     try:
         execution = AnsibleExecution.objects.select_related('task').get(id=execution_id)
         task = execution.task
         
         execution.status = 'running'
         execution.start_time = timezone.now()
-        execution.celery_task_id = self.request.id
+        if self:
+            execution.celery_task_id = self.request.id
         execution.save()
         
         # 准备 Inventory
@@ -130,38 +137,46 @@ def run_ansible_task(self, execution_id, extra_vars=None):
         runner_kwargs['timeout'] = task.timeout
         
         # 同步执行
+        logger.info(f"开始执行 ansible-runner: execution_id={execution_id}")
         r = ansible_runner.run(**runner_kwargs, event_handler=event_handler)
         
-        # 获取最终格式化日志 (从 TaskLog 获取以保持一致性)
+        # 获取最终格式化日志
         logs = TaskLog.objects.filter(execution=execution).order_by('create_time')
         formatted_logs = "\n".join([f"[{l.host}] {l.output}" for l in logs])
 
-        # 更新状态
-        execution.status = 'success' if r.rc == 0 else 'failed'
+        # 更新状态：严格根据 ansible-runner 的返回码判定
+        final_status = 'success' if r.rc == 0 else 'failed'
+        logger.info(f"Ansible 执行结束: rc={r.rc}, status={final_status}")
+        
+        execution.status = final_status
         execution.result_summary = r.stats
         execution.end_time = timezone.now()
         execution.save()
 
         # 发送执行结果通知
-        from apps.system_management.notifiers import notify_task_result
-        notify_task_result(execution)
+        try:
+            from apps.system_management.notifiers import notify_task_result
+            notify_task_result(execution)
+        except Exception as e:
+            logger.error(f"发送通知失败: {e}")
 
         return {
-            "status": execution.status,
+            "status": final_status,
             "logs": formatted_logs,
             "msg": f"实例 {execution_id} 执行完成"
         }
         
     except Exception as e:
-        logger.error(f"执行实例 {execution_id} 出错: {str(e)}")
+        import traceback
+        logger.error(f"执行实例 {execution_id} 产生致命错误: {str(e)}\n{traceback.format_exc()}")
         if 'execution' in locals():
             execution.status = 'failed'
             execution.remark = f"内部错误: {str(e)}"
             execution.save()
-            # 发送执行结果通知
-            from apps.system_management.notifiers import notify_task_result
-            notify_task_result(execution)
-        return f"实例 {execution_id} 失败: {str(e)}"
+        return {
+            "status": "failed",
+            "msg": str(e)
+        }
 
 
 @shared_task(name="run_ansible_schedule")
