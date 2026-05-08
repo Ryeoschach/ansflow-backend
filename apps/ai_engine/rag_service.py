@@ -82,3 +82,52 @@ class RAGService:
         chain = self.get_chat_chain()
         for chunk in chain.stream(question):
             yield chunk
+
+    def diagnose_log(self, log_content: str, context_info: dict):
+        """Specially tailored for log diagnosis."""
+        retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        template = """你是一个专业的 SRE 运维专家。请分析以下AnsFlow平台的执行日志，并结合参考内容给出诊断结论和修复建议。
+
+【执行上下文】
+- 类型: {target_type}
+- 名称: {target_name}
+- 错误摘要: {error_summary}
+
+【错误日志截取】
+{log_content}
+
+【参考知识库】
+{context}
+
+请按以下格式回答：
+### 🔍 故障根因
+(描述为什么报错)
+
+### 🛠️ 修复建议
+(给出具体的步骤或代码修改建议)
+
+### 💡 预防措施
+(如何避免下次发生)
+"""
+        prompt = ChatPromptTemplate.from_template(template)
+        
+        # Build the chain
+        chain = (
+            {"context": (lambda x: x["log_content"]) | retriever | self.format_docs, 
+             "question": lambda x: x["log_content"],
+             "target_type": lambda x: x["target_type"],
+             "target_name": lambda x: x["target_name"],
+             "error_summary": lambda x: x["error_summary"],
+             "log_content": lambda x: x["log_content"]}
+            | prompt
+            | self.llm
+            | StrOutputParser()
+        )
+        
+        return chain.stream({
+            "log_content": log_content,
+            "target_type": context_info.get("type", "Unknown"),
+            "target_name": context_info.get("name", "Unknown"),
+            "error_summary": context_info.get("summary", "Execution failed")
+        })

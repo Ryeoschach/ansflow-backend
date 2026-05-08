@@ -47,8 +47,51 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
                 yield chunk
             
             # Save assistant message after stream is done
-            # Note: StreamingHttpResponse might need a way to hook into completion, 
-            # but for MVP we just save it synchronously or at the end of the generator.
             AIChatMessage.objects.create(history=chat_history, role='assistant', content=full_response)
 
         return StreamingHttpResponse(stream_response(), content_type='text/event-stream')
+
+    @action(detail=False, methods=['post'])
+    def diagnose(self, request):
+        target_type = request.data.get('target_type') # 'pipeline' or 'task'
+        target_id = request.data.get('target_id')
+        
+        if not target_type or not target_id:
+            return Response({"error": "target_type and target_id are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        log_content = ""
+        context_info = {"type": target_type, "id": target_id}
+
+        try:
+            if target_type == 'pipeline':
+                from apps.pipeline_management.models import PipelineNodeRun
+                # Get the latest failed node run for this pipeline run instance
+                node_run = PipelineNodeRun.objects.filter(run_id=target_id, status='failed').last()
+                if node_run:
+                    log_content = node_run.logs or "No logs found"
+                    context_info["name"] = f"Pipeline Node: {node_run.node_label}"
+                    context_info["summary"] = f"Node {node_run.node_id} failed"
+                else:
+                    return Response({"error": "No failed node found for this pipeline run"}, status=status.HTTP_404_NOT_FOUND)
+            
+            elif target_type == 'task':
+                from apps.task_management.models import TaskLog
+                logs = TaskLog.objects.filter(execution_id=target_id).order_by('create_time')
+                log_content = "\n".join([f"[{log.host}] {log.output}" for log in logs])
+                context_info["name"] = f"Ansible Task Execution {target_id}"
+                context_info["summary"] = "Task execution failed"
+            
+            else:
+                return Response({"error": "Invalid target_type"}, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({"error": f"Failed to fetch logs: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Initialize RAG Service for diagnosis
+        rag_service = RAGService()
+        
+        def stream_diagnosis():
+            for chunk in rag_service.diagnose_log(log_content, context_info):
+                yield chunk
+
+        return StreamingHttpResponse(stream_diagnosis(), content_type='text/event-stream')
