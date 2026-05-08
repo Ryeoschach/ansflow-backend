@@ -1,0 +1,6 @@
+from django.apps import AppConfig
+
+class SREManagementConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'apps.sre_management'
+    verbose_name = 'SRE 运维管理'

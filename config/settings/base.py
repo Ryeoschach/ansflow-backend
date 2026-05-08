@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     'apps.credentials_management',
     'apps.config_center',
     'apps.ai_engine',
+    'apps.sre_management',
 ]
 
 MIDDLEWARE = [

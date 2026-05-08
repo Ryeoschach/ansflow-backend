@@ -12,6 +12,7 @@ from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketView
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
 from apps.ai_engine.views import KnowledgeBaseViewSet, AIChatHistoryViewSet
+from apps.sre_management.views import AlertEventViewSet, SelfHealingPolicyViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
 
 router = DefaultRouter()
@@ -51,6 +52,10 @@ router.register(r'config/change-logs', ConfigChangeLogViewSet, basename='config-
 # AI Engine
 router.register(r'ai/knowledge-bases', KnowledgeBaseViewSet, basename='ai-knowledge-bases')
 router.register(r'ai/chat-histories', AIChatHistoryViewSet, basename='ai-chat-histories')
+
+# SRE Management
+router.register(r'sre/alerts', AlertEventViewSet, basename='sre-alerts')
+router.register(r'sre/policies', SelfHealingPolicyViewSet, basename='sre-policies')
 
 app_router = DefaultRouter()
 router.register(r'approval_policies', ApprovalPolicyViewSet, basename='approval_policies')
