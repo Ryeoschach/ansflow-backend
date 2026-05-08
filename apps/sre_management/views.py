@@ -32,7 +32,7 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             severity = labels.get('severity', 'warning')
 
             # 存入数据库
-            AlertEvent.objects.update_or_create(
+            obj, created = AlertEvent.objects.update_or_create(
                 fingerprint=fingerprint,
                 defaults={
                     'alert_name': alert_name,
@@ -44,7 +44,10 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                 }
             )
             
-            # TODO: 触发 AI 分析 Celery 任务
+            # 触发 AI 分析 Celery 任务
+            if status == 'firing':
+                from .tasks import analyze_alert_event
+                analyze_alert_event.delay(obj.id)
             
         return Response({"message": f"Successfully received {len(alerts)} alerts"}, status=status.HTTP_200_OK)
 
