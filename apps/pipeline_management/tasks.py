@@ -716,8 +716,12 @@ def advance_pipeline_engine(self, run_id):
             push_pipeline_status_to_ws(run)
                 
         elif not has_running_or_pending:
-            # 全部成功结束
-            run.status = 'success'
+            # 检查是否有节点失败
+            has_failed = any(nr.status == 'failed' for nr in node_runs)
+            if has_failed:
+                run.status = 'failed'
+            else:
+                run.status = 'success'
             run.end_time = timezone.now()
             run.save(update_fields=['status', 'end_time'])
             push_pipeline_status_to_ws(run)
