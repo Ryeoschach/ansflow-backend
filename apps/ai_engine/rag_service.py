@@ -138,7 +138,7 @@ class RAGService:
 请根据用户的需求，生成一个符合 ReactFlow 规范的 JSON 格式 DAG 流水线数据。
 {dynamic_context}
 【节点类型规范】
-- ansible: 执行 Ansible 任务。参数: {{'ansible_task_id': int, 'label': string}}
+- ansible: 执行 Ansible 任务。参数: {{'ansible_task_id': int, 'label': string, 'max_retries': int, 'retry_delay': int}}
 - k8s_deploy: 部署 K8s 资源。参数: {{'cluster_id': int, 'manifest': string, 'label': string}}
 - git_clone: 克隆代码。参数: {{'repo_url': string, 'branch': string, 'label': string}}
 - docker_build: 构建镜像。参数: {{'image_name': string, 'dockerfile': string, 'label': string}}
@@ -147,7 +147,8 @@ class RAGService:
 1. 只输出纯 JSON 格式，不要包含 Markdown 标记或任何解释。
 2. JSON 结构必须包含 'nodes' 和 'edges'。
 3. 如果用户提到的任务名称或集群名称在【可用列表】中存在，请务必使用对应的正确 ID。
-4. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
+4. 如果用户指定了尝试次数或间隔时间，请准确填写到对应参数中。
+5. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
 5. 边(edges)的 id 格式为 'e-source-target'。
 
 用户需求：{prompt_text}

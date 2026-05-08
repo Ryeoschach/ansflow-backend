@@ -121,7 +121,24 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         # Initialize RAG Service for diagnosis
         rag_service = RAGService()
         
+        # 匹配自愈策略（尝试根据错误内容匹配已有的自愈方案）
+        suggested_pipeline_id = None
+        from apps.sre_management.models import SelfHealingPolicy
+        policies = SelfHealingPolicy.objects.filter(is_active=True)
+        for policy in policies:
+            # 如果策略的匹配关键词出现在日志中
+            for key, value in policy.alert_match_rule.items():
+                if value.lower() in log_content.lower():
+                    suggested_pipeline_id = policy.pipeline_id
+                    break
+            if suggested_pipeline_id: break
+
         def stream_diagnosis():
+            # 首先发送一个特殊的 JSON 帧告知前端建议的流水线（如果存在）
+            if suggested_pipeline_id:
+                import json
+                yield f"__SUGGESTION__:{json.dumps({'pipeline_id': suggested_pipeline_id})}\n"
+            
             for chunk in rag_service.diagnose_log(log_content, context_info):
                 yield chunk
 
