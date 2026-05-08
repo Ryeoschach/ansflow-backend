@@ -30,6 +30,7 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
     def chat(self, request, pk=None):
         chat_history = self.get_object()
         question = request.data.get('question')
+        personality = request.data.get('personality', 'professional')
         
         if not question:
             return Response({"error": "Question is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -37,8 +38,8 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         # Save user message
         AIChatMessage.objects.create(history=chat_history, role='user', content=question)
         
-        # Initialize RAG Service
-        rag_service = RAGService()
+        # Initialize RAG Service with personality
+        rag_service = RAGService(personality=personality)
         
         def stream_response():
             full_response = ""
@@ -54,6 +55,7 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='generate-pipeline')
     def generate_pipeline(self, request):
         prompt_text = request.data.get('prompt')
+        personality = request.data.get('personality', 'professional')
         if not prompt_text:
             return Response({"error": "Prompt is required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -66,7 +68,7 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
             'k8s_clusters': list(K8sCluster.objects.all().values('id', 'name')),
         }
 
-        rag_service = RAGService()
+        rag_service = RAGService(personality=personality)
         try:
             dag_json_str = rag_service.generate_dag(prompt_text, context_data=context_data)
             # LLM might return JSON wrapped in backticks, clean it
@@ -86,6 +88,7 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
     def diagnose(self, request):
         target_type = request.data.get('target_type') # 'pipeline' or 'task'
         target_id = request.data.get('target_id')
+        personality = request.data.get('personality', 'professional')
         
         if not target_type or not target_id:
             return Response({"error": "target_type and target_id are required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -118,8 +121,8 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": f"Failed to fetch logs: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Initialize RAG Service for diagnosis
-        rag_service = RAGService()
+        # Initialize RAG Service for diagnosis with personality
+        rag_service = RAGService(personality=personality)
         
         # 匹配自愈策略（尝试根据错误内容匹配已有的自愈方案）
         suggested_pipeline_id = None

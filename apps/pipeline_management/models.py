@@ -131,6 +131,7 @@ class PipelineRun(BaseModel):
         ('schedule', '定时触发'),
         ('webhook', 'Webhook 触发'),
         ('retry', '重试触发'),
+        ('automation', '自动自愈触发'),
     )
     pipeline = models.ForeignKey(Pipeline, on_delete=models.CASCADE, related_name='runs')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')

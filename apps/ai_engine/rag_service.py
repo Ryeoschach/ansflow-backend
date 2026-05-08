@@ -11,8 +11,27 @@ from langchain_core.runnables import RunnablePassthrough
 from django.conf import settings
 
 class RAGService:
-    def __init__(self, collection_name: str = "ansflow_docs"):
+    PERSONALITIES = {
+        'professional': {
+            'name': '技术专家',
+            'desc': '严谨、专业，提供深度技术细节。',
+            'prefix': '你是一个资深的 AnsFlow SRE 专家。你的回答应该专业、客观，包含必要的技术细节和代码示例。'
+        },
+        'concise': {
+            'name': '简洁助手',
+            'desc': '高效、直白，只说干货。',
+            'prefix': '你是一个高效的运维助手。请用最简短的语言回答问题，直接给出结论和命令，避免废话。'
+        },
+        'humorous': {
+            'name': '幽默特工',
+            'desc': '风趣、亲切，缓解运维压力。',
+            'prefix': '你是一个热爱生活的运维老工。虽然运维很苦，但你的回答总能带着一点点幽默感，偶尔调侃一下 Bug，让用户放轻松，但也要解决问题。'
+        }
+    }
+
+    def __init__(self, collection_name: str = "ansflow_docs", personality: str = 'professional'):
         self.collection_name = collection_name
+        self.personality = self.PERSONALITIES.get(personality, self.PERSONALITIES['professional'])
         self.persist_directory = os.path.join(settings.BASE_DIR, "chroma_db")
         self.cache_directory = os.path.join(settings.BASE_DIR, ".model_cache")
         
@@ -53,13 +72,13 @@ class RAGService:
 
     def get_chat_chain(self):
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
-        template = """你是一个AnsFlow DevOps平台的智能运维助手。
+        template = f"""{self.personality['prefix']}
 请使用以下检索到的参考内容来回答用户的问题。如果你不知道答案，就明确说明你不知道，不要编造。
 
 参考内容：
-{context}
+{{context}}
 
-用户问题：{question}
+用户问题：{{question}}
 
 你的回答："""
         prompt = ChatPromptTemplate.from_template(template)
@@ -78,18 +97,19 @@ class RAGService:
 
     def diagnose_log(self, log_content: str, context_info: dict):
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
-        template = """你是一个专业的 SRE 运维专家。请分析以下AnsFlow平台的执行日志，并结合参考内容给出诊断结论和修复建议。
+        template = f"""{self.personality['prefix']}
+作为专业的 SRE 运维专家，请分析以下执行日志并给出诊断结论和修复建议。
 
 【执行上下文】
-- 类型: {target_type}
-- 名称: {target_name}
-- 错误摘要: {error_summary}
+- 类型: {{target_type}}
+- 名称: {{target_name}}
+- 错误摘要: {{error_summary}}
 
 【错误日志截取】
-{log_content}
+{{log_content}}
 
 【参考知识库】
-{context}
+{{context}}
 
 请按以下格式回答：
 ### 🔍 故障根因
@@ -149,7 +169,7 @@ class RAGService:
 3. 如果用户提到的任务名称或集群名称在【可用列表】中存在，请务必使用对应的正确 ID。
 4. 如果用户指定了尝试次数或间隔时间，请准确填写到对应参数中。
 5. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
-5. 边(edges)的 id 格式为 'e-source-target'。
+6. 边(edges)的 id 格式为 'e-source-target'。
 
 用户需求：{prompt_text}
 

@@ -75,27 +75,40 @@ def trigger_self_healing(alert_id):
     """
     执行自愈流水线
     """
-    from apps.pipeline_management.tasks import execute_pipeline_task
+    from apps.pipeline_management.models import PipelineRun
+    from apps.pipeline_management.tasks import advance_pipeline_engine
     
-    alert = AlertEvent.objects.get(id=alert_id)
-    if not alert.suggested_pipeline:
-        return "No pipeline suggested"
-
-    alert.healing_status = 'executing'
-    alert.save()
-
-    # 触发流水线执行逻辑
-    # 模拟手动触发：传入 pipeline_id, trigger_user=None, trigger_type='automation'
-    # 注意：这里需要根据 execute_pipeline_task 的具体签名来调用
-    # 假设 execute_pipeline_task(pipeline_id, trigger_user_id=None)
     try:
-        # 这里只是示例，实际需要对接 pipeline_management 的具体执行入口
-        # execute_pipeline_task.delay(alert.suggested_pipeline.id)
-        logger.info(f"Self-healing triggered for alert {alert_id} using pipeline {alert.suggested_pipeline.id}")
-        # 执行成功后更新状态（实际应监听流水线完成的回调）
-        # alert.healing_status = 'success'
-        # alert.save()
-    except Exception as e:
-        alert.healing_status = 'failed'
+        alert = AlertEvent.objects.get(id=alert_id)
+        if not alert.suggested_pipeline:
+            return "No pipeline suggested"
+
+        alert.healing_status = 'executing'
         alert.save()
+
+        # 创建流水线运行记录
+        run = PipelineRun.objects.create(
+            pipeline=alert.suggested_pipeline,
+            status='pending',
+            trigger_user=None, # 系统自动触发
+            trigger_type='automation'
+        )
+
+        # 触发流水线执行引擎
+        advance_pipeline_engine.delay(run.id)
+        
+        logger.info(f"Self-healing triggered for alert {alert_id} using pipeline {alert.suggested_pipeline.id}, run_id: {run.id}")
+        
+        # 标记为成功下发（注意：这里仅代表下发成功，不代表流水线执行成功）
+        alert.healing_status = 'success'
+        alert.save()
+        
+    except Exception as e:
         logger.error(f"Failed to trigger self-healing for alert {alert_id}: {str(e)}")
+        try:
+            alert = AlertEvent.objects.get(id=alert_id)
+            alert.healing_status = 'failed'
+            alert.save()
+        except:
+            pass
+        raise e
