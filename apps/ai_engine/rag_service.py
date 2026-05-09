@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 
 class RAGService:
@@ -67,21 +68,43 @@ class RAGService:
         self.vectorstore.add_documents(documents=splits)
         return len(splits)
 
+    def add_knowledge(self, content: str, metadata: dict = None):
+        """Manually add a piece of knowledge to the vector store."""
+        from langchain_core.documents import Document
+        doc = Document(page_content=content, metadata=metadata or {})
+        self.vectorstore.add_documents(documents=[doc])
+        return True
+
     def format_docs(self, docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
-    def get_chat_chain(self):
+    def get_chat_chain(self, history_id: int = None):
+        """Returns a LangChain runnable chain for chatting with memory support."""
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        # 加载历史消息作为上下文 (取最近 20 条)
+        chat_memory_str = ""
+        if history_id:
+            from .models import AIChatMessage
+            prev_messages = AIChatMessage.objects.filter(history_id=history_id).order_by('create_time')[:20]
+            for m in prev_messages:
+                role = "用户" if m.role == 'user' else "助手"
+                chat_memory_str += f"{role}: {m.content}\n"
+
         template = f"""{self.personality['prefix']}
 请使用以下检索到的参考内容来回答用户的问题。如果你不知道答案，就明确说明你不知道，不要编造。
 
 参考内容：
 {{context}}
 
+对话历史：
+{chat_memory_str}
+
 用户问题：{{question}}
 
 你的回答："""
         prompt = ChatPromptTemplate.from_template(template)
+        
         chain = (
             {"context": retriever | self.format_docs, "question": RunnablePassthrough()}
             | prompt
@@ -90,13 +113,38 @@ class RAGService:
         )
         return chain
 
-    def chat_stream(self, question: str):
-        chain = self.get_chat_chain()
+    def chat_stream(self, question: str, history_id: int = None):
+        chain = self.get_chat_chain(history_id=history_id)
         for chunk in chain.stream(question):
             yield chunk
 
     def diagnose_log(self, log_content: str, context_info: dict):
+        # 1. 语义缓存：尝试寻找高相似度的已验证知识
+        try:
+            # 使用更基础的接口获取分数 (分数越低越相似，Chroma 默认是 L2 距离)
+            results = self.vectorstore.similarity_search_with_score(
+                log_content, 
+                k=1, 
+                filter={"type": "human_verified_knowledge"}
+            )
+            
+            if results:
+                doc, distance = results[0]
+                # L2 距离越接近 0 表示越相似。通常距离 < 0.2 可以认为非常相似
+                if distance < 0.15:
+                    yield "✨ **已为您匹配到历史最佳解决方案 (语义缓存)**\n\n"
+                    answer = doc.page_content.split("答案: ")[-1]
+                    yield answer
+                    return
+        except Exception as e:
+            print(f"[RAG] Semantic cache search failed: {e}")
+
+        # 2. 如果没有命中缓存，走常规 RAG + LLM 流程
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        from langchain_core.runnables import RunnableLambda
+        from langchain_core.prompts import ChatPromptTemplate
+
         template = f"""{self.personality['prefix']}
 作为专业的 SRE 运维专家，请分析以下执行日志并给出诊断结论和修复建议。
 
@@ -122,9 +170,12 @@ class RAGService:
 (如何避免下次发生)
 """
         prompt = ChatPromptTemplate.from_template(template)
+        
+        # 使用 RunnableLambda 包裹普通函数
+        get_context = RunnableLambda(lambda x: retriever.invoke(x["log_content"])) | self.format_docs
+
         chain = (
-            {"context": (lambda x: x["log_content"]) | retriever | self.format_docs, 
-             "question": lambda x: x["log_content"],
+            {"context": get_context, 
              "target_type": lambda x: x["target_type"],
              "target_name": lambda x: x["target_name"],
              "error_summary": lambda x: x["error_summary"],
@@ -133,7 +184,8 @@ class RAGService:
             | self.llm
             | StrOutputParser()
         )
-        return chain.stream({
+        
+        yield from chain.stream({
             "log_content": log_content,
             "target_type": context_info.get("type", "Unknown"),
             "target_name": context_info.get("name", "Unknown"),

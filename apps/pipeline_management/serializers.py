@@ -41,6 +41,7 @@ class PipelineRunSerializer(serializers.ModelSerializer):
     nodes = PipelineNodeRunSerializer(many=True, read_only=True) # 方便前端一次性取回节点状态进行渲染
     parent_run_id = serializers.IntegerField(source='parent_run.id', read_only=True, allow_null=True)
     skipped_nodes = serializers.SerializerMethodField()
+    diagnosis_history_id = serializers.SerializerMethodField()
 
     class Meta:
         model = PipelineRun
@@ -49,6 +50,15 @@ class PipelineRunSerializer(serializers.ModelSerializer):
 
     def get_skipped_nodes(self, obj) -> list:
         return list(obj.nodes.filter(status='skipped').values_list('node_id', flat=True))
+
+    def get_diagnosis_history_id(self, obj) -> int | None:
+        from apps.ai_engine.models import AIChatHistory
+        # 匹配该运行记录的最近一次诊断历史
+        history = AIChatHistory.objects.filter(
+            history_type='diagnose',
+            session_id__startswith=f'diagnose_pipeline_{obj.id}_'
+        ).order_by('-create_time').first()
+        return history.id if history else None
 
 class CIEnvironmentSerializer(serializers.ModelSerializer):
     class Meta:
