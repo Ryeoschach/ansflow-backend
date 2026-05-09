@@ -94,14 +94,16 @@ def trigger_self_healing(alert_id):
             trigger_type='automation'
         )
 
+        # 记录关键信息到告警事件
+        alert.latest_run_id = run.id
+        alert.trigger_type = 'auto'
+        alert.healing_status = 'executing'
+        alert.save(update_fields=['latest_run_id', 'trigger_type', 'healing_status'])
+
         # 触发流水线执行引擎
         advance_pipeline_engine.delay(run.id)
         
         logger.info(f"Self-healing triggered for alert {alert_id} using pipeline {alert.suggested_pipeline.id}, run_id: {run.id}")
-        
-        # 标记为成功下发（注意：这里仅代表下发成功，不代表流水线执行成功）
-        alert.healing_status = 'success'
-        alert.save()
         
     except Exception as e:
         logger.error(f"Failed to trigger self-healing for alert {alert_id}: {str(e)}")
