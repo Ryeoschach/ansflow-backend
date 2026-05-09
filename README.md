@@ -60,18 +60,20 @@ backend/
 ## Intelligent Ops Features
 
 ### 1. RAG Knowledge Assistant (AI Engine)
-- **Semantic Q&A**: Precise Q&A powered by LLM based on local operation manuals (Markdown/Text) stored in vector database.
-- **Document Vectorization**: Bulk import technical documents via `manage.py ingest_docs`.
-- **Streaming Chat**: Real-time response based on SSE (Server-Sent Events).
+- **Knowledge Loop**: Supports one-click saving of AI responses or diagnosis results into the RAG system for continuous learning.
+- **Semantic Cache**: Millisecond-level response for recurring issues using high-confidence vector similarity search.
+- **Categorized History**: Automatically distinguishes between "Diagnosis" and "General Chat" with support for title-based search.
+- **Typing Animation**: Sophisticated three-dot jumping animation for a more interactive and lively AI thinking process.
 
 ### 2. Intelligent Diagnosis (DevOps + AI)
-- **Root Cause Analysis**: AI automatically captures the last Error Log when a pipeline node or Ansible task fails.
-- **Three-stage Diagnosis**: Automatically outputs "Root Cause", "Remediation Steps", and "Prevention Measures".
+- **Execution Memory**: Node trace view automatically displays historical diagnosis results to prevent redundant analysis.
+- **Root Cause Analysis**: AI automatically captures Error Logs and provides professional "three-stage" diagnostic reports.
 
 ### 3. SRE Alert Self-healing (SRE Center)
-- **Alert Gateway**: Receives Prometheus/Alertmanager alert webhooks.
-- **Async Diagnosis**: Automatically triggers AI diagnosis upon alert arrival, analyzing labels and matching self-healing knowledge.
-- **Closed-loop Execution**: Recommends matching self-healing pipelines (DAG), allowing one-click remediation.
+- **Real-time Tracking**: Integrated progress bars and live status updates for self-healing pipelines within the Alert Center.
+- **Full Traceability**: Accurate identification of "Auto-Triggered" vs. "Manual" healing sources with visual feedback.
+- **Strong Consistency**: Signal-based status synchronization between pipeline execution and alert event records.
+- **Knowledge Export**: Seamlessly export alert diagnosis conclusions to the system's operational knowledge base.
 
 ### 4. AIGC Intent Orchestration (Pipeline Gen)
 - **Natural Language Orchestration**: Users input requirements in plain text, and AI generates a DAG JSON structure compliant with ReactFlow for the frontend canvas.

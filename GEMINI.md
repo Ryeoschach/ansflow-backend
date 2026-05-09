@@ -38,6 +38,14 @@ AnsFlow 是一个企业级 DevOps 平台后端。
     - 将敏感字段加入 `get_encrypted_field_names()` 防止明文导出。
     - 指定 `unique_fields` 确保导入的幂等性。
 
+### 2.5 RAG 与 AI 规范
+- **知识闭环：** AI 模块新增功能必须考虑如何将结果沉淀为知识。手动导出至 RAG 时，元数据必须包含 `source` 和 `type: human_verified_knowledge`。
+- **语义缓存：** 针对高频且重复的 AI 诊断请求，优先在 `RAGService` 中实现基于向量相似度的语义检索缓存（阈值建议 0.9+），以降低 LLM 调用成本。
+
+### 2.6 跨模块状态同步 (Signals)
+- **解耦原则：** 跨应用（App）的状态联动（如流水线状态同步至告警事件）必须通过 Django Signals 实现，禁止在 ViewSet 或 Task 中直接耦合其他应用的 Model。
+- **性能：** Signal 处理逻辑应保持轻量，耗时操作应进一步下发至 Celery。
+
 ## 3. 工程化与安全
 
 ### 3.1 安全准则
