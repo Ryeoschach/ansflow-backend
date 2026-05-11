@@ -13,7 +13,8 @@ from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
 from apps.ai_engine.views import (
     KnowledgeBaseViewSet, AIChatHistoryViewSet, 
-    AIProviderViewSet, AIModelViewSet, AIConfigViewSet
+    AIProviderViewSet, AIModelViewSet, AIConfigViewSet,
+    KnowledgeDocumentViewSet
 )
 from apps.sre_management.views import AlertEventViewSet, SelfHealingPolicyViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
@@ -54,6 +55,7 @@ router.register(r'config/change-logs', ConfigChangeLogViewSet, basename='config-
 
 # AI Engine
 router.register(r'ai/knowledge-bases', KnowledgeBaseViewSet, basename='ai-knowledge-bases')
+router.register(r'ai/documents', KnowledgeDocumentViewSet, basename='ai-documents')
 router.register(r'ai/chat-histories', AIChatHistoryViewSet, basename='ai-chat-histories')
 router.register(r'ai/providers', AIProviderViewSet, basename='ai-providers')
 router.register(r'ai/models', AIModelViewSet, basename='ai-models')

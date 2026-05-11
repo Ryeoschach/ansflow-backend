@@ -1,6 +1,6 @@
 import os
 from django.core.management.base import BaseCommand
-from apps.ai_engine.models import AIProvider, AIModel, AIConfig
+from apps.ai_engine.models import AIProvider, AIModel, AIConfig, KnowledgeBase
 from django.db import transaction
 
 class Command(BaseCommand):
@@ -63,7 +63,18 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"创建模型: {emb_model.display_name}")
 
-            # 5. 设置全局默认配置
+            # 5. 初始化默认知识库
+            kb, created = KnowledgeBase.objects.update_or_create(
+                collection_name="ansflow_docs",
+                defaults={
+                    "name": "默认运维知识库",
+                    "description": "存储平台默认的运维手册、故障诊断经验和自动化脚本说明。"
+                }
+            )
+            if created:
+                self.stdout.write(f"创建知识库: {kb.name}")
+
+            # 6. 设置全局默认配置
             config, created = AIConfig.objects.update_or_create(
                 name="default",
                 defaults={

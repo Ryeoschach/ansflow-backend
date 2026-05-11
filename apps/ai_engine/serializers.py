@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import KnowledgeBase, AIChatHistory, AIChatMessage, AIProvider, AIModel, AIConfig
+from .models import KnowledgeBase, AIChatHistory, AIChatMessage, AIProvider, AIModel, AIConfig, KnowledgeDocument
 
 class AIProviderSerializer(serializers.ModelSerializer):
     class Meta:
@@ -24,6 +24,11 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = KnowledgeBase
         fields = "__all__"
+
+class KnowledgeDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = KnowledgeDocument
+        fields = ["id", "kb", "title", "content", "source_type", "metadata", "create_time"]
 
 class AIChatMessageSerializer(serializers.ModelSerializer):
     class Meta:

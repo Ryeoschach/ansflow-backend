@@ -144,27 +144,96 @@ class RAGService:
                 streaming=True
             )
 
-    def ingest_document(self, file_path: str):
+    def ingest_document(self, file_path: str, kb_id: int = None):
+        """Load document, save to DB, and add to vector store."""
+        from .models import KnowledgeDocument, KnowledgeBase
+        kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
+        if not kb:
+            kb = KnowledgeBase.objects.create(
+                name="默认知识库",
+                collection_name="ansflow_docs",
+                description="系统默认创建的知识库"
+            )
+
         loader = TextLoader(file_path)
         docs = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        splits = text_splitter.split_documents(docs)
-        self.vectorstore.add_documents(documents=splits)
-        return len(splits)
+        
+        count = 0
+        for doc in docs:
+            # 1. 保存原始文本到数据库
+            KnowledgeDocument.objects.get_or_create(
+                kb=kb,
+                title=os.path.basename(file_path),
+                content=doc.page_content,
+                defaults={
+                    "source_type": "file",
+                    "metadata": doc.metadata
+                }
+            )
+            
+            # 2. 切分并存入向量库
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            splits = text_splitter.split_documents([doc])
+            self.vectorstore.add_documents(documents=splits)
+            count += len(splits)
+            
+        return count
 
-    def add_knowledge(self, content: str, metadata: dict = None):
-        """Manually add a piece of knowledge to the vector store."""
+    def add_knowledge(self, content: str, metadata: dict = None, kb_id: int = None, title: str = None):
+        """Manually add a piece of knowledge to both SQL and vector store."""
+        from .models import KnowledgeDocument, KnowledgeBase
         try:
+            kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
+            if not kb:
+                kb = KnowledgeBase.objects.create(
+                    name="默认知识库",
+                    collection_name="ansflow_docs",
+                    description="系统默认创建的知识库"
+                )
+
+            # 1. 保存到数据库 (持久化用于重索引)
+            KnowledgeDocument.objects.create(
+                kb=kb,
+                title=title or f"Manual Entry {os.urandom(4).hex()}",
+                content=content,
+                source_type="manual" if not metadata or metadata.get('type') != 'human_verified_knowledge' else "ai_export",
+                metadata=metadata or {}
+            )
+
+            # 2. 写入向量库
             from langchain_core.documents import Document
             doc = Document(page_content=content, metadata=metadata or {})
             self.vectorstore.add_documents(documents=[doc])
             return True
         except Exception as e:
             print(f"[RAG] Failed to add knowledge: {e}")
-            # 如果是 RustBindingsAPI 相关的错误，尝试清除缓存强制下次重连
             if "RustBindingsAPI" in str(e):
                 self._vectorstore_cache.clear()
             return False
+
+    def reindex_all(self, kb_id: int = None):
+        """Clear vector store and re-index all documents from SQL database."""
+        from .models import KnowledgeDocument, KnowledgeBase
+        kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
+        if not kb:
+            return 0
+
+        # 注意：这里我们不直接执行 vectorstore.delete_collection()，
+        # 因为我们的 collection 名字带了模型后缀。
+        # 只要当前模型名字变了，它本身就是一个空的 Collection。
+        
+        documents = KnowledgeDocument.objects.filter(kb=kb)
+        count = 0
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        
+        for kd in documents:
+            from langchain_core.documents import Document
+            doc = Document(page_content=kd.content, metadata=kd.metadata)
+            splits = text_splitter.split_documents([doc])
+            self.vectorstore.add_documents(documents=splits)
+            count += 1
+            
+        return count
 
     def format_docs(self, docs):
         return "\n\n".join(doc.page_content for doc in docs)

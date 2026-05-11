@@ -4,10 +4,14 @@ from rest_framework.response import Response
 from django.http import StreamingHttpResponse
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
-from .models import KnowledgeBase, AIChatHistory, AIChatMessage, AIProvider, AIModel, AIConfig
+from .models import (
+    KnowledgeBase, AIChatHistory, AIChatMessage, 
+    AIProvider, AIModel, AIConfig, KnowledgeDocument
+)
 from .serializers import (
     KnowledgeBaseSerializer, AIChatHistorySerializer, 
-    AIProviderSerializer, AIModelSerializer, AIConfigSerializer
+    AIProviderSerializer, AIModelSerializer, AIConfigSerializer,
+    KnowledgeDocumentSerializer
 )
 from .rag_service import RAGService
 
@@ -186,6 +190,22 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     resource_code = "ai:knowledge_base"
     resource_type = "ai"
     resource_owner_field = "creator"
+
+    @action(detail=True, methods=['post'])
+    def reindex(self, request, pk=None):
+        kb = self.get_object()
+        rag = RAGService(collection_name=kb.collection_name)
+        count = rag.reindex_all(kb_id=kb.id)
+        return Response({"status": "success", "message": f"Successfully re-indexed {count} documents."})
+
+@extend_schema(tags=["知识文档"])
+class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
+    queryset = KnowledgeDocument.objects.all()
+    serializer_class = KnowledgeDocumentSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "ai:document"
+    resource_type = "ai"
+    filterset_fields = ['kb']
 
 @extend_schema(tags=["AI 对话"])
 class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):

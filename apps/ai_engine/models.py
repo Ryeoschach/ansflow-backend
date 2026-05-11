@@ -61,12 +61,31 @@ class AIConfig(BaseModel):
 
 class KnowledgeBase(BaseModel):
     name = models.CharField(max_length=255, verbose_name="知识库名称")
+    name_en = models.CharField(max_length=255, blank=True, null=True, verbose_name="知识库英文名称")
     description = models.TextField(blank=True, null=True, verbose_name="描述")
+    description_en = models.TextField(blank=True, null=True, verbose_name="英文描述")
     collection_name = models.CharField(max_length=255, unique=True, verbose_name="向量集合名称")
 
     class Meta:
         db_table = "ai_knowledge_base"
         verbose_name = "知识库"
+        verbose_name_plural = verbose_name
+
+class KnowledgeDocument(BaseModel):
+    SOURCE_TYPES = (
+        ("manual", "手动录入"),
+        ("file", "文件上传"),
+        ("ai_export", "AI 导出"),
+    )
+    kb = models.ForeignKey(KnowledgeBase, related_name="documents", on_delete=models.CASCADE, verbose_name="所属知识库")
+    title = models.CharField(max_length=255, verbose_name="标题")
+    content = models.TextField(verbose_name="正文内容")
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPES, default="manual", verbose_name="来源类型")
+    metadata = models.JSONField(default=dict, blank=True, verbose_name="元数据")
+
+    class Meta:
+        db_table = "ai_knowledge_document"
+        verbose_name = "知识文档"
         verbose_name_plural = verbose_name
 
 class AIChatHistory(BaseModel):
