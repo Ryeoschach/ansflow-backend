@@ -9,7 +9,7 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
 class AIChatMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIChatMessage
-        fields = ["id", "role", "content", "create_time"]
+        fields = ["id", "role", "content", "is_exported", "create_time"]
 
 class AIChatHistorySerializer(serializers.ModelSerializer):
     class Meta:

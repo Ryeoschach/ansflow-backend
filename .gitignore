@@ -75,9 +75,16 @@ node_modules/
 *.tmp
 *.temp
 
-# Claude Code
-.claude/settings.local.json
+# ============================
+# AI Tools (Claude & Gemini)
+# ============================
+.claude/
 memory/
+.gemini/
+*-skills/
+*.prompt
+CLAUDE.md
+GEMINI.md
 
 .model_cache/
 chroma_db/
