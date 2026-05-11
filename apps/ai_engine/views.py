@@ -24,48 +24,130 @@ class AIProviderViewSet(viewsets.ModelViewSet):
         provider = self.get_object()
         try:
             import requests
+            from requests.exceptions import RequestException, JSONDecodeError
+            
             api_key = provider.get_decrypted_key()
-            headers = {"Authorization": f"Bearer {api_key}"}
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             
-            # 适配 OpenAI 兼容的 /models 接口
-            url = f"{provider.base_url.rstrip('/')}/models"
-            response = requests.get(url, headers=headers, timeout=15)
+            base_url = provider.base_url.rstrip('/') if provider.base_url else ""
             
-            if response.status_code != 200:
-                return Response({
-                    "error": f"Failed to fetch models: {response.status_code}",
-                    "detail": response.text
-                }, status=status.HTTP_400_BAD_REQUEST)
+            # 根据供应商类型选择同步接口
+            if provider.provider_type == 'local':
+                # 动态扫描本地模型缓存目录
+                from django.conf import settings
+                import os
+                
+                cache_dir = os.path.join(settings.BASE_DIR, ".model_cache")
+                models_list = []
+                
+                if os.path.exists(cache_dir):
+                    for item in os.listdir(cache_dir):
+                        # FastEmbed 目录名规范: models--qdrant--bge-small-en-v1.5-onnx-q
+                        if item.startswith("models--"):
+                            # 还原模型标识 (这里做一个简单的映射，通常 BGE 系列最常用)
+                            # 也可以直接存目录名的一部分，FastEmbed 加载时能识别
+                            m_id = ""
+                            if "bge-small-en" in item: m_id = "BAAI/bge-small-en-v1.5"
+                            elif "bge-small-zh" in item: m_id = "BAAI/bge-small-zh-v1.5"
+                            else:
+                                # 回退：尝试从目录名推测
+                                parts = item.split("--")
+                                if len(parts) >= 3:
+                                    m_id = f"{parts[1]}/{parts[2].replace('-onnx-q', '')}"
+                            
+                            if m_id:
+                                models_list.append({"id": m_id, "type": "embedding"})
 
-            data = response.json()
-            models_list = data.get('data', []) # OpenAI 格式在 data 字段
-            
-            count = 0
-            from django.db import transaction
-            with transaction.atomic():
-                for m_data in models_list:
-                    model_id = m_data.get('id')
-                    if not model_id: continue
-                    
-                    # 简单启发式判断：包含 'embed' 的通常是向量模型
-                    m_type = "embedding" if "embed" in model_id.lower() else "llm"
-                    
-                    # 某些供应商（如 DeepSeek）返回的模型较少，某些（如 OpenAI）返回极多
-                    # 我们可以通过一些过滤规则或直接全量同步
-                    obj, created = AIModel.objects.update_or_create(
-                        provider=provider,
-                        name=model_id,
-                        defaults={
-                            "display_name": model_id, # 初始显示名称设为 ID
-                            "model_type": m_type,
-                            "is_active": True
-                        }
-                    )
-                    if created: count += 1
-            
-            return Response({"status": "success", "message": f"Successfully synced {count} new models."})
+                # 如果没扫描到，至少返回一个默认配置中定义的
+                if not models_list:
+                    models_list = [{"id": "BAAI/bge-small-en-v1.5", "type": "embedding"}]
+
+                count = 0
+                from django.db import transaction
+                with transaction.atomic():
+                    for m_data in models_list:
+                        obj, created = AIModel.objects.update_or_create(
+                            provider=provider,
+                            name=m_data['id'],
+                            defaults={
+                                "display_name": m_data['id'].split('/')[-1] + " (Local)",
+                                "model_type": m_data['type'],
+                                "is_active": True
+                            }
+                        )
+                        if created: count += 1
+                return Response({"status": "success", "message": f"Successfully detected {count} local models."})
+
+            if not base_url:
+                return Response({"error": "Base URL is not configured"}, status=status.HTTP_400_BAD_REQUEST)
+                
+            if provider.provider_type == 'ollama':
+                url = f"{base_url}/api/tags"
+            else:
+                url = f"{base_url}/models"
+
+            try:
+                response = requests.get(url, headers=headers, timeout=15)
+                
+                if response.status_code != 200:
+                    return Response({
+                        "error": f"API returned error status: {response.status_code}",
+                        "detail": response.text[:500]
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                try:
+                    data = response.json()
+                except (ValueError, JSONDecodeError):
+                    return Response({
+                        "error": "Failed to parse API response as JSON",
+                        "detail": response.text[:500]
+                    }, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+                # 适配多种返回格式: OpenAI (data), Ollama (models), 或者直接是列表
+                models_list = []
+                if isinstance(data, dict):
+                    if 'data' in data: # OpenAI
+                        models_list = data['data']
+                    elif 'models' in data: # Ollama
+                        models_list = data['models']
+                elif isinstance(data, list):
+                    models_list = data
+
+                if not models_list:
+                    return Response({"status": "success", "message": "No models found in provider."})
+
+                count = 0
+                from django.db import transaction
+                with transaction.atomic():
+                    for m_data in models_list:
+                        if not isinstance(m_data, dict): continue
+                        # OpenAI 使用 'id', Ollama 使用 'name'
+                        model_id = m_data.get('id') or m_data.get('name')
+                        if not model_id: continue
+                        
+                        # 简单启发式判断：包含 'embed' 的通常是向量模型
+                        m_type = "embedding" if "embed" in model_id.lower() else "llm"
+                        
+                        obj, created = AIModel.objects.update_or_create(
+                            provider=provider,
+                            name=model_id,
+                            defaults={
+                                "display_name": model_id,
+                                "model_type": m_type,
+                                "is_active": True
+                            }
+                        )
+                        if created: count += 1
+                
+                return Response({"status": "success", "message": f"Successfully synced {count} new models."})
+                
+            except RequestException as e:
+                return Response({"error": f"Network error connecting to provider: {str(e)}"}, status=status.HTTP_502_BAD_GATEWAY)
+
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": f"Internal server error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(tags=["AI 模型"])
 class AIModelViewSet(viewsets.ModelViewSet):

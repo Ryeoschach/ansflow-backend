@@ -43,7 +43,7 @@ class Command(BaseCommand):
             local_provider, created = AIProvider.objects.update_or_create(
                 name="本地模型 (FastEmbed)",
                 defaults={
-                    "provider_type": "ollama", # 借用类型或后期扩展 local 类型
+                    "provider_type": "local",
                     "base_url": "http://localhost",
                     "api_key": "none",
                     "is_active": True

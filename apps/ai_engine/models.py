@@ -9,6 +9,7 @@ class AIProvider(BaseModel):
         ("anthropic", "Anthropic"),
         ("ollama", "Ollama (Local)"),
         ("zhipu", "智谱 AI"),
+        ("local", "FastEmbed (Local)"),
         ("other", "Other (OpenAI Compatible)"),
     )
     name = models.CharField(max_length=100, unique=True, verbose_name="供应商名称")
