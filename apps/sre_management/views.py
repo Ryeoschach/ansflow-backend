@@ -16,6 +16,12 @@ class AlertEventViewSet(viewsets.ModelViewSet):
     resource_type = "sre"
     resource_owner_field = "creator" # 告警通常是系统产生的
 
+    permission_labels = {
+        'bind_healing_pipeline': {'name': '绑定自愈流水线', 'danger': 'warn'},
+        'export_to_knowledge': {'name': '导出诊断至知识库', 'danger': 'safe'},
+        'trigger_healing': {'name': '触发自愈流水线', 'danger': 'warn'},
+    }
+
     @action(detail=True, methods=['post'], url_path='export-to-knowledge')
     def export_to_knowledge(self, request, pk=None):
         obj = self.get_object()
@@ -105,6 +111,52 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                 analyze_alert_event.delay(obj.id)
             
         return Response({"message": f"Successfully received {len(alerts)} alerts"}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='bind-healing-pipeline')
+    def bind_healing_pipeline(self, request, pk=None):
+        """
+        将流水线绑定到告警作为建议方案，并可选地创建/更新自愈策略
+        """
+        obj = self.get_object()
+        pipeline_id = request.data.get('pipeline_id')
+        make_policy = request.data.get('make_policy', False)
+        
+        if not pipeline_id:
+            return Response({"error": "pipeline_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            from apps.pipeline_management.models import Pipeline
+            pipeline = Pipeline.objects.get(id=pipeline_id)
+            
+            # 1. 绑定建议流水线
+            obj.suggested_pipeline = pipeline
+            if obj.healing_status == 'none':
+                obj.healing_status = 'suggested'
+            obj.save(update_fields=['suggested_pipeline', 'healing_status'])
+            
+            # 2. 如果要求创建策略
+            if make_policy:
+                # 使用告警的 labels 作为匹配规则
+                # 排除一些过于具体的标签（如 pod 名称、instance IP 等，视具体业务而定）
+                # 这里简单处理，取所有标签
+                policy, created = SelfHealingPolicy.objects.update_or_create(
+                    alert_match_rule=obj.labels,
+                    defaults={
+                        'name': f"Auto policy for {obj.alert_name}",
+                        'pipeline': pipeline,
+                        'is_active': True
+                    }
+                )
+                return Response({
+                    "message": "Pipeline bound and policy created",
+                    "policy_id": policy.id
+                }, status=status.HTTP_200_OK)
+
+            return Response({"message": "Pipeline bound to alert successfully"}, status=status.HTTP_200_OK)
+        except Pipeline.DoesNotExist:
+            return Response({"error": "Pipeline not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(tags=["SRE 自愈策略"])
 class SelfHealingPolicyViewSet(viewsets.ModelViewSet):

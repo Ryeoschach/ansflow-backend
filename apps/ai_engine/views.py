@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.http import StreamingHttpResponse
 from drf_spectacular.utils import extend_schema
-from utils.rbac_permission import SmartRBACPermission
+from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import KnowledgeBase, AIChatHistory, AIChatMessage, AIProvider, AIModel, AIConfig
 from .serializers import (
     KnowledgeBaseSerializer, AIChatHistorySerializer, 
@@ -106,7 +106,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     resource_owner_field = "creator"
 
 @extend_schema(tags=["AI 对话"])
-class AIChatHistoryViewSet(viewsets.ModelViewSet):
+class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = AIChatHistory.objects.all().order_by('-update_time')
     serializer_class = AIChatHistorySerializer
     permission_classes = [SmartRBACPermission]
@@ -153,6 +153,10 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         # Save user message
         AIChatMessage.objects.create(history=chat_history, role='user', content=question)
         
+        # 获取权限感知上下文，即便在普通对话中也能进行精准编排
+        from .utils import get_authorized_resources
+        auth_context = get_authorized_resources(request.user)
+
         # Initialize RAG Service with model choices
         rag_service = RAGService(
             personality=personality, 
@@ -162,7 +166,7 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         
         def stream_response():
             full_response = ""
-            for chunk in rag_service.chat_stream(question, history_id=pk):
+            for chunk in rag_service.chat_stream(question, history_id=pk, auth_context=auth_context):
                 full_response += chunk
                 yield chunk
             
@@ -174,39 +178,136 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='generate-pipeline')
     def generate_pipeline(self, request):
-        prompt_text = request.data.get('prompt')
-        personality = request.data.get('personality', 'professional')
+        prompt = request.data.get('prompt')
         llm_id = request.data.get('llm_id')
-        
-        if not prompt_text:
+
+        if not prompt:
             return Response({"error": "Prompt is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 准备动态上下文...
-        from apps.task_management.models import AnsibleTask
-        from apps.k8s_management.models import K8sCluster
-        
-        context_data = {
-            'ansible_tasks': list(AnsibleTask.objects.all().values('id', 'name')),
-            'k8s_clusters': list(K8sCluster.objects.all().values('id', 'name')),
-        }
+        # 获取权限感知上下文
+        from .utils import get_authorized_resources
+        auth_context = get_authorized_resources(request.user)
 
-        rag_service = RAGService(personality=personality, llm_id=llm_id)
+        rag_service = RAGService(llm_id=llm_id)
         try:
-            dag_json_str = rag_service.generate_dag(prompt_text, context_data=context_data)
-            # ... (保持原有的 JSON 清洗逻辑)
-            clean_json = dag_json_str.strip()
+            suggested_json_str = rag_service.generate_dag(prompt, context_data=auth_context)
+            
+            clean_json = suggested_json_str.strip()
             if clean_json.startswith("```json"):
                 clean_json = clean_json[7:]
             if clean_json.endswith("```"):
                 clean_json = clean_json[:-3]
             
             import json
-            dag_data = json.loads(clean_json.strip())
-            return Response(dag_data, status=status.HTTP_200_OK)
+            suggested_data = json.loads(clean_json.strip())
+            return Response(suggested_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": f"Failed to generate pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # ... (保持 save_to_knowledge 不变)
+    @action(detail=False, methods=['post'], url_path='refine-pipeline')
+    def refine_pipeline(self, request):
+        prompt = request.data.get('prompt')
+        nodes = request.data.get('nodes', [])
+        edges = request.data.get('edges', [])
+        llm_id = request.data.get('llm_id')
+
+        if not prompt:
+            return Response({"error": "Prompt is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 获取权限感知上下文
+        from .utils import get_authorized_resources
+        auth_context = get_authorized_resources(request.user)
+
+        rag_service = RAGService(llm_id=llm_id)
+        try:
+            suggested_json_str = rag_service.refine_dag(prompt, nodes, edges, auth_context=auth_context)
+            
+            clean_json = suggested_json_str.strip()
+            if clean_json.startswith("```json"):
+                clean_json = clean_json[7:]
+            if clean_json.endswith("```"):
+                clean_json = clean_json[:-3]
+            
+            import json
+            suggested_data = json.loads(clean_json.strip())
+            return Response(suggested_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to refine pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='explain-pipeline')
+    def explain_pipeline(self, request):
+        nodes = request.data.get('nodes', [])
+        edges = request.data.get('edges', [])
+        llm_id = request.data.get('llm_id')
+
+        if not nodes:
+            return Response({"error": "Pipeline nodes are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        rag_service = RAGService(llm_id=llm_id)
+        try:
+            explanation = rag_service.explain_pipeline(nodes, edges)
+            return Response({"explanation": explanation}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to explain pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='suggest-node-params')
+    def suggest_node_params(self, request):
+        node_type = request.data.get('type')
+        current_data = request.data.get('data', {})
+        context = request.data.get('context', [])
+        llm_id = request.data.get('llm_id')
+
+        if not node_type:
+            return Response({"error": "Node type is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        rag_service = RAGService(llm_id=llm_id)
+        try:
+            suggested_json_str = rag_service.suggest_node_params(
+                node_type, 
+                current_data=current_data, 
+                pipeline_context=context
+            )
+            
+            clean_json = suggested_json_str.strip()
+            if clean_json.startswith("```json"):
+                clean_json = clean_json[7:]
+            if clean_json.endswith("```"):
+                clean_json = clean_json[:-3]
+            
+            import json
+            suggested_data = json.loads(clean_json.strip())
+            return Response(suggested_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to suggest params: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='save-to-knowledge')
+    def save_to_knowledge(self, request, pk=None):
+        chat_history = self.get_object()
+        message_id = request.data.get('message_id')
+        
+        try:
+            msg = AIChatMessage.objects.get(id=message_id, history=chat_history)
+            
+            # 调用 RAG 服务存入向量库
+            rag_service = RAGService()
+            success = rag_service.add_knowledge(
+                content=msg.content,
+                metadata={
+                    "source": f"chat_history_{pk}",
+                    "type": "human_verified_knowledge",
+                    "user": request.user.username
+                }
+            )
+            
+            if success:
+                msg.is_exported = True
+                msg.save()
+                return Response({"status": "success"})
+            return Response({"error": "Failed to add to vector store"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except AIChatMessage.DoesNotExist:
+            return Response({"error": "Message not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'], url_path='diagnose')
     def diagnose(self, request, pk=None):
@@ -256,6 +357,21 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
                 log_content = "\n".join([f"[{log.host}] {log.output}" for log in logs])
                 context_info["name"] = f"Ansible Task Execution {target_id}"
                 context_info["summary"] = "Task execution failed"
+            elif target_type == 'alert':
+                from apps.sre_management.models import AlertEvent
+                alert = AlertEvent.objects.filter(id=target_id).first()
+                if not alert:
+                    return Response({"error": "Alert not found"}, status=status.HTTP_404_NOT_FOUND)
+                
+                target_name_display = f"告警: {alert.alert_name} (ID: #{target_id})"
+                
+                # 整合告警上下文
+                log_content = f"告警详情:\n名称: {alert.alert_name}\n严重程度: {alert.severity}\n状态: {alert.status}\n标签: {alert.labels}\n注释: {alert.annotations}"
+                if alert.ai_analysis:
+                    log_content += f"\n\n初步分析建议:\n{alert.ai_analysis}"
+                
+                context_info["name"] = f"SRE Alert: {alert.alert_name}"
+                context_info["summary"] = f"Alert triggered with severity {alert.severity}"
             else:
                 return Response({"error": "Invalid target_type"}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -272,11 +388,16 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
             prompt_content = f"请帮我诊断【{target_name_display}】的错误原因。"
             AIChatMessage.objects.create(history=chat_history, role='user', content=prompt_content)
 
+        # 获取权限感知上下文，辅助 AI 给出可执行的建议
+        from .utils import get_authorized_resources
+        auth_context = get_authorized_resources(request.user)
+
         rag_service = RAGService(personality=personality)
         
         suggested_pipeline_id = None
         from apps.sre_management.models import SelfHealingPolicy
         policies = SelfHealingPolicy.objects.filter(is_active=True)
+        # TODO: 这里也需要考虑数据权限过滤，暂时先匹配规则
         for policy in policies:
             for key, value in policy.alert_match_rule.items():
                 if value.lower() in log_content.lower():
@@ -293,7 +414,7 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
             
             try:
                 print("[AI] Calling rag_service.diagnose_log...")
-                for chunk in rag_service.diagnose_log(log_content, context_info):
+                for chunk in rag_service.diagnose_log(log_content, context_info, auth_context=auth_context):
                     full_response += chunk
                     yield chunk
                 print("[AI] Diagnosis stream completed")

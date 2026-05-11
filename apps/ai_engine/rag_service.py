@@ -31,6 +31,9 @@ class RAGService:
         }
     }
 
+    _vectorstore_cache = {}
+    _embeddings_cache = {}
+
     def __init__(self, collection_name: str = "ansflow_docs", personality: str = 'professional',
                  llm_id: int = None, embedding_id: int = None):
         self.personality = self.PERSONALITIES.get(personality, self.PERSONALITIES['professional'])
@@ -44,18 +47,23 @@ class RAGService:
         self.llm_config = self._get_model_config(llm_id, "llm")
         self.emb_config = self._get_model_config(embedding_id, "embedding")
 
-        # 2. 初始化 Embeddings
-        self.embeddings = self._init_embeddings()
+        # 2. 初始化 Embeddings (带缓存)
+        emb_key = f"{self.emb_config['name']}_{self.emb_config['provider_type']}"
+        if emb_key not in self._embeddings_cache:
+            self._embeddings_cache[emb_key] = self._init_embeddings()
+        self.embeddings = self._embeddings_cache[emb_key]
         
-        # 3. 初始化向量库 (根据 Embedding 模型动态区分集合，避免污染)
+        # 3. 初始化向量库 (带缓存)
         safe_model_name = self.emb_config['name'].replace("/", "_").replace("-", "_")
-        self.collection_name = f"{collection_name}_{safe_model_name}"
+        full_collection_name = f"{collection_name}_{safe_model_name}"
         
-        self.vectorstore = Chroma(
-            collection_name=self.collection_name,
-            embedding_function=self.embeddings,
-            persist_directory=self.persist_directory
-        )
+        if full_collection_name not in self._vectorstore_cache:
+            self._vectorstore_cache[full_collection_name] = Chroma(
+                collection_name=full_collection_name,
+                embedding_function=self.embeddings,
+                persist_directory=self.persist_directory
+            )
+        self.vectorstore = self._vectorstore_cache[full_collection_name]
         
         # 4. 初始化 LLM
         self.llm = self._init_llm()
@@ -146,15 +154,22 @@ class RAGService:
 
     def add_knowledge(self, content: str, metadata: dict = None):
         """Manually add a piece of knowledge to the vector store."""
-        from langchain_core.documents import Document
-        doc = Document(page_content=content, metadata=metadata or {})
-        self.vectorstore.add_documents(documents=[doc])
-        return True
+        try:
+            from langchain_core.documents import Document
+            doc = Document(page_content=content, metadata=metadata or {})
+            self.vectorstore.add_documents(documents=[doc])
+            return True
+        except Exception as e:
+            print(f"[RAG] Failed to add knowledge: {e}")
+            # 如果是 RustBindingsAPI 相关的错误，尝试清除缓存强制下次重连
+            if "RustBindingsAPI" in str(e):
+                self._vectorstore_cache.clear()
+            return False
 
     def format_docs(self, docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
-    def get_chat_chain(self, history_id: int = None):
+    def get_chat_chain(self, history_id: int = None, auth_context: dict = None):
         """Returns a LangChain runnable chain for chatting with memory support."""
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
         
@@ -167,95 +182,113 @@ class RAGService:
                 role = "用户" if m.role == 'user' else "助手"
                 chat_memory_str += f"{role}: {m.content}\n"
 
-        template = f"""{self.personality['prefix']}
-请使用以下检索到的参考内容来回答用户的问题。如果你不知道答案，就明确说明你不知道，不要编造。
+        # 构造授权资源上下文
+        auth_str = ""
+        if auth_context:
+            for r_type, info in auth_context.items():
+                auth_str += f"- {info['label']}: " + ", ".join([f"{item['name']}(ID:{item['id']})" for item in info['items']]) + "\n"
+        else:
+            auth_str = "（暂无可用资源，请建议用户先在平台注册资源）\n"
+
+        template = """{prefix}
+
+【你作为 AnsFlow 助手的特殊能力】
+1. 故障诊断：分析日志并给出建议。
+2. 流水线编排：你可以根据用户需求生成 DAG。
+   - 节点类型：ansible, k8s_deploy, git_clone, docker_build。
+   - 如果用户要求编排，请在回答末尾输出 `__PIPELINE_DRAFT__: {{"nodes": [...], "edges": [...]}}`。
+
+【你当前可用的资源 (RBAC 已授权)】
+{auth_resources}
+
+请使用以下检索到的参考内容来回答用户的问题。如果问题涉及 AnsFlow 的编排或诊断，请优先使用你作为助手的特殊能力和上面列出的可用资源。
 
 参考内容：
-{{context}}
+{context}
 
 对话历史：
-{chat_memory_str}
+{chat_history}
 
-用户问题：{{question}}
+用户问题：{question}
 
 你的回答："""
+        
         prompt = ChatPromptTemplate.from_template(template)
         
+        # 将静态内容作为变量注入，避免大括号解析错误
         chain = (
-            {"context": retriever | self.format_docs, "question": RunnablePassthrough()}
+            {
+                "context": retriever | self.format_docs, 
+                "question": RunnablePassthrough(),
+                "prefix": lambda x: self.personality['prefix'],
+                "auth_resources": lambda x: auth_str,
+                "chat_history": lambda x: chat_memory_str
+            }
             | prompt
             | self.llm
             | StrOutputParser()
         )
         return chain
 
-    def chat_stream(self, question: str, history_id: int = None):
-        chain = self.get_chat_chain(history_id=history_id)
+    def chat_stream(self, question: str, history_id: int = None, auth_context: dict = None):
+        chain = self.get_chat_chain(history_id=history_id, auth_context=auth_context)
         for chunk in chain.stream(question):
             yield chunk
 
-    def diagnose_log(self, log_content: str, context_info: dict):
-        # 1. 语义缓存：尝试寻找高相似度的已验证知识
-        try:
-            # 使用更基础的接口获取分数 (分数越低越相似，Chroma 默认是 L2 距离)
-            results = self.vectorstore.similarity_search_with_score(
-                log_content, 
-                k=1, 
-                filter={"type": "human_verified_knowledge"}
-            )
-            
-            if results:
-                doc, distance = results[0]
-                # L2 距离越接近 0 表示越相似。通常距离 < 0.2 可以认为非常相似
-                if distance < 0.15:
-                    yield "✨ **已为您匹配到历史最佳解决方案 (语义缓存)**\n\n"
-                    answer = doc.page_content.split("答案: ")[-1]
-                    yield answer
-                    return
-        except Exception as e:
-            print(f"[RAG] Semantic cache search failed: {e}")
-
-        # 2. 如果没有命中缓存，走常规 RAG + LLM 流程
+    def diagnose_log(self, log_content: str, context_info: dict, auth_context: dict = None):
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
         
-        from langchain_core.runnables import RunnableLambda
-        from langchain_core.prompts import ChatPromptTemplate
+        auth_str = ""
+        if auth_context:
+            auth_str = "\n【当前用户可用的修复资源 (仅限以下)】\n"
+            for r_type, info in auth_context.items():
+                auth_str += f"- {info['label']}: " + ", ".join([f"{item['name']}(ID:{item['id']})" for item in info['items']]) + "\n"
 
-        template = f"""{self.personality['prefix']}
+        template = """{prefix}
 作为专业的 SRE 运维专家，请分析以下执行日志并给出诊断结论和修复建议。
-
+{auth_str}
 【执行上下文】
-- 类型: {{target_type}}
-- 名称: {{target_name}}
-- 错误摘要: {{error_summary}}
+- 类型: {target_type}
+- 名称: {target_name}
+- 错误摘要: {error_summary}
 
 【错误日志截取】
-{{log_content}}
+{log_content}
 
 【参考知识库】
-{{context}}
+{context}
 
 请按以下格式回答：
 ### 🔍 故障根因
 (描述为什么报错)
 
 ### 🛠️ 修复建议
-(给出具体的步骤或代码修改建议)
+(给出具体的步骤。如果【可用修复资源】中有匹配的流水线或任务，请明确指出并建议用户执行，必须指明 ID)
+(如果你认为现有的流水线无法解决问题，且需要编排新的步骤，请根据以下【节点类型规范】生成一个流水线草案，并在回答的最后以 `__PIPELINE_DRAFT__: {{"nodes": [...], "edges": [...]}}` 的格式输出纯 JSON。请确保 JSON 结构符合规范且逻辑正确)
+**注意：每个 node 必须包含 {{"id": "...", "type": "...", "position": {{"x": 0, "y": 0}}, "data": {{"label": "...", "ansible_task_id": ...}}}} 这种完整结构。** 请根据节点顺序自动递增 x 坐标（间距 300）。
+
+【节点类型规范】
+- ansible: 执行 Ansible 任务。参数放在 data 中: {{'ansible_task_id': int, 'label': string}}
+- k8s_deploy: 部署 K8s 资源。参数放在 data 中: {{'cluster_id': int, 'manifest': string, 'label': string}}
+- git_clone: 克隆代码。参数放在 data 中: {{'repo_url': string, 'branch': string}}
+- docker_build: 构建镜像。参数放在 data 中: {{'image_name': string, 'dockerfile': string}}
 
 ### 💡 预防措施
 (如何避免下次发生)
 """
         prompt = ChatPromptTemplate.from_template(template)
-        
-        # 使用 RunnableLambda 包裹普通函数
-        get_context = RunnableLambda(lambda x: retriever.invoke(x["log_content"])) | self.format_docs
+        get_context = RunnablePassthrough() | (lambda x: retriever.invoke(x["log_content"])) | self.format_docs
 
         chain = (
-            {"context": get_context, 
-             "target_type": lambda x: x["target_type"],
-             "target_name": lambda x: x["target_name"],
-             "error_summary": lambda x: x["error_summary"],
-             "log_content": lambda x: x["log_content"]}
+            {
+                "context": get_context, 
+                "target_type": lambda x: x["target_type"],
+                "target_name": lambda x: x["target_name"],
+                "error_summary": lambda x: x["error_summary"],
+                "log_content": lambda x: x["log_content"],
+                "prefix": lambda x: self.personality['prefix'],
+                "auth_str": lambda x: auth_str
+            }
             | prompt
             | self.llm
             | StrOutputParser()
@@ -272,39 +305,159 @@ class RAGService:
         """Generates a ReactFlow compatible DAG structure based on user prompt."""
         context_str = ""
         if context_data:
-            if 'ansible_tasks' in context_data:
-                context_str += "\n【可用 Ansible 任务列表】\n"
-                for t in context_data['ansible_tasks']:
-                    context_str += f"- ID: {t['id']}, 名称: {t['name']}\n"
-            
-            if 'k8s_clusters' in context_data:
-                context_str += "\n【可用 K8s 集群列表】\n"
-                for c in context_data['k8s_clusters']:
-                    context_str += f"- ID: {c['id']}, 名称: {c['name']}\n"
+            for r_type, info in context_data.items():
+                context_str += f"\n【可用 {info['label']} 列表】\n"
+                for item in info['items']:
+                    context_str += f"- ID: {item['id']}, 名称: {item['name']}\n"
 
         template = """你是一个专业的 AnsFlow 流水线设计专家。
 请根据用户的需求，生成一个符合 ReactFlow 规范的 JSON 格式 DAG 流水线数据。
 {dynamic_context}
 【节点类型规范】
-- ansible: 执行 Ansible 任务。参数: {{'ansible_task_id': int, 'label': string, 'max_retries': int, 'retry_delay': int}}
-- k8s_deploy: 部署 K8s 资源。参数: {{'cluster_id': int, 'manifest': string, 'label': string}}
-- git_clone: 克隆代码。参数: {{'repo_url': string, 'branch': string, 'label': string}}
-- docker_build: 构建镜像。参数: {{'image_name': string, 'dockerfile': string, 'label': string}}
+- ansible: 执行 Ansible 任务。参数放在 data 中: {{'ansible_task_id': int, 'label': string}}
+- k8s_deploy: 部署 K8s 资源。参数放在 data 中: {{'cluster_id': int, 'manifest': string, 'label': string}}
+- git_clone: 克隆代码。参数放在 data 中: {{'repo_url': string, 'branch': string}}
+- docker_build: 构建镜像。参数放在 data 中: {{'image_name': string, 'dockerfile': string}}
 
 【输出要求】
 1. 只输出纯 JSON 格式，不要包含 Markdown 标记或任何解释。
 2. JSON 结构必须包含 'nodes' 和 'edges'。
 3. 如果用户提到的任务名称或集群名称在【可用列表】中存在，请务必使用对应的正确 ID。
-4. 如果用户指定了尝试次数或间隔时间，请准确填写到对应参数中。
-5. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
-6. 边(edges)的 id 格式为 'e-source-target'。
+4. 节点位置(position)请合理计算，使其水平从左向右排列，间距 300px，y 轴设为 100。
+5. 边(edges)的 id 格式为 'e-source-target'。
+6. 严禁使用列表中不存在的 ID。
+7. 每个 node 必须包含 {{"id": "...", "type": "...", "position": {{"x": 0, "y": 0}}, "data": {{"label": "...", "ansible_task_id": ...}}}} 这种完整结构。
 
 用户需求：{prompt_text}
 
 JSON 输出："""
         prompt = ChatPromptTemplate.from_template(template)
-        chain = prompt | self.llm | StrOutputParser()
+        chain = (
+            {"prompt_text": RunnablePassthrough(), "dynamic_context": lambda x: context_str}
+            | prompt 
+            | self.llm 
+            | StrOutputParser()
+        )
+        return chain.invoke(prompt_text)
+
+    def refine_dag(self, prompt_text: str, current_nodes: list, current_edges: list, auth_context: dict = None):
+        """Refines an existing DAG structure based on user instructions."""
+        context_str = ""
+        if auth_context:
+            for r_type, info in auth_context.items():
+                context_str += f"\n【可用 {info['label']} 列表】\n"
+                for item in info['items']:
+                    context_str += f"- ID: {item['id']}, 名称: {item['name']}\n"
+
+        import json
+        current_state_json = json.dumps({"nodes": current_nodes, "edges": current_edges}, ensure_ascii=False)
+
+        template = """你是一个专业的 AnsFlow 流水线重构专家。
+你现在的任务是根据用户的指令，修改现有的流水线结构。
+
+【当前流水线状态】
+{current_state}
+
+【可用资源列表】
+{dynamic_context}
+
+【修改要求】
+1. 必须基于【当前流水线状态】进行修改，保持未被要求修改的部分不变。
+2. 只输出纯 JSON 格式，包含完整的 'nodes' 和 'edges'。
+3. 确保节点 ID 唯一，且 position 坐标合理（水平间距 300px）。
+4. 每个 node 必须包含 {{"id": "...", "type": "...", "position": {{"x": 0, "y": 0}}, "data": {{"label": "...", "ansible_task_id": ...}}}} 这种完整结构。
+5. 如果用户要求删除节点，请确保同时删除相关的边。
+6. 严禁使用列表中不存在的资源 ID。
+7. 不要输出 Markdown 标记，只输出 JSON。
+
+用户修改指令：{prompt_text}
+
+JSON 输出："""
+        
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = (
+            {
+                "prompt_text": lambda x: x["prompt"],
+                "current_state": lambda x: x["state"],
+                "dynamic_context": lambda x: x["context"]
+            }
+            | prompt 
+            | self.llm 
+            | StrOutputParser()
+        )
         return chain.invoke({
-            "prompt_text": prompt_text,
-            "dynamic_context": context_str
+            "prompt": prompt_text,
+            "state": current_state_json,
+            "context": context_str
         })
+
+    def suggest_node_params(self, node_type: str, current_data: dict, pipeline_context: dict):
+        """Suggests parameters for a specific node based on its type and pipeline context."""
+        template = """你是一个专业的 AnsFlow 流水线配置专家。
+请根据当前的节点类型和全量流水线上下文，为用户推荐最佳的配置参数。
+
+【目标节点类型】
+{node_type}
+
+【当前已填参数】
+{current_data}
+
+【全量流水线上下文 (已存在的节点)】
+{pipeline_context}
+
+【任务】
+请分析流水线逻辑，为该节点生成最合适的配置。
+例如：如果是 docker_build 节点，请根据 git_clone 节点的仓库推测基础镜像和构建指令。
+如果是 k8s_deploy 节点，请生成符合规范的 YAML。
+
+【输出要求】
+1. 只输出纯 JSON 格式，包含建议的字段及其值。
+2. 不要包含 Markdown 标记。
+3. 字段名必须与 AnsFlow 的规范一致。
+
+JSON 输出："""
+        import json
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = (
+            {
+                "node_type": lambda x: x["node_type"],
+                "current_data": lambda x: json.dumps(x["current_data"], ensure_ascii=False),
+                "pipeline_context": lambda x: json.dumps(x["pipeline_context"], ensure_ascii=False)
+            }
+            | prompt 
+            | self.llm 
+            | StrOutputParser()
+        )
+        return chain.invoke({
+            "node_type": node_type,
+            "current_data": current_data,
+            "pipeline_context": pipeline_context
+        })
+
+    def explain_pipeline(self, nodes: list, edges: list):
+        """Generates a step-by-step explanation and risk assessment for a pipeline."""
+        import json
+        pipeline_json = json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False)
+
+        template = """你是一个专业的 SRE 审计专家。
+请分析以下 AnsFlow 流水线配置，并给出通俗易懂的执行预案说明。
+
+【流水线配置】
+{pipeline_json}
+
+【输出要求】
+1. **执行步骤**：按执行顺序描述每一步会做什么（例如：第一步，克隆代码；第二步，构建镜像...）。
+2. **潜在影响**：告知用户该操作是否会导致业务中断、资源消耗或配置覆盖。
+3. **安全建议**：如果发现明显的配置风险（如缺少凭据、超时设置过短等），请指出。
+4. 使用 Markdown 格式输出，保持客观、严谨。
+
+请开始你的分析："""
+        
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = (
+            {"pipeline_json": RunnablePassthrough()}
+            | prompt 
+            | self.llm 
+            | StrOutputParser()
+        )
+        return chain.invoke(pipeline_json)
