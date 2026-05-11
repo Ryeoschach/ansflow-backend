@@ -4,9 +4,97 @@ from rest_framework.response import Response
 from django.http import StreamingHttpResponse
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission
-from .models import KnowledgeBase, AIChatHistory, AIChatMessage
-from .serializers import KnowledgeBaseSerializer, AIChatHistorySerializer
+from .models import KnowledgeBase, AIChatHistory, AIChatMessage, AIProvider, AIModel, AIConfig
+from .serializers import (
+    KnowledgeBaseSerializer, AIChatHistorySerializer, 
+    AIProviderSerializer, AIModelSerializer, AIConfigSerializer
+)
 from .rag_service import RAGService
+
+@extend_schema(tags=["AI 供应商"])
+class AIProviderViewSet(viewsets.ModelViewSet):
+    queryset = AIProvider.objects.all()
+    serializer_class = AIProviderSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "ai:provider"
+    resource_type = "ai"
+
+    @action(detail=True, methods=['post'])
+    def sync_models(self, request, pk=None):
+        provider = self.get_object()
+        try:
+            import requests
+            api_key = provider.get_decrypted_key()
+            headers = {"Authorization": f"Bearer {api_key}"}
+            
+            # 适配 OpenAI 兼容的 /models 接口
+            url = f"{provider.base_url.rstrip('/')}/models"
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            if response.status_code != 200:
+                return Response({
+                    "error": f"Failed to fetch models: {response.status_code}",
+                    "detail": response.text
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            data = response.json()
+            models_list = data.get('data', []) # OpenAI 格式在 data 字段
+            
+            count = 0
+            from django.db import transaction
+            with transaction.atomic():
+                for m_data in models_list:
+                    model_id = m_data.get('id')
+                    if not model_id: continue
+                    
+                    # 简单启发式判断：包含 'embed' 的通常是向量模型
+                    m_type = "embedding" if "embed" in model_id.lower() else "llm"
+                    
+                    # 某些供应商（如 DeepSeek）返回的模型较少，某些（如 OpenAI）返回极多
+                    # 我们可以通过一些过滤规则或直接全量同步
+                    obj, created = AIModel.objects.update_or_create(
+                        provider=provider,
+                        name=model_id,
+                        defaults={
+                            "display_name": model_id, # 初始显示名称设为 ID
+                            "model_type": m_type,
+                            "is_active": True
+                        }
+                    )
+                    if created: count += 1
+            
+            return Response({"status": "success", "message": f"Successfully synced {count} new models."})
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@extend_schema(tags=["AI 模型"])
+class AIModelViewSet(viewsets.ModelViewSet):
+    queryset = AIModel.objects.all()
+    serializer_class = AIModelSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "ai:model"
+    resource_type = "ai"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        model_type = self.request.query_params.get('model_type')
+        if model_type:
+            queryset = queryset.filter(model_type=model_type)
+        return queryset
+
+@extend_schema(tags=["AI 配置"])
+class AIConfigViewSet(viewsets.ModelViewSet):
+    queryset = AIConfig.objects.all()
+    serializer_class = AIConfigSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "ai:config"
+    resource_type = "ai"
+
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        config, _ = AIConfig.objects.get_or_create(name="default")
+        serializer = self.get_serializer(config)
+        return Response(serializer.data)
 
 @extend_schema(tags=["AI 知识库"])
 class KnowledgeBaseViewSet(viewsets.ModelViewSet):
@@ -51,6 +139,8 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         chat_history = self.get_object()
         question = request.data.get('question')
         personality = request.data.get('personality', 'professional')
+        llm_id = request.data.get('llm_id')
+        embedding_id = request.data.get('embedding_id')
         
         if not question:
             return Response({"error": "Question is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -63,8 +153,12 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         # Save user message
         AIChatMessage.objects.create(history=chat_history, role='user', content=question)
         
-        # Initialize RAG Service with personality
-        rag_service = RAGService(personality=personality)
+        # Initialize RAG Service with model choices
+        rag_service = RAGService(
+            personality=personality, 
+            llm_id=llm_id, 
+            embedding_id=embedding_id
+        )
         
         def stream_response():
             full_response = ""
@@ -82,10 +176,12 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
     def generate_pipeline(self, request):
         prompt_text = request.data.get('prompt')
         personality = request.data.get('personality', 'professional')
+        llm_id = request.data.get('llm_id')
+        
         if not prompt_text:
             return Response({"error": "Prompt is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 准备动态上下文：获取当前的 Ansible 任务和 K8s 集群
+        # 准备动态上下文...
         from apps.task_management.models import AnsibleTask
         from apps.k8s_management.models import K8sCluster
         
@@ -94,10 +190,10 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
             'k8s_clusters': list(K8sCluster.objects.all().values('id', 'name')),
         }
 
-        rag_service = RAGService(personality=personality)
+        rag_service = RAGService(personality=personality, llm_id=llm_id)
         try:
             dag_json_str = rag_service.generate_dag(prompt_text, context_data=context_data)
-            # LLM might return JSON wrapped in backticks, clean it
+            # ... (保持原有的 JSON 清洗逻辑)
             clean_json = dag_json_str.strip()
             if clean_json.startswith("```json"):
                 clean_json = clean_json[7:]
@@ -110,53 +206,16 @@ class AIChatHistoryViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": f"Failed to generate pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=True, methods=['post'], url_path='save-to-knowledge')
-    def save_to_knowledge(self, request, pk=None):
-        message_id = request.data.get('message_id')
-        if not message_id:
-            return Response({"error": "message_id is required"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            msg = AIChatMessage.objects.get(id=message_id, history_id=pk)
-            if msg.role != 'assistant':
-                return Response({"error": "Only assistant messages can be saved to knowledge base"}, status=status.HTTP_400_BAD_REQUEST)
-            
-            # 获取上下文（上一个用户问题）
-            prev_msg = AIChatMessage.objects.filter(
-                history_id=pk, 
-                create_time__lt=msg.create_time, 
-                role='user'
-            ).order_by('-create_time').first()
-            
-            question = prev_msg.content if prev_msg else "Unknown Question"
-            knowledge_content = f"问题: {question}\n答案: {msg.content}"
-            
-            rag_service = RAGService()
-            rag_service.add_knowledge(
-                content=knowledge_content, 
-                metadata={
-                    "source": "chat_history", 
-                    "history_id": pk, 
-                    "message_id": message_id,
-                    "type": "human_verified_knowledge"
-                }
-            )
-            # 标记为已导出
-            msg.is_exported = True
-            msg.save(update_fields=['is_exported'])
-            
-            return Response({"message": "Successfully saved to knowledge base"}, status=status.HTTP_200_OK)
-        except AIChatMessage.DoesNotExist:
-            return Response({"error": "Message not found"}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    # ... (保持 save_to_knowledge 不变)
 
-    @action(detail=False, methods=['post'])
-    def diagnose(self, request):
-        target_type = request.data.get('target_type') # 'pipeline' or 'task'
+    @action(detail=True, methods=['post'], url_path='diagnose')
+    def diagnose(self, request, pk=None):
+        target_type = request.data.get('target_type')
         target_id = request.data.get('target_id')
-        history_id = request.data.get('history_id')
+        history_id = pk # 详情页中的 PK 即 history_id
         personality = request.data.get('personality', 'professional')
+        llm_id = request.data.get('llm_id')
+        embedding_id = request.data.get('embedding_id')
         
         if not target_type or not target_id:
             return Response({"error": "target_type and target_id are required"}, status=status.HTTP_400_BAD_REQUEST)

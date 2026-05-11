@@ -11,7 +11,10 @@ from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, 
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalTemplateViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
-from apps.ai_engine.views import KnowledgeBaseViewSet, AIChatHistoryViewSet
+from apps.ai_engine.views import (
+    KnowledgeBaseViewSet, AIChatHistoryViewSet, 
+    AIProviderViewSet, AIModelViewSet, AIConfigViewSet
+)
 from apps.sre_management.views import AlertEventViewSet, SelfHealingPolicyViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
 
@@ -52,6 +55,9 @@ router.register(r'config/change-logs', ConfigChangeLogViewSet, basename='config-
 # AI Engine
 router.register(r'ai/knowledge-bases', KnowledgeBaseViewSet, basename='ai-knowledge-bases')
 router.register(r'ai/chat-histories', AIChatHistoryViewSet, basename='ai-chat-histories')
+router.register(r'ai/providers', AIProviderViewSet, basename='ai-providers')
+router.register(r'ai/models', AIModelViewSet, basename='ai-models')
+router.register(r'ai/configs', AIConfigViewSet, basename='ai-configs')
 
 # SRE Management
 router.register(r'sre/alerts', AlertEventViewSet, basename='sre-alerts')

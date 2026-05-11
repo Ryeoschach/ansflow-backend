@@ -10,6 +10,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
+from .models import AIConfig, AIModel, AIProvider
 
 class RAGService:
     PERSONALITIES = {
@@ -30,8 +31,8 @@ class RAGService:
         }
     }
 
-    def __init__(self, collection_name: str = "ansflow_docs", personality: str = 'professional'):
-        self.collection_name = collection_name
+    def __init__(self, collection_name: str = "ansflow_docs", personality: str = 'professional',
+                 llm_id: int = None, embedding_id: int = None):
         self.personality = self.PERSONALITIES.get(personality, self.PERSONALITIES['professional'])
         self.persist_directory = os.path.join(settings.BASE_DIR, "chroma_db")
         self.cache_directory = os.path.join(settings.BASE_DIR, ".model_cache")
@@ -39,10 +40,16 @@ class RAGService:
         if not os.path.exists(self.cache_directory):
             os.makedirs(self.cache_directory)
 
-        self.embeddings = FastEmbedEmbeddings(
-            model_name="BAAI/bge-small-en-v1.5",
-            cache_dir=self.cache_directory
-        )
+        # 1. 初始化配置
+        self.llm_config = self._get_model_config(llm_id, "llm")
+        self.emb_config = self._get_model_config(embedding_id, "embedding")
+
+        # 2. 初始化 Embeddings
+        self.embeddings = self._init_embeddings()
+        
+        # 3. 初始化向量库 (根据 Embedding 模型动态区分集合，避免污染)
+        safe_model_name = self.emb_config['name'].replace("/", "_").replace("-", "_")
+        self.collection_name = f"{collection_name}_{safe_model_name}"
         
         self.vectorstore = Chroma(
             collection_name=self.collection_name,
@@ -50,15 +57,84 @@ class RAGService:
             persist_directory=self.persist_directory
         )
         
-        self.api_key = os.environ.get("LLM_API_KEY")
-        self.api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com")
+        # 4. 初始化 LLM
+        self.llm = self._init_llm()
+
+    def _get_model_config(self, model_id: int, model_type: str):
+        """获取模型配置，优先级：传入 ID > 全局默认 > 环境变量"""
+        model = None
+        if model_id:
+            model = AIModel.objects.filter(id=model_id, model_type=model_type).first()
         
-        self.llm = ChatOpenAI(
-            model="deepseek-chat", 
-            api_key=self.api_key, 
-            base_url=self.api_base,
-            streaming=True
-        )
+        if not model:
+            # 尝试获取全局默认
+            global_config = AIConfig.objects.filter(name="default").first()
+            if global_config:
+                model = global_config.default_llm if model_type == "llm" else global_config.default_embedding
+
+        if model:
+            return {
+                "name": model.name,
+                "provider_type": model.provider.provider_type,
+                "base_url": model.provider.base_url,
+                "api_key": model.provider.get_decrypted_key()
+            }
+        
+        # 回退到环境变量 (用于兼容旧版本)
+        if model_type == "llm":
+            return {
+                "name": os.environ.get("LLM_MODEL_NAME", "deepseek-chat"),
+                "provider_type": "other",
+                "base_url": os.environ.get("LLM_API_BASE", "https://api.deepseek.com"),
+                "api_key": os.environ.get("LLM_API_KEY")
+            }
+        else:
+            return {
+                "name": "BAAI/bge-small-en-v1.5",
+                "provider_type": "local",
+                "base_url": None,
+                "api_key": None
+            }
+
+    def _init_embeddings(self):
+        ptype = self.emb_config['provider_type']
+        if ptype == "local" or "BAAI" in self.emb_config['name']:
+            return FastEmbedEmbeddings(
+                model_name=self.emb_config['name'],
+                cache_dir=self.cache_directory
+            )
+        else:
+            # 支持 OpenAI 兼容的 Embedding 接口
+            from langchain_openai import OpenAIEmbeddings
+            return OpenAIEmbeddings(
+                model=self.emb_config['name'],
+                openai_api_key=self.emb_config['api_key'],
+                openai_api_base=self.emb_config['base_url']
+            )
+
+    def _init_llm(self):
+        ptype = self.llm_config['provider_type']
+        if ptype == "ollama":
+            from langchain_community.chat_models import ChatOllama
+            return ChatOllama(
+                model=self.llm_config['name'],
+                base_url=self.llm_config['base_url']
+            )
+        elif ptype == "anthropic":
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(
+                model_name=self.llm_config['name'],
+                api_key=self.llm_config['api_key'],
+                base_url=self.llm_config['base_url']
+            )
+        else:
+            # 默认使用 OpenAI 兼容适配器 (OpenAI, DeepSeek, Zhipu 等)
+            return ChatOpenAI(
+                model=self.llm_config['name'], 
+                api_key=self.llm_config['api_key'], 
+                base_url=self.llm_config['base_url'],
+                streaming=True
+            )
 
     def ingest_document(self, file_path: str):
         loader = TextLoader(file_path)

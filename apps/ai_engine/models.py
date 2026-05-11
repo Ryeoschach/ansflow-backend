@@ -1,5 +1,62 @@
 from django.db import models
 from utils.base_model import BaseModel
+from utils.encryption import encrypt_string, decrypt_string
+
+class AIProvider(BaseModel):
+    PROVIDER_TYPES = (
+        ("openai", "OpenAI"),
+        ("deepseek", "DeepSeek"),
+        ("anthropic", "Anthropic"),
+        ("ollama", "Ollama (Local)"),
+        ("zhipu", "智谱 AI"),
+        ("other", "Other (OpenAI Compatible)"),
+    )
+    name = models.CharField(max_length=100, unique=True, verbose_name="供应商名称")
+    provider_type = models.CharField(max_length=20, choices=PROVIDER_TYPES, verbose_name="供应商类型")
+    base_url = models.URLField(max_length=255, blank=True, null=True, verbose_name="API 地址")
+    api_key = models.CharField(max_length=512, blank=True, null=True, verbose_name="API Key")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+
+    def save(self, *args, **kwargs):
+        # 如果 api_key 发生了变化且不是加密后的格式，则进行加密
+        if self.api_key and not self.api_key.startswith('gAAAA'): # Fernet 加密通常以 gAAAA 开始
+             self.api_key = encrypt_string(self.api_key)
+        super().save(*args, **kwargs)
+
+    def get_decrypted_key(self):
+        return decrypt_string(self.api_key) if self.api_key else ""
+
+    class Meta:
+        db_table = "ai_provider"
+        verbose_name = "AI 供应商"
+        verbose_name_plural = verbose_name
+
+class AIModel(BaseModel):
+    MODEL_TYPES = (
+        ("llm", "分析模型 (LLM)"),
+        ("embedding", "向量模型 (Embedding)"),
+    )
+    provider = models.ForeignKey(AIProvider, related_name="models", on_delete=models.CASCADE)
+    name = models.CharField(max_length=100, verbose_name="模型标识 (如 gpt-4)")
+    display_name = models.CharField(max_length=100, verbose_name="显示名称")
+    model_type = models.CharField(max_length=20, choices=MODEL_TYPES, verbose_name="模型类型")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+
+    class Meta:
+        db_table = "ai_model"
+        verbose_name = "AI 模型"
+        verbose_name_plural = verbose_name
+        unique_together = ('provider', 'name')
+
+class AIConfig(BaseModel):
+    name = models.CharField(max_length=100, default="default", unique=True)
+    default_llm = models.ForeignKey(AIModel, related_name="default_as_llm", on_delete=models.SET_NULL, null=True, blank=True)
+    default_embedding = models.ForeignKey(AIModel, related_name="default_as_embedding", on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        db_table = "ai_config"
+        verbose_name = "AI 全局配置"
+        verbose_name_plural = verbose_name
 
 class KnowledgeBase(BaseModel):
     name = models.CharField(max_length=255, verbose_name="知识库名称")
