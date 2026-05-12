@@ -8,7 +8,7 @@ from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewS
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
 from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet
-from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalTemplateViewSet
+from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalResourceViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
 from apps.ai_engine.views import (
@@ -68,7 +68,7 @@ router.register(r'sre/policies', SelfHealingPolicyViewSet, basename='sre-policie
 app_router = DefaultRouter()
 router.register(r'approval_policies', ApprovalPolicyViewSet, basename='approval_policies')
 router.register(r'approval_tickets', ApprovalTicketViewSet, basename='approval_tickets')
-router.register(r'approval_templates', ApprovalTemplateViewSet, basename='approval_templates')
+router.register(r'approval_resources', ApprovalResourceViewSet, basename='approval_resources')
 
 
 

@@ -8,6 +8,17 @@ class K8sBaseMixin:
     提供 K8s 和 Helm 视图通用的工具方法
     """
 
+    def get_approval_environment(self, request, *args, **kwargs):
+        """
+        [优化 E] 自动获取审批环境：优先从当前操作的集群配置中提取
+        """
+        try:
+            cluster = self.get_object()
+            # 假设集群模型有一个 environment 字段，或者我们通过 labels 映射
+            return getattr(cluster, 'environment', None) or cluster.labels.get('env')
+        except:
+            return None
+
     def _get_temp_kubeconfig(self, cluster):
         """
         根据集群配置生成临时的 Kubeconfig 文件路径

@@ -7,6 +7,7 @@ from config.celery import app as celery_app
 from .models import Pipeline, PipelineRun, CIEnvironment, PipelineNodeRun, PipelineWebhook, PipelineVersion
 from .serializers import PipelineSerializer, PipelineRunSerializer, CIEnvironmentSerializer, PipelineWebhookSerializer, PipelineVersionSerializer
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
+from utils.approval_decorator import require_approval
 
 from apps.pipeline_management.tasks import advance_pipeline_engine, push_pipeline_status_to_ws
 
@@ -62,19 +63,9 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         serializer.save(creator=self.request.user)
 
     @action(detail=True, methods=['post'])
+    @require_approval(resource_type='pipeline:run', action_title_prefix='申请运行流水线模板')
     def execute(self, request, pk=None):
         """触发执行流水线"""
-        
-        # 1. 审批拦截检查
-        from apps.approval_center.engine import ProxyApprovalEngine
-        is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
-            request, 
-            resource_type='pipeline:run', 
-            action_title=f"申请运行流水线模板 #{pk}",
-            target_id=pk
-        )
-        if is_blocked:
-            return approval_res
 
         # 2. 创建运行记录
         pipeline = self.get_object()

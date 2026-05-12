@@ -1,6 +1,30 @@
 from django.db import models
 from apps.rbac_permission.models import User, Role
 
+class ApprovalResource(models.Model):
+    """
+    可拦截资源管理：持久化存储系统中支持审批拦截的资源类型（如流水线运行、Ansible任务等）。
+    """
+    code = models.CharField(max_length=100, unique=True, verbose_name="资源标识码", help_text="代码中使用的唯一标识符，如 pipeline:run")
+    name = models.CharField(max_length=100, verbose_name="资源展示名称")
+    icon = models.CharField(max_length=50, default="PartitionOutlined", verbose_name="AntD图标")
+    description = models.TextField(null=True, blank=True, verbose_name="详细描述")
+    
+    is_active = models.BooleanField(default=True, verbose_name="是否启用", help_text="禁用的资源将不会出现在策略配置的选项中")
+    is_system = models.BooleanField(default=True, verbose_name="是否为系统内置", help_text="系统代码自动注册的资源标记为内置，不可删除")
+    
+    create_time = models.DateTimeField(auto_now_add=True, verbose_name="发现时间")
+    update_time = models.DateTimeField(auto_now=True, verbose_name="更新时间")
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+    class Meta:
+        db_table = 'approval_resource'
+        verbose_name = '可拦截资源'
+        verbose_name_plural = verbose_name
+
+
 class ApprovalPolicy(models.Model):
     """
     审批策略：定义在什么资源、什么环境下触发全局拦截与审批。
@@ -8,6 +32,13 @@ class ApprovalPolicy(models.Model):
     name = models.CharField(max_length=100, verbose_name="策略名称")
     resource_type = models.CharField(max_length=100, verbose_name="资源类型", help_text="如 pipeline:run, ansible:execution")
     environment = models.CharField(max_length=100, null=True, blank=True, verbose_name="生效环境", help_text="如 PROD。如果为空，则表示拦截该资源下所有环境的操作。")
+    
+    # [优化 C：颗粒度增强]
+    match_rules = models.JSONField(default=dict, blank=True, verbose_name="载荷匹配规则", help_text="例如 {'action': 'delete'}，空字典表示无条件拦截")
+    
+    # [优化 D：自愈免审白名单]
+    auto_pass_if_ai_verified = models.BooleanField(default=False, verbose_name="AI确信时自动放行", help_text="若自愈系统标明此操作安全，则自动放行不阻断")
+    
     approver_roles = models.ManyToManyField(Role, blank=True, verbose_name="指定的审批角色集合")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     create_time = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
@@ -43,6 +74,7 @@ class ApprovalTicket(models.Model):
     payload = models.JSONField(verbose_name="原汁原味的 Request Body")
     url_path = models.CharField(max_length=255, verbose_name="拦截发往的 URL", help_text="通过这个端点，系统可以代替发起人放行请求")
     method = models.CharField(max_length=10, default='POST', verbose_name="HTTP动词")
+    environment = models.CharField(max_length=100, null=True, blank=True, verbose_name="关联环境")
     
     # 追溯流言
     remark = models.TextField(null=True, blank=True, verbose_name="审批意见 / 为什么驳回")

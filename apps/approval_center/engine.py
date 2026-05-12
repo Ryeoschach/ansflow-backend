@@ -4,6 +4,9 @@ from django.db import transaction
 from django.utils import timezone
 from .models import ApprovalPolicy, ApprovalTicket
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ProxyApprovalEngine:
     """
@@ -14,7 +17,7 @@ class ProxyApprovalEngine:
     """
 
     @staticmethod
-    def intercept_if_needed(request, resource_type: str, action_title: str = "高危操作", target_id: str = None) -> tuple:
+    def intercept_if_needed(request, resource_type: str, action_title: str = "高危操作", target_id: str = None, environment: str = None, extra_context: dict = None) -> tuple:
         """
         在 ViewSet 执行最初调用此方法。
         返回值: (是否被阻断挂起: bool, Response响应实例)
@@ -23,13 +26,57 @@ class ProxyApprovalEngine:
         if getattr(request, '_is_approved_execution', False):
             return False, None
 
-        # 查询系统里有没有启用的相关阻断规则（Todo：未来可以加强环境、角色的精确计算）
-        policies = ApprovalPolicy.objects.filter(resource_type=resource_type, is_active=True)
+        # 获取 Payload
+        raw_payload = request.data if hasattr(request, 'data') else request.POST.dict()
+        if extra_context:
+            if isinstance(raw_payload, dict):
+                raw_payload.update(extra_context)
+
+        # [优化 D] 提取 AI 确信标志
+        is_ai_verified = raw_payload.get('ai_verified') is True
+
+        # 查询系统里有没有启用的相关阻断规则
+        policy_filter = {"resource_type": resource_type, "is_active": True}
+        if environment:
+            from django.db.models import Q
+            policies = ApprovalPolicy.objects.filter(
+                Q(environment=environment) | Q(environment__isnull=True) | Q(environment=''),
+                **policy_filter
+            )
+        else:
+            policies = ApprovalPolicy.objects.filter(**policy_filter)
+
         if not policies.exists():
             return False, None
 
-        # 如果命中了规则，立刻执行 Payload 将当前的request做快照
-        raw_payload = request.data if hasattr(request, 'data') else request.POST.dict()
+        # [优化 C & D] 遍历筛选真正命中的策略
+        matched_policy = None
+        for policy in policies:
+            # 1. 检查白名单：如果是AI确认且策略允许，直接跳过此策略
+            if is_ai_verified and policy.auto_pass_if_ai_verified:
+                continue
+
+            # 2. 检查细粒度规则 match_rules
+            match = True
+            if policy.match_rules and isinstance(policy.match_rules, dict):
+                for k, v in policy.match_rules.items():
+                    if raw_payload.get(k) != v:
+                        match = False
+                        break
+            
+            if match:
+                matched_policy = policy
+                break
+
+        # 如果没有任何一条策略最终命中，则放行
+        if not matched_policy:
+            return False, None
+
+        # 标记开发者标识（Creed's Integration）
+        if isinstance(raw_payload, dict):
+            raw_payload['_dev_ref'] = 'creed_sre_integration'
+            raw_payload['_matched_policy'] = matched_policy.name
+
         url_path = request.get_full_path()
         
         # 生成挂起的工单
@@ -42,7 +89,8 @@ class ProxyApprovalEngine:
                 method=request.method,
                 url_path=url_path,
                 payload=raw_payload,
-                status='pending'
+                status='pending',
+                environment=environment if environment else ''
             )
         
         # --- 触发外发告警推送 (通知拥有审批权限的人) ---
@@ -117,6 +165,19 @@ class ProxyApprovalEngine:
             else:
                 ticket.status = 'finished'
                 ticket.remark = "审批流转完成，操作放行成功！"
+                
+                # --- [Creed's Integration] 联动更新自愈告警的 run_id ---
+                try:
+                    res_data = response.data if hasattr(response, 'data') else {}
+                    run_id = res_data.get('run_id')
+                    alert_id = ticket.payload.get('alert_id') if ticket.payload else None
+                    
+                    if run_id and alert_id:
+                        from apps.sre_management.models import AlertEvent
+                        AlertEvent.objects.filter(id=alert_id).update(latest_run_id=run_id)
+                        logger.info(f"Linked AlertEvent {alert_id} to new PipelineRun {run_id} after approval.")
+                except Exception as e:
+                    logger.error(f"Failed to sync run_id back to alert: {str(e)}")
         
         except Exception as e:
             # 捕获视图层的严重 Python 异常

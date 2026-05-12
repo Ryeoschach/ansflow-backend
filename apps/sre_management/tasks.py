@@ -81,19 +81,102 @@ def analyze_alert_event(self, alert_id):
 
     return f"Analysis complete for alert {alert_id}"
 
+def get_system_bot():
+    """获取或创建系统机器人账号（授予超管权限以通过内部权限校验）"""
+    from apps.rbac_permission.models import User
+    bot, created = User.objects.get_or_create(
+        username='system_bot',
+        defaults={
+            'first_name': 'System',
+            'last_name': 'Bot',
+            'is_active': True,
+            'is_superuser': True,
+            'is_staff': True
+        }
+    )
+    if not created and not bot.is_superuser:
+        bot.is_superuser = True
+        bot.is_staff = True
+        bot.save(update_fields=['is_superuser', 'is_staff'])
+    return bot
+
+class MockRequest:
+    """虚拟 HttpRequest 载体，用于触发审批引擎"""
+    def __init__(self, user, data, path='/api/v1/sre/self-healing/trigger/', method='POST'):
+        self.user = user
+        self.data = data
+        self.method = method
+        self.META = {}
+        self._full_path = path
+        self._is_approved_execution = False # 显式定义，防止拦截器 getattr 失败（虽然 getattr 有默认值）
+
+    def get_full_path(self):
+        return self._full_path
+
 @shared_task(name="apps.sre_management.tasks.trigger_self_healing")
 def trigger_self_healing(alert_id):
     """
-    执行自愈流水线
+    执行自愈流水线（支持审批拦截）
     """
     from apps.pipeline_management.models import PipelineRun
     from apps.pipeline_management.tasks import advance_pipeline_engine
+    from apps.approval_center.engine import ProxyApprovalEngine
+    import traceback
     
     try:
         alert = AlertEvent.objects.get(id=alert_id)
         if not alert.suggested_pipeline:
             return "No pipeline suggested"
 
+        # 1. 构造虚拟请求上下文
+        bot = get_system_bot()
+        payload = {
+            "alert_id": alert.id,
+            "pipeline_id": alert.suggested_pipeline.id,
+            "alert_name": alert.alert_name,
+            "reason": "AI Self-healing Auto Trigger",
+            "ai_verified": True,  # [优化 D] 注入 AI 确信标志，配合白名单策略使用
+            "_developer_ref": "creed"
+        }
+        
+        # 确定环境（从标签中获取，默认为空）
+        environment = alert.labels.get('env') or alert.labels.get('environment')
+        
+        # 模拟请求对象
+        mock_request = MockRequest(
+            user=bot,
+            data=payload,
+            path=f"/api/v1/pipelines/{alert.suggested_pipeline.id}/execute/"
+        )
+
+        # 2. 尝试触发拦截器
+        try:
+            is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
+                mock_request,
+                resource_type='pipeline:run',
+                action_title=f"自愈审批: {alert.alert_name} -> 触发流水线 #{alert.suggested_pipeline.id}",
+                target_id=str(alert.suggested_pipeline.id),
+                environment=environment,
+                extra_context={"alert_id": alert.id, "trigger_source": "auto_self_healing"}
+            )
+        except Exception as intercept_err:
+            logger.error(f"Critical error in ProxyApprovalEngine: {str(intercept_err)}\n{traceback.format_exc()}")
+            # 如果拦截器本身崩了，为了安全起见，我们暂不自动触发，而是标记为失败
+            alert.healing_status = 'failed'
+            alert.ai_analysis = (alert.ai_analysis or "") + f"\n\n[拦截器异常] {str(intercept_err)}"
+            alert.save()
+            return f"Error in interception engine: {str(intercept_err)}"
+
+        if is_blocked:
+            # 被拦截：更新告警状态为“待审批”，并记录工单 ID
+            ticket_id = approval_res.data.get('ticket_id')
+            alert.healing_status = 'awaiting_approval'
+            alert.latest_ticket_id = ticket_id
+            alert.save()
+            logger.info(f"Self-healing for alert {alert_id} is blocked by approval policy. Ticket ID: {ticket_id}")
+            return f"Blocked by approval policy. Ticket ID: {ticket_id}. Environment: {environment}"
+
+        # 3. 未被拦截：直接执行（原有逻辑）
         alert.healing_status = 'executing'
         alert.save()
 
@@ -101,7 +184,7 @@ def trigger_self_healing(alert_id):
         run = PipelineRun.objects.create(
             pipeline=alert.suggested_pipeline,
             status='pending',
-            trigger_user=None, # 系统自动触发
+            trigger_user=bot,
             trigger_type='automation'
         )
 

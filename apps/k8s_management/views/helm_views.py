@@ -1,6 +1,7 @@
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from utils.approval_decorator import require_approval
 import subprocess, os, tempfile, shutil, json, yaml
 from django.conf import settings
 from .base import K8sBaseMixin
@@ -131,6 +132,7 @@ class HelmManagementMixin(K8sBaseMixin):
                 os.remove(kubeconfig_path)
 
     @action(detail=True, methods=['post'])
+    @require_approval(resource_type='k8s:helm_install', action_title_prefix='部署 Helm 应用')
     def helm_install(self, request, pk=None):
         """
         发布/安装 Helm Chart

@@ -152,6 +152,7 @@ cp .env.example .env
 ```bash
 uv run python manage.py migrate
 uv run python manage.py createsuperuser
+uv run python manage.py sync_perms # 同步权限语义
 ```
 
 ### 启动服务

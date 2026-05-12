@@ -82,14 +82,12 @@ class AuditLogMiddleware(MiddlewareMixin):
         resource = getattr(view_class, 'resource_code', 'unknown')
         
         # 推导 Action
-        action_mapping = {
-            'POST': 'create',
-            'PUT': 'update',
-            'PATCH': 'partial_update',
-            'DELETE': 'delete'
-        }
-        # 如果视图里定义了 @action 且可以获得名字，往往存在 view.__name__，但此处采用简易推断
-        action = action_mapping.get(request.method, 'unknown')
+        # 优先拿 view.action，如果为 None，则拿 request.method
+        drf_action = getattr(view, 'action', None) or request.method.lower()
+
+        # 统一映射动作语义（与 SmartRBACPermission 保持一致）
+        from utils.rbac_permission import RBAC_ACTION_MAP
+        perm_action = RBAC_ACTION_MAP.get(drf_action, drf_action)
         
         # 提取操作对象 ID
         object_id = None
@@ -100,8 +98,8 @@ class AuditLogMiddleware(MiddlewareMixin):
         resource_name = ''
         action_name = ''
         if resource != 'unknown':
-            # 后端现有的标准 code 格式，例如: rbac:user:create
-            lookup_code = f"{resource}:{action}"
+            # 后端现有的标准 code 格式，例如: rbac:user:add
+            lookup_code = f"{resource}:{perm_action}"
             try:
                 # 尝试拿权限来翻译成中文名
                 perm = Permission.objects.filter(code=lookup_code).first()
@@ -150,7 +148,7 @@ class AuditLogMiddleware(MiddlewareMixin):
             path=request.path,
             resource=resource,
             resource_name=resource_name,
-            action=action,
+            action=perm_action,
             action_name=action_name,
             object_id=object_id,
             old_data=old_data,

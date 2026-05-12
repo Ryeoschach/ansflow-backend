@@ -109,6 +109,18 @@ uv run celery -A config worker --loglevel=info -P threads
 
 ---
 
+## Initialization
+
+### Database Initialization
+
+```bash
+uv run python manage.py migrate
+uv run python manage.py createsuperuser
+uv run python manage.py sync_perms # Sync permission semantics
+```
+
+---
+
 ## API Documentation
 
 Swagger/OpenAPI documentation is available at `/api/docs/` after starting the server.

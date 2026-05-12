@@ -18,6 +18,7 @@ class AlertEvent(BaseModel):
         ('none', '未处理'),
         ('analyzing', 'AI 分析中'),
         ('suggested', '已有建议'),
+        ('awaiting_approval', '待审批'),
         ('executing', '自愈中'),
         ('success', '自愈成功'),
         ('failed', '自愈失败'),
@@ -41,6 +42,7 @@ class AlertEvent(BaseModel):
     suggested_pipeline = models.ForeignKey('pipeline_management.Pipeline', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="建议自愈流水线")
     matched_policy_name = models.CharField(max_length=100, null=True, blank=True, verbose_name="匹配到的策略名称")
     latest_run_id = models.IntegerField(null=True, blank=True, verbose_name="最近一次运行ID")
+    latest_ticket_id = models.IntegerField(null=True, blank=True, verbose_name="最近一次审批工单ID")
     trigger_type = models.CharField(max_length=20, choices=(('manual', '手动'), ('auto', '自动')), null=True, blank=True, verbose_name="触发类型")
     
     class Meta:
