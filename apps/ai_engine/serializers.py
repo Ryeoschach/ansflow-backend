@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import KnowledgeBase, AIChatHistory, AIChatMessage, AIProvider, AIModel, AIConfig, KnowledgeDocument
+from .models import (
+    KnowledgeBase, AIChatHistory, AIChatMessage, 
+    AIProvider, AIModel, AIConfig, KnowledgeDocument, KnowledgeChunk
+)
 
 class AIProviderSerializer(serializers.ModelSerializer):
     class Meta:
