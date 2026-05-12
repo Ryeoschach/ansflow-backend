@@ -11,6 +11,8 @@ class HostManagementConfig(AppConfig):
         approval_registry.register(
             code="host:terminal_access",
             name="SSH 终端登录 (远程访问审批)",
+            name_en="SSH Terminal Access (Remote Access Approval)",
             icon="KeyOutlined",
-            description="当用户尝试通过 Web 终端连接主机时，若命中了拦截策略，则需管理员授权后方可建立连接。"
+            description="当用户尝试通过 Web 终端连接主机时，若命中了拦截策略，则需管理员授权后方可建立连接。",
+            description_en="When a user attempts to connect to a host via Web terminal, if it hits the intercept policy, it requires administrator authorization before establishing a connection."
         )

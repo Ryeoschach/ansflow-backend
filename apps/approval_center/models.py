@@ -7,8 +7,10 @@ class ApprovalResource(models.Model):
     """
     code = models.CharField(max_length=100, unique=True, verbose_name="资源标识码", help_text="代码中使用的唯一标识符，如 pipeline:run")
     name = models.CharField(max_length=100, verbose_name="资源展示名称")
+    name_en = models.CharField(max_length=100, null=True, blank=True, verbose_name="资源展示名称(EN)")
     icon = models.CharField(max_length=50, default="PartitionOutlined", verbose_name="AntD图标")
     description = models.TextField(null=True, blank=True, verbose_name="详细描述")
+    description_en = models.TextField(null=True, blank=True, verbose_name="详细描述(EN)")
     
     is_active = models.BooleanField(default=True, verbose_name="是否启用", help_text="禁用的资源将不会出现在策略配置的选项中")
     is_system = models.BooleanField(default=True, verbose_name="是否为系统内置", help_text="系统代码自动注册的资源标记为内置，不可删除")

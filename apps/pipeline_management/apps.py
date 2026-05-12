@@ -11,6 +11,8 @@ class PipelineManagementConfig(AppConfig):
         approval_registry.register(
             code="pipeline:run",
             name="流水线运行 (生产环境发布拦截)",
+            name_en="Pipeline Execution (Production Intercept)",
             icon="PartitionOutlined",
-            description="当流水线被触发执行前，命中的策略将挂起请求并等待人工审批。"
+            description="当流水线被触发执行前，命中的策略将挂起请求并等待人工审批。",
+            description_en="Before the pipeline is triggered, hitting policies will suspend the request and wait for manual approval."
         )

@@ -9,15 +9,17 @@ class ApprovalResourceRegistry:
     _resources = {}
 
     @classmethod
-    def register(cls, code, name, icon="PartitionOutlined", description=""):
+    def register(cls, code, name, name_en=None, icon="PartitionOutlined", description="", description_en=""):
         """
         注册一个可拦截资源（同步内存并尝试持久化到 DB）
         """
         cls._resources[code] = {
             "code": code,
             "name": name,
+            "name_en": name_en,
             "icon": icon,
-            "description": description
+            "description": description,
+            "description_en": description_en
         }
         
         # 尝试将资源同步到数据库
@@ -25,12 +27,14 @@ class ApprovalResourceRegistry:
             from .models import ApprovalResource
             # 使用 update_or_create 确保系统内置资源的展示信息是最新的
             # 但不强制更新 is_active，保留用户的手动配置
-            obj, created = ApprovalResource.objects.get_or_create(
+            obj, created = ApprovalResource.objects.update_or_create(
                 code=code,
                 defaults={
                     "name": name,
+                    "name_en": name_en,
                     "icon": icon,
                     "description": description,
+                    "description_en": description_en,
                     "is_system": True
                 }
             )

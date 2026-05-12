@@ -11,6 +11,8 @@ class TaskManagementConfig(AppConfig):
         approval_registry.register(
             code="ansible:execution",
             name="Ansible 任务执行 (高危指令拦截)",
+            name_en="Ansible Execution (High-risk Command Intercept)",
             icon="ConsoleSqlOutlined",
-            description="针对临时任务下发或批量指令执行的审批拦截。"
+            description="针对临时任务下发或批量指令执行的审批拦截。",
+            description_en="Approval interception for ad-hoc task dispatch or batch command execution."
         )
