@@ -77,10 +77,19 @@ class KnowledgeDocument(BaseModel):
         ("file", "文件上传"),
         ("ai_export", "AI 导出"),
     )
+    STATUS_CHOICES = (
+        ("pending", "待索引"),
+        ("processing", "处理中"),
+        ("ready", "已就绪"),
+        ("error", "异常"),
+    )
     kb = models.ForeignKey(KnowledgeBase, related_name="documents", on_delete=models.CASCADE, verbose_name="所属知识库")
     title = models.CharField(max_length=255, verbose_name="标题")
     content = models.TextField(verbose_name="正文内容")
+    file_path = models.CharField(max_length=512, blank=True, null=True, verbose_name="文件存储路径")
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPES, default="manual", verbose_name="来源类型")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ready", verbose_name="处理状态")
+    chunk_count = models.IntegerField(default=0, verbose_name="切片数量")
     metadata = models.JSONField(default=dict, blank=True, verbose_name="元数据")
 
     class Meta:

@@ -200,12 +200,20 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
 
 @extend_schema(tags=["知识文档"])
 class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
-    queryset = KnowledgeDocument.objects.all()
+    queryset = KnowledgeDocument.objects.all().order_by('-create_time')
     serializer_class = KnowledgeDocumentSerializer
     permission_classes = [SmartRBACPermission]
     resource_code = "ai:document"
     resource_type = "ai"
     filterset_fields = ['kb']
+
+    @action(detail=True, methods=['get'])
+    def chunks(self, request, pk=None):
+        doc = self.get_object()
+        # 初始化 RAG 服务以获取切片逻辑
+        rag = RAGService()
+        chunks = rag.get_document_chunks(doc.id)
+        return Response(chunks)
 
 @extend_schema(tags=["AI 对话"])
 class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):

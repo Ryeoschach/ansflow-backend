@@ -28,7 +28,7 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
 class KnowledgeDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = KnowledgeDocument
-        fields = ["id", "kb", "title", "content", "source_type", "metadata", "create_time"]
+        fields = ["id", "kb", "title", "content", "source_type", "status", "chunk_count", "metadata", "create_time"]
 
 class AIChatMessageSerializer(serializers.ModelSerializer):
     class Meta:

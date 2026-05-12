@@ -145,39 +145,89 @@ class RAGService:
             )
 
     def ingest_document(self, file_path: str, kb_id: int = None):
-        """Load document, save to DB, and add to vector store."""
+        """Load document (PDF, Markdown, Text), save to DB, and add to vector store."""
         from .models import KnowledgeDocument, KnowledgeBase
         kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
         if not kb:
-            kb = KnowledgeBase.objects.create(
+            kb = KnowledgeBase.objects.get_or_create(
                 name="默认知识库",
                 collection_name="ansflow_docs",
-                description="系统默认创建的知识库"
-            )
+                defaults={"description": "系统默认创建的知识库"}
+            )[0]
 
-        loader = TextLoader(file_path)
-        docs = loader.load()
+        # 根据后缀选择 Loader
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == '.pdf':
+            from langchain_community.document_loaders import PyPDFLoader
+            loader = PyPDFLoader(file_path)
+        elif ext == '.md':
+            from langchain_community.document_loaders import UnstructuredMarkdownLoader
+            loader = UnstructuredMarkdownLoader(file_path)
+        else:
+            loader = TextLoader(file_path)
+
+        try:
+            docs = loader.load()
+        except Exception as e:
+            print(f"[RAG] Failed to load {file_path}: {e}")
+            return 0
         
         count = 0
-        for doc in docs:
-            # 1. 保存原始文本到数据库
-            KnowledgeDocument.objects.get_or_create(
-                kb=kb,
-                title=os.path.basename(file_path),
-                content=doc.page_content,
-                defaults={
-                    "source_type": "file",
-                    "metadata": doc.metadata
-                }
-            )
+        full_content = "\n\n".join([doc.page_content for doc in docs])
+        
+        # 1. 保存/更新原始文本到数据库
+        kd, _ = KnowledgeDocument.objects.get_or_create(
+            kb=kb,
+            title=os.path.basename(file_path),
+            defaults={
+                "content": full_content,
+                "file_path": file_path,
+                "source_type": "file",
+                "status": "processing"
+            }
+        )
+        if not _: # 如果是已存在的文档，更新内容
+            kd.content = full_content
+            kd.status = "processing"
+            kd.save()
             
-            # 2. 切分并存入向量库
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            splits = text_splitter.split_documents([doc])
+        # 2. 增强型切分
+        # 使用更小的块和更大的重叠，提高召回率
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=600, 
+            chunk_overlap=120,
+            separators=["\n\n", "\n", "。", "！", "？", " ", ""]
+        )
+        splits = text_splitter.split_documents(docs)
+        
+        # 3. 存入向量库
+        try:
             self.vectorstore.add_documents(documents=splits)
-            count += len(splits)
+            kd.status = "ready"
+            kd.chunk_count = len(splits)
+            kd.save()
+            count = len(splits)
+        except Exception as e:
+            kd.status = "error"
+            kd.save()
+            print(f"[RAG] Vector store addition failed: {e}")
             
         return count
+
+    def get_document_chunks(self, document_id: int):
+        """Pre-calculate chunks for a document without adding to vector store (for preview)."""
+        from .models import KnowledgeDocument
+        doc_obj = KnowledgeDocument.objects.filter(id=document_id).first()
+        if not doc_obj:
+            return []
+        
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=600, 
+            chunk_overlap=120,
+            separators=["\n\n", "\n", "。", "！", "？", " ", ""]
+        )
+        chunks = text_splitter.split_text(doc_obj.content)
+        return [{"index": i, "content": chunk, "length": len(chunk)} for i, chunk in enumerate(chunks)]
 
     def add_knowledge(self, content: str, metadata: dict = None, kb_id: int = None, title: str = None):
         """Manually add a piece of knowledge to both SQL and vector store."""
