@@ -211,16 +211,25 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
             return Response({"error": "Query is required"}, status=400)
         
         rag = RAGService(collection_name=kb.collection_name)
-        # 获取混合检索器
+        
+        # 1. 获取混合检索器进行实际召回 (包含 BM25 + Vector)
         retriever = rag.get_retriever(kb_id=kb.id)
-        # 模拟检索
         docs = retriever.invoke(query)
+        
+        # 2. 为了显示分数，我们额外进行一次带分数的向量搜索，用于匹配分数
+        # 这样既能保证混合检索的召回率，又能尽可能显示分数
+        vector_docs_with_scores = rag.vectorstore.similarity_search_with_relevance_scores(query, k=rag.config.rag_top_k * 2)
+        score_map = {d.page_content.strip(): s for d, s in vector_docs_with_scores}
         
         results = []
         for i, doc in enumerate(docs):
+            # 使用 strip() 增加匹配成功率
+            score = score_map.get(doc.page_content.strip())
+            
             results.append({
                 "index": i + 1,
                 "content": doc.page_content,
+                "score": round(float(score), 4) if score is not None else None,
                 "metadata": doc.metadata,
                 "source": doc.metadata.get('source', 'unknown')
             })

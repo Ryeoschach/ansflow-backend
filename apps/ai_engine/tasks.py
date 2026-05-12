@@ -16,14 +16,9 @@ def ingest_document_task(document_id: int):
         return False
     
     try:
-        # 更新状态为处理中
-        doc.status = 'processing'
-        doc.save(update_fields=['status'])
-        
-        # 调用 RAG 服务进行实际处理
+        # 调用 RAG 服务进行实际处理 (内部会处理状态更新)
         rag = RAGService()
-        # 这里的 ingest_document 内部已经处理了切片存入 SQL 和 Vector 的逻辑
-        count = rag.ingest_document(doc.file_path, kb_id=doc.kb_id)
+        count = rag.ingest_document(doc.file_path, kb_id=doc.kb_id, document_id=document_id)
         
         logger.info(f"[RAG Task] Successfully ingested document {document_id}, chunks: {count}")
         return True

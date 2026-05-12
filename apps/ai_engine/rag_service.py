@@ -11,7 +11,10 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
+try:
+    from langchain.retrievers import EnsembleRetriever
+except ImportError:
+    from langchain_classic.retrievers import EnsembleRetriever
 from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
 
 class RAGService:
@@ -146,7 +149,7 @@ class RAGService:
                 streaming=True
             )
 
-    def ingest_document(self, file_path: str, kb_id: int = None):
+    def ingest_document(self, file_path: str, kb_id: int = None, document_id: int = None):
         """Load document, save to DB, and add to vector store with chunk persistence."""
         from .models import KnowledgeDocument, KnowledgeBase, KnowledgeChunk
         kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
@@ -158,33 +161,71 @@ class RAGService:
             )[0]
 
         ext = os.path.splitext(file_path)[1].lower()
+        docs = []
+        # ... (解析逻辑保持不变)
         if ext == '.pdf':
-            from langchain_community.document_loaders import PyPDFLoader
-            loader = PyPDFLoader(file_path)
+            # ...
+            try:
+                from langchain_community.document_loaders import PyMuPDFLoader
+                loader = PyMuPDFLoader(file_path)
+                docs = loader.load()
+                
+                # 检查是否为扫描件或内容极少的 PDF (平均每页少于 100 字符)
+                total_chars = sum(len(d.page_content) for d in docs)
+                avg_chars_per_page = total_chars / len(docs) if docs else 0
+                
+                if avg_chars_per_page < 100:
+                    print(f"[RAG] PDF appears to be an image or scan (avg {avg_chars_per_page:.1f} chars/page). Switching to OCR...")
+                    from unstructured.partition.pdf import partition_pdf
+                    from langchain_core.documents import Document
+                    
+                    elements = partition_pdf(
+                        filename=file_path,
+                        strategy="hi_res",
+                        languages=["chi_sim", "eng"]
+                    )
+                    docs = [Document(page_content="\n".join([str(el) for el in elements]), 
+                                    metadata={"source": os.path.basename(file_path), "method": "ocr"})]
+            except Exception as e:
+                print(f"[RAG] Advanced PDF loading failed: {e}. Falling back to basic loader.")
+                from langchain_community.document_loaders import PyPDFLoader
+                loader = PyPDFLoader(file_path)
+                docs = loader.load()
         elif ext == '.md':
             from langchain_community.document_loaders import UnstructuredMarkdownLoader
             loader = UnstructuredMarkdownLoader(file_path)
-        else:
-            loader = TextLoader(file_path)
-
-        try:
             docs = loader.load()
-        except Exception as e:
-            print(f"[RAG] Failed to load {file_path}: {e}")
+        else:
+            from langchain_community.document_loaders import TextLoader
+            loader = TextLoader(file_path)
+            docs = loader.load()
+
+        if not docs:
+            print(f"[RAG] No content found in {file_path}")
             return 0
         
         full_content = "\n\n".join([doc.page_content for doc in docs])
-        kd, _ = KnowledgeDocument.objects.get_or_create(
-            kb=kb,
-            title=os.path.basename(file_path),
-            defaults={"content": full_content, "file_path": file_path, "source_type": "file", "status": "processing"}
-        )
-        if not _:
-            # 清理旧的分块数据
-            KnowledgeChunk.objects.filter(document=kd).delete()
-            kd.content = full_content
-            kd.status = "processing"
-            kd.save()
+        
+        if document_id:
+            kd = KnowledgeDocument.objects.filter(id=document_id).first()
+            if kd:
+                # 清理旧的分块数据
+                KnowledgeChunk.objects.filter(document=kd).delete()
+                kd.content = full_content
+                kd.status = "processing"
+                kd.save()
+        
+        if not document_id or not kd:
+            kd, created = KnowledgeDocument.objects.get_or_create(
+                kb=kb,
+                title=os.path.basename(file_path),
+                defaults={"content": full_content, "file_path": file_path, "source_type": "file", "status": "processing"}
+            )
+            if not created:
+                KnowledgeChunk.objects.filter(document=kd).delete()
+                kd.content = full_content
+                kd.status = "processing"
+                kd.save()
             
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
         splits = text_splitter.split_documents(docs)

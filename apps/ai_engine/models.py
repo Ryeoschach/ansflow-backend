@@ -53,6 +53,12 @@ class AIConfig(BaseModel):
     name = models.CharField(max_length=100, default="default", unique=True)
     default_llm = models.ForeignKey(AIModel, related_name="default_as_llm", on_delete=models.SET_NULL, null=True, blank=True)
     default_embedding = models.ForeignKey(AIModel, related_name="default_as_embedding", on_delete=models.SET_NULL, null=True, blank=True)
+    
+    # RAG 参数调优
+    rag_top_k = models.IntegerField(default=5, verbose_name="检索召回数量 (Top-K)")
+    rag_score_threshold = models.FloatField(default=0.4, verbose_name="相似度阈值")
+    rag_vector_weight = models.FloatField(default=0.7, verbose_name="向量搜索权重")
+    rag_bm25_weight = models.FloatField(default=0.3, verbose_name="关键词搜索权重")
 
     class Meta:
         db_table = "ai_config"

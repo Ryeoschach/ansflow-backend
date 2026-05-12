@@ -116,6 +116,7 @@ uv run celery -A config worker --loglevel=info -P threads
 
 - Python 3.12+
 - Redis 7+
+- **Tesseract OCR** (处理扫描版 PDF 必选，可通过 `brew install tesseract` 安装)
 - Docker & Docker Compose（可选）
 
 ### 安装依赖
