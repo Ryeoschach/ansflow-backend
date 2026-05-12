@@ -97,6 +97,20 @@ class KnowledgeDocument(BaseModel):
         verbose_name = "知识文档"
         verbose_name_plural = verbose_name
 
+class KnowledgeChunk(BaseModel):
+    document = models.ForeignKey(KnowledgeDocument, related_name="chunks", on_delete=models.CASCADE, verbose_name="所属文档")
+    content = models.TextField(verbose_name="分块内容")
+    vector_id = models.CharField(max_length=100, db_index=True, verbose_name="向量库ID")
+    index = models.IntegerField(default=0, verbose_name="序号")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+    metadata = models.JSONField(default=dict, blank=True, verbose_name="元数据")
+
+    class Meta:
+        db_table = "ai_knowledge_chunk"
+        verbose_name = "知识分块"
+        verbose_name_plural = verbose_name
+        ordering = ['document', 'index']
+
 class AIChatHistory(BaseModel):
     HISTORY_TYPES = (
         ("chat", "Chat"),

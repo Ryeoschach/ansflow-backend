@@ -10,7 +10,9 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
-from .models import AIConfig, AIModel, AIProvider
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
+from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
 
 class RAGService:
     PERSONALITIES = {
@@ -145,8 +147,8 @@ class RAGService:
             )
 
     def ingest_document(self, file_path: str, kb_id: int = None):
-        """Load document (PDF, Markdown, Text), save to DB, and add to vector store."""
-        from .models import KnowledgeDocument, KnowledgeBase
+        """Load document, save to DB, and add to vector store with chunk persistence."""
+        from .models import KnowledgeDocument, KnowledgeBase, KnowledgeChunk
         kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
         if not kb:
             kb = KnowledgeBase.objects.get_or_create(
@@ -155,7 +157,6 @@ class RAGService:
                 defaults={"description": "系统默认创建的知识库"}
             )[0]
 
-        # 根据后缀选择 Loader
         ext = os.path.splitext(file_path)[1].lower()
         if ext == '.pdf':
             from langchain_community.document_loaders import PyPDFLoader
@@ -172,47 +173,109 @@ class RAGService:
             print(f"[RAG] Failed to load {file_path}: {e}")
             return 0
         
-        count = 0
         full_content = "\n\n".join([doc.page_content for doc in docs])
-        
-        # 1. 保存/更新原始文本到数据库
         kd, _ = KnowledgeDocument.objects.get_or_create(
             kb=kb,
             title=os.path.basename(file_path),
-            defaults={
-                "content": full_content,
-                "file_path": file_path,
-                "source_type": "file",
-                "status": "processing"
-            }
+            defaults={"content": full_content, "file_path": file_path, "source_type": "file", "status": "processing"}
         )
-        if not _: # 如果是已存在的文档，更新内容
+        if not _:
+            # 清理旧的分块数据
+            KnowledgeChunk.objects.filter(document=kd).delete()
             kd.content = full_content
             kd.status = "processing"
             kd.save()
             
-        # 2. 增强型切分
-        # 使用更小的块和更大的重叠，提高召回率
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=600, 
-            chunk_overlap=120,
-            separators=["\n\n", "\n", "。", "！", "？", " ", ""]
-        )
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
         splits = text_splitter.split_documents(docs)
         
-        # 3. 存入向量库
+        # 3. 存入向量库并持久化分块
         try:
-            self.vectorstore.add_documents(documents=splits)
+            ids = [f"{kd.id}_{i}" for i in range(len(splits))]
+            self.vectorstore.add_documents(documents=splits, ids=ids)
+            
+            # 同步到 SQL
+            chunk_objs = [
+                KnowledgeChunk(
+                    document=kd,
+                    content=split.page_content,
+                    vector_id=ids[i],
+                    index=i,
+                    metadata=split.metadata
+                ) for i, split in enumerate(splits)
+            ]
+            KnowledgeChunk.objects.bulk_create(chunk_objs)
+            
             kd.status = "ready"
             kd.chunk_count = len(splits)
             kd.save()
-            count = len(splits)
+            return len(splits)
         except Exception as e:
             kd.status = "error"
             kd.save()
-            print(f"[RAG] Vector store addition failed: {e}")
+            print(f"[RAG] Ingestion failed: {e}")
+            return 0
+
+    def get_retriever(self, kb_id: int = None):
+        """Create a Hybrid Search retriever (BM25 + Vector)."""
+        from .models import KnowledgeChunk
+        
+        # 1. 向量检索器 (权重 0.7)
+        vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        
+        # 2. BM25 检索器 (权重 0.3)
+        # 从数据库加载所有启用的分块作为 BM25 语料
+        chunks_qs = KnowledgeChunk.objects.filter(is_active=True)
+        if kb_id:
+            chunks_qs = chunks_qs.filter(document__kb_id=kb_id)
+        
+        chunk_list = list(chunks_qs.values_list('content', flat=True))
+        
+        if not chunk_list:
+            return vector_retriever
             
-        return count
+        bm25_retriever = BM25Retriever.from_texts(chunk_list)
+        bm25_retriever.k = 3
+        
+        # 3. 混合检索
+        ensemble_retriever = EnsembleRetriever(
+            retrievers=[vector_retriever, bm25_retriever],
+            weights=[0.7, 0.3]
+        )
+        return ensemble_retriever
+
+    def delete_chunk(self, chunk_id: int):
+        """Delete a single chunk from both SQL and Vector store."""
+        from .models import KnowledgeChunk
+        chunk = KnowledgeChunk.objects.filter(id=chunk_id).first()
+        if not chunk: return False
+        
+        try:
+            self.vectorstore.delete(ids=[chunk.vector_id])
+            chunk.delete()
+            return True
+        except Exception:
+            return False
+
+    def update_chunk(self, chunk_id: int, new_content: str):
+        """Update a single chunk's content in both SQL and Vector store."""
+        from .models import KnowledgeChunk
+        from langchain_core.documents import Document
+        chunk = KnowledgeChunk.objects.filter(id=chunk_id).first()
+        if not chunk: return False
+        
+        try:
+            # 更新向量库 (先删后加)
+            self.vectorstore.delete(ids=[chunk.vector_id])
+            new_doc = Document(page_content=new_content, metadata=chunk.metadata)
+            self.vectorstore.add_documents(documents=[new_doc], ids=[chunk.vector_id])
+            
+            # 更新 SQL
+            chunk.content = new_content
+            chunk.save()
+            return True
+        except Exception:
+            return False
 
     def get_document_chunks(self, document_id: int):
         """Pre-calculate chunks for a document without adding to vector store (for preview)."""
@@ -262,25 +325,41 @@ class RAGService:
             return False
 
     def reindex_all(self, kb_id: int = None):
-        """Clear vector store and re-index all documents from SQL database."""
-        from .models import KnowledgeDocument, KnowledgeBase
+        """Clear vector store and re-index all documents, syncing chunks to SQL."""
+        from .models import KnowledgeDocument, KnowledgeBase, KnowledgeChunk
         kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.first()
         if not kb:
             return 0
 
-        # 注意：这里我们不直接执行 vectorstore.delete_collection()，
-        # 因为我们的 collection 名字带了模型后缀。
-        # 只要当前模型名字变了，它本身就是一个空的 Collection。
-        
         documents = KnowledgeDocument.objects.filter(kb=kb)
         count = 0
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
+        
+        # 清理该库旧的分块数据
+        KnowledgeChunk.objects.filter(document__kb=kb).delete()
         
         for kd in documents:
             from langchain_core.documents import Document
             doc = Document(page_content=kd.content, metadata=kd.metadata)
             splits = text_splitter.split_documents([doc])
-            self.vectorstore.add_documents(documents=splits)
+            
+            ids = [f"{kd.id}_{i}" for i in range(len(splits))]
+            self.vectorstore.add_documents(documents=splits, ids=ids)
+            
+            # 同步到 SQL
+            chunk_objs = [
+                KnowledgeChunk(
+                    document=kd,
+                    content=split.page_content,
+                    vector_id=ids[i],
+                    index=i,
+                    metadata=split.metadata
+                ) for i, split in enumerate(splits)
+            ]
+            KnowledgeChunk.objects.bulk_create(chunk_objs)
+            
+            kd.chunk_count = len(splits)
+            kd.save()
             count += 1
             
         return count
@@ -289,8 +368,8 @@ class RAGService:
         return "\n\n".join(doc.page_content for doc in docs)
 
     def get_chat_chain(self, history_id: int = None, auth_context: dict = None):
-        """Returns a LangChain runnable chain for chatting with memory support."""
-        retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        """Returns a LangChain runnable chain for chatting with Hybrid Search support."""
+        retriever = self.get_retriever()
         
         # 加载历史消息作为上下文 (取最近 20 条)
         chat_memory_str = ""
@@ -355,7 +434,7 @@ class RAGService:
             yield chunk
 
     def diagnose_log(self, log_content: str, context_info: dict, auth_context: dict = None):
-        retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        retriever = self.get_retriever()
         
         auth_str = ""
         if auth_context:

@@ -30,6 +30,11 @@ class KnowledgeDocumentSerializer(serializers.ModelSerializer):
         model = KnowledgeDocument
         fields = ["id", "kb", "title", "content", "source_type", "status", "chunk_count", "metadata", "create_time"]
 
+class KnowledgeChunkSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = KnowledgeChunk
+        fields = ["id", "document", "content", "index", "is_active", "metadata", "create_time"]
+
 class AIChatMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIChatMessage

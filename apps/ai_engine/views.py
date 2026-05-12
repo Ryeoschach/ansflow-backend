@@ -6,13 +6,17 @@ from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import (
     KnowledgeBase, AIChatHistory, AIChatMessage, 
-    AIProvider, AIModel, AIConfig, KnowledgeDocument
+    AIProvider, AIModel, AIConfig, KnowledgeDocument, KnowledgeChunk
 )
 from .serializers import (
     KnowledgeBaseSerializer, AIChatHistorySerializer, 
     AIProviderSerializer, AIModelSerializer, AIConfigSerializer,
-    KnowledgeDocumentSerializer
+    KnowledgeDocumentSerializer, KnowledgeChunkSerializer
 )
+import os
+from django.core.files.storage import default_storage
+from django.conf import settings
+from .tasks import ingest_document_task, reindex_kb_task
 from .rag_service import RAGService
 
 @extend_schema(tags=["AI 供应商"])
@@ -194,9 +198,34 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def reindex(self, request, pk=None):
         kb = self.get_object()
+        # 触发异步重建任务
+        reindex_kb_task.delay(kb.id)
+        return Response({"status": "success", "message": "Re-index task triggered in background."})
+
+    @action(detail=True, methods=['post'])
+    def test_search(self, request, pk=None):
+        """检索测试：模拟提问并返回命中的分块及评分"""
+        kb = self.get_object()
+        query = request.data.get('query')
+        if not query:
+            return Response({"error": "Query is required"}, status=400)
+        
         rag = RAGService(collection_name=kb.collection_name)
-        count = rag.reindex_all(kb_id=kb.id)
-        return Response({"status": "success", "message": f"Successfully re-indexed {count} documents."})
+        # 获取混合检索器
+        retriever = rag.get_retriever(kb_id=kb.id)
+        # 模拟检索
+        docs = retriever.invoke(query)
+        
+        results = []
+        for i, doc in enumerate(docs):
+            results.append({
+                "index": i + 1,
+                "content": doc.page_content,
+                "metadata": doc.metadata,
+                "source": doc.metadata.get('source', 'unknown')
+            })
+            
+        return Response(results)
 
 @extend_schema(tags=["知识文档"])
 class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
@@ -207,13 +236,63 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
     resource_type = "ai"
     filterset_fields = ['kb']
 
+    def create(self, request, *args, **kwargs):
+        file_obj = request.FILES.get('file')
+        kb_id = request.data.get('kb')
+        
+        if file_obj:
+            # 1. 确保目录存在
+            upload_dir = os.path.join(settings.MEDIA_ROOT, 'ai_knowledge')
+            if not os.path.exists(upload_dir):
+                os.makedirs(upload_dir, exist_ok=True)
+                
+            # 2. 保存原始文件
+            file_path = default_storage.save(f'ai_knowledge/{file_obj.name}', file_obj)
+            full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+            
+            # 3. 创建数据库记录 (状态为 pending)
+            doc_obj = KnowledgeDocument.objects.create(
+                kb_id=kb_id,
+                title=file_obj.name,
+                content="", # 后续异步填充
+                file_path=full_path,
+                source_type="file",
+                status="pending"
+            )
+            
+            # 4. 触发异步解析任务
+            ingest_document_task.delay(doc_obj.id)
+            
+            serializer = self.get_serializer(doc_obj)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        return super().create(request, *args, **kwargs)
+
     @action(detail=True, methods=['get'])
     def chunks(self, request, pk=None):
         doc = self.get_object()
-        # 初始化 RAG 服务以获取切片逻辑
+        chunks = doc.chunks.all().order_by('index')
+        serializer = KnowledgeChunkSerializer(chunks, many=True)
+        return Response(serializer.data)
+
+@extend_schema(tags=["知识分块"])
+class KnowledgeChunkViewSet(viewsets.ModelViewSet):
+    queryset = KnowledgeChunk.objects.all()
+    serializer_class = KnowledgeChunkSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "ai:chunk"
+    resource_type = "ai"
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        # 同播更新向量库
         rag = RAGService()
-        chunks = rag.get_document_chunks(doc.id)
-        return Response(chunks)
+        rag.update_chunk(instance.id, instance.content)
+
+    def perform_destroy(self, instance):
+        # 同步删除向量库数据
+        rag = RAGService()
+        rag.delete_chunk(instance.id)
 
 @extend_schema(tags=["AI 对话"])
 class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
