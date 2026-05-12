@@ -32,6 +32,7 @@ class ApprovalPolicy(models.Model):
     审批策略：定义在什么资源、什么环境下触发全局拦截与审批。
     """
     name = models.CharField(max_length=100, verbose_name="策略名称")
+    name_en = models.CharField(max_length=100, null=True, blank=True, verbose_name="策略名称(EN)")
     resource_type = models.CharField(max_length=100, verbose_name="资源类型", help_text="如 pipeline:run, ansible:execution")
     environment = models.CharField(max_length=100, null=True, blank=True, verbose_name="生效环境", help_text="如 PROD。如果为空，则表示拦截该资源下所有环境的操作。")
     
