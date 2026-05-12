@@ -9,18 +9,33 @@ from .serializers import AlertEventSerializer, SelfHealingPolicySerializer
 
 @extend_schema(tags=["SRE 告警管理"])
 class AlertEventViewSet(viewsets.ModelViewSet):
-    queryset = AlertEvent.objects.all()
+    queryset = AlertEvent.objects.all().order_by('-create_time')
     serializer_class = AlertEventSerializer
     permission_classes = [SmartRBACPermission]
     resource_code = "sre:alert"
     resource_type = "sre"
-    resource_owner_field = "creator" # 告警通常是系统产生的
+    resource_owner_field = "creator" 
+    filterset_fields = {
+        'alert_name': ['icontains'],
+        'status': ['exact'],
+        'severity': ['exact'],
+    }
 
     permission_labels = {
         'bind_healing_pipeline': {'name': '绑定自愈流水线', 'danger': 'warn'},
         'export_to_knowledge': {'name': '导出诊断至知识库', 'danger': 'safe'},
         'trigger_healing': {'name': '触发自愈流水线', 'danger': 'warn'},
+        'bulk_destroy': {'name': '批量删除告警', 'danger': 'danger'},
     }
+
+    @action(detail=False, methods=['post'], url_path='bulk-destroy')
+    def bulk_destroy(self, request):
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({"error": "No IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        count = self.queryset.filter(id__in=ids).delete()[0]
+        return Response({"message": f"Successfully deleted {count} alerts"}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='export-to-knowledge')
     def export_to_knowledge(self, request, pk=None):
@@ -93,6 +108,13 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             severity = labels.get('severity', 'warning')
 
             # 存入数据库
+            old_obj = AlertEvent.objects.filter(fingerprint=fingerprint).first()
+            should_analyze = False
+            
+            if alert_status == 'firing':
+                if not old_obj or old_obj.status != 'firing' or old_obj.healing_status in ['none', 'failed']:
+                    should_analyze = True
+
             obj, created = AlertEvent.objects.update_or_create(
                 fingerprint=fingerprint,
                 defaults={
@@ -101,12 +123,13 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                     'status': alert_status,
                     'labels': labels,
                     'annotations': annotations,
-                    'healing_status': 'analyzing' if alert_status == 'firing' else 'none'
                 }
             )
             
             # 触发 AI 分析 Celery 任务
-            if alert_status == 'firing':
+            if should_analyze:
+                obj.healing_status = 'analyzing'
+                obj.save(update_fields=['healing_status'])
                 from .tasks import analyze_alert_event
                 analyze_alert_event.delay(obj.id)
             
@@ -160,8 +183,25 @@ class AlertEventViewSet(viewsets.ModelViewSet):
 
 @extend_schema(tags=["SRE 自愈策略"])
 class SelfHealingPolicyViewSet(viewsets.ModelViewSet):
-    queryset = SelfHealingPolicy.objects.all()
+    queryset = SelfHealingPolicy.objects.all().order_by('-create_time')
     serializer_class = SelfHealingPolicySerializer
     permission_classes = [SmartRBACPermission]
     resource_code = "sre:policy"
     resource_type = "sre"
+    filterset_fields = {
+        'name': ['icontains'],
+        'is_active': ['exact'],
+    }
+
+    permission_labels = {
+        'bulk_destroy': {'name': '批量删除策略', 'danger': 'danger'},
+    }
+
+    @action(detail=False, methods=['post'], url_path='bulk-destroy')
+    def bulk_destroy(self, request):
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({"error": "No IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        count = self.queryset.filter(id__in=ids).delete()[0]
+        return Response({"message": f"Successfully deleted {count} policies"}, status=status.HTTP_200_OK)

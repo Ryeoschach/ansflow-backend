@@ -12,31 +12,39 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 logger = logging.getLogger(__name__)
 
-@shared_task(bind=True, max_retries=3)
+@shared_task(name="apps.sre_management.tasks.analyze_alert_event", bind=True, max_retries=3)
 def analyze_alert_event(self, alert_id):
     """
     异步 AI 分析告警事件并匹配自愈策略
     """
+    print(f"\n!!! [CELERY EXEC] Starting analyze_alert_event for ID: {alert_id} !!!\n")
+    logger.info(f"[SRE] Starting AI analysis for alert_id: {alert_id}")
     alert = None
     try:
         alert = AlertEvent.objects.get(id=alert_id)
         alert.healing_status = 'analyzing'
         alert.save()
+        logger.info(f"[SRE] Alert {alert_id} status set to analyzing")
 
         # 1. 构造 RAG 查询问题
         labels_str = ", ".join([f"{k}={v}" for k, v in alert.labels.items()])
         question = f"我收到了一个名为 '{alert.alert_name}' 的告警，严重程度为 '{alert.severity}'。标签信息: {labels_str}。请根据历史经验给出诊断建议。"
+        logger.info(f"[SRE] Constructing question: {question}")
 
         # 2. 调用 RAG 引擎
+        logger.info("[SRE] Initializing RAGService...")
         rag_service = RAGService()
-        analysis_result = ""
+        logger.info("[SRE] RAGService initialized successfully")
         
+        analysis_result = ""
         # 使用同步方式获取全部结果
+        logger.info("[SRE] Invoking RAG chain...")
         chain = rag_service.get_chat_chain()
         analysis_result = chain.invoke(question)
+        logger.info(f"[SRE] AI Analysis result received: {analysis_result[:100]}...")
 
         # 3. 匹配自愈策略
-        suggested_pipeline = None
+        matched_policy = None
         policies = SelfHealingPolicy.objects.filter(is_active=True)
         for policy in policies:
             match = True
@@ -45,20 +53,23 @@ def analyze_alert_event(self, alert_id):
                     match = False
                     break
             if match:
-                suggested_pipeline = policy.pipeline
+                matched_policy = policy
                 break
 
         # 4. 更新告警状态
         alert.ai_analysis = analysis_result
-        alert.suggested_pipeline = suggested_pipeline
+        if matched_policy:
+            alert.suggested_pipeline = matched_policy.pipeline
+            # 固化策略信息：记录策略名称，记录当时是否为自动
+            alert.matched_policy_name = matched_policy.name
+            alert.trigger_type = 'auto' if matched_policy.is_auto_execute else 'manual'
+        
         alert.healing_status = 'suggested'
         alert.save()
 
         # 5. 如果是自动执行策略，直接触发
-        if suggested_pipeline and alert.status == 'firing':
-            policy = SelfHealingPolicy.objects.filter(pipeline=suggested_pipeline, is_active=True).first()
-            if policy and policy.is_auto_execute:
-                trigger_self_healing.delay(alert.id)
+        if matched_policy and matched_policy.is_auto_execute and alert.status == 'firing':
+            trigger_self_healing.delay(alert.id)
 
     except Exception as e:
         logger.error(f"AI analysis failed for alert {alert_id}: {str(e)}")
@@ -70,7 +81,7 @@ def analyze_alert_event(self, alert_id):
 
     return f"Analysis complete for alert {alert_id}"
 
-@shared_task
+@shared_task(name="apps.sre_management.tasks.trigger_self_healing")
 def trigger_self_healing(alert_id):
     """
     执行自愈流水线

@@ -39,6 +39,7 @@ class AlertEvent(BaseModel):
     ai_analysis = models.TextField(blank=True, null=True, verbose_name="AI 分析结论")
     is_exported = models.BooleanField(default=False, verbose_name="是否已导出至知识库")
     suggested_pipeline = models.ForeignKey('pipeline_management.Pipeline', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="建议自愈流水线")
+    matched_policy_name = models.CharField(max_length=100, null=True, blank=True, verbose_name="匹配到的策略名称")
     latest_run_id = models.IntegerField(null=True, blank=True, verbose_name="最近一次运行ID")
     trigger_type = models.CharField(max_length=20, choices=(('manual', '手动'), ('auto', '自动')), null=True, blank=True, verbose_name="触发类型")
     

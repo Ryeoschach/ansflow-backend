@@ -77,22 +77,31 @@ class CeleryMonitor(BaseMonitor):
     icon = "RobotOutlined"
 
     def perform_check(self):
-        from config.celery import app
-        from django_redis import get_redis_connection
+        from django.core.cache import cache
         
-        # 1. 检查 Worker 连通性
-        i = app.control.inspect(timeout=3.0)
-        pings = i.ping()
-        active_workers = len(pings) if pings else 0
+        # 优先从后台定时任务生成的缓存中读取
+        cache_key = "ansflow:system:celery_stats"
+        cached_data = cache.get(cache_key)
         
-        # 2. 检查队列积压 (从 Redis 读取)
-        queue_length = 0
-        try:
-            conn = get_redis_connection("default")
-            # 默认队列名称通常为 'celery'
-            queue_length = conn.llen('celery')
-        except Exception as e:
-            logger.warning(f"Failed to get queue length: {e}")
+        if cached_data:
+            workers = cached_data.get('workers', [])
+            active_workers = len([w for w in workers if w['status'] == 'online'])
+            queue_length = 0
+            if cached_data.get('queues'):
+                queue_length = sum(q.get('length', 0) for q in cached_data['queues'])
+        else:
+            # 如果缓存不存在，则进行一次轻量级检查（不推荐在高频访问下使用）
+            from config.celery import app
+            from django_redis import get_redis_connection
+            try:
+                i = app.control.inspect(timeout=1.0) # 缩短超时
+                pings = i.ping()
+                active_workers = len(pings) if pings else 0
+                conn = get_redis_connection("default")
+                queue_length = conn.llen('celery')
+            except:
+                active_workers = 0
+                queue_length = 0
 
         status = "healthy"
         if active_workers == 0:

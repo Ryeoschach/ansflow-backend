@@ -7,3 +7,7 @@ class SREManagementConfig(AppConfig):
 
     def ready(self):
         import apps.sre_management.signals
+        try:
+            import apps.sre_management.tasks
+        except ImportError:
+            pass
