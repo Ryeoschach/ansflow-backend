@@ -11,6 +11,13 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 from langchain_community.retrievers import BM25Retriever
+import jieba
+
+def chinese_tokenizer(text: str):
+    """使用 jieba 进行中文分词，提高 BM25 的匹配精度"""
+    # lcut_for_search 适合用于搜索引擎，会对长词进一步切分
+    return jieba.lcut_for_search(text.lower())
+
 try:
     from langchain.retrievers import EnsembleRetriever
 except ImportError:
@@ -234,6 +241,11 @@ class RAGService:
         # 3. 存入向量库并持久化分块
         try:
             ids = [f"{kd.id}_{i}" for i in range(len(splits))]
+            for i, split in enumerate(splits):
+                split.metadata['document_id'] = kd.id
+                split.metadata['kb_id'] = kb.id
+                split.metadata['chunk_index'] = i
+            
             self.vectorstore.add_documents(documents=splits, ids=ids)
             
             # 同步到 SQL
@@ -275,12 +287,18 @@ class RAGService:
         if kb_id:
             chunks_qs = chunks_qs.filter(document__kb_id=kb_id)
         
-        chunk_list = list(chunks_qs.values_list('content', flat=True))
+        chunks = list(chunks_qs.values('content', 'metadata'))
+        chunk_list = [c['content'] for c in chunks]
+        metadata_list = [c['metadata'] for c in chunks]
         
         if not chunk_list:
             return vector_retriever
             
-        bm25_retriever = BM25Retriever.from_texts(chunk_list)
+        bm25_retriever = BM25Retriever.from_texts(
+            texts=chunk_list, 
+            metadatas=metadata_list,
+            preprocess_func=chinese_tokenizer
+        )
         bm25_retriever.k = top_k
         
         # 3. 混合检索
@@ -289,6 +307,26 @@ class RAGService:
             weights=[vector_weight, bm25_weight]
         )
         return ensemble_retriever
+
+    def delete_document(self, document_id: int):
+        """Delete all chunks of a document from both SQL and Vector store."""
+        from .models import KnowledgeChunk
+        chunks = KnowledgeChunk.objects.filter(document_id=document_id)
+        vector_ids = list(chunks.values_list('vector_id', flat=True))
+        
+        if vector_ids:
+            try:
+                self.vectorstore.delete(ids=vector_ids)
+            except Exception as e:
+                print(f"[RAG] Failed to delete vectors for document {document_id}: {e}")
+                # 备选方案：尝试按 metadata 删除 (部分 Chroma 版本支持)
+                try:
+                    self.vectorstore._collection.delete(where={"document_id": document_id})
+                except:
+                    pass
+        
+        chunks.delete()
+        return True
 
     def delete_chunk(self, chunk_id: int):
         """Delete a single chunk from both SQL and Vector store."""
@@ -377,12 +415,25 @@ class RAGService:
         if not kb:
             return 0
 
+        # 1. 彻底清理该知识库的向量集合
+        # 既然每个 KB 对应一个 Collection，直接清除集合内所有数据
+        try:
+            all_ids = self.vectorstore.get()['ids']
+            if all_ids:
+                batch_size = 5000
+                for i in range(0, len(all_ids), batch_size):
+                    self.vectorstore.delete(ids=all_ids[i:i+batch_size])
+            print(f"[RAG] Collection for KB {kb_id} cleared ({len(all_ids)} vectors).")
+        except Exception as e:
+            print(f"[RAG] Failed to clear collection during reindex: {e}")
+                
+        # 2. 清理 SQL 中的分块记录
+        KnowledgeChunk.objects.filter(document__kb=kb).delete()
+        
+        # 3. 重新对库中存在的文档进行索引
         documents = KnowledgeDocument.objects.filter(kb=kb)
         count = 0
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
-        
-        # 清理该库旧的分块数据
-        KnowledgeChunk.objects.filter(document__kb=kb).delete()
         
         for kd in documents:
             from langchain_core.documents import Document
@@ -390,6 +441,11 @@ class RAGService:
             splits = text_splitter.split_documents([doc])
             
             ids = [f"{kd.id}_{i}" for i in range(len(splits))]
+            for i, split in enumerate(splits):
+                split.metadata['document_id'] = kd.id
+                split.metadata['kb_id'] = kb.id
+                split.metadata['chunk_index'] = i
+
             self.vectorstore.add_documents(documents=splits, ids=ids)
             
             # 同步到 SQL
@@ -425,11 +481,20 @@ class RAGService:
         try:
             # 获取向量得分映射以进行过滤
             top_k = self.config.rag_top_k if self.config else 5
-            scored_docs = self.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 2)
+            scored_docs = self.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 3)
             score_map = {d.page_content.strip(): s for d, s in scored_docs}
             
-            # 过滤
-            filtered_docs = [d for d in docs if score_map.get(d.page_content.strip(), 0.0) >= threshold]
+            # 过滤逻辑：保留高向量得分的，以及纯被 BM25 检索出来的（不在前 k*3 向量中）
+            filtered_docs = []
+            for d in docs:
+                content = d.page_content.strip()
+                if content in score_map:
+                    if score_map[content] >= threshold:
+                        filtered_docs.append(d)
+                else:
+                    # BM25 强相关匹配，但向量匹配度过低未进入 score_map，强制保留
+                    filtered_docs.append(d)
+                    
             return filtered_docs
         except Exception as e:
             print(f"[RAG] Threshold filtering error: {e}")

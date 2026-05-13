@@ -409,3 +409,58 @@ class BackupViewSet(viewsets.ViewSet):
             'deleted': deleted,
             'errors': errors,
         })
+
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
+from .serializers import PeriodicTaskSerializer
+from utils.rbac_permission import SmartRBACPermission
+from utils.pagination import MyCustomPagination
+import json
+
+class PeriodicTaskViewSet(viewsets.ModelViewSet):
+    """
+    通用系统级定时任务管理
+    """
+    queryset = PeriodicTask.objects.all().order_by('-id')
+    serializer_class = PeriodicTaskSerializer
+    permission_classes = [SmartRBACPermission]
+    pagination_class = MyCustomPagination
+    resource_code = "system:periodic_tasks"
+    
+    def get_queryset(self):
+        return super().get_queryset()
+
+    @action(detail=True, methods=['put'])
+    def update_schedule(self, request, pk=None):
+        task = self.get_object()
+        data = request.data
+        
+        if 'args' in data:
+            task.args = data['args']
+        if 'kwargs' in data:
+            task.kwargs = data['kwargs']
+            
+        schedule_type = data.get('schedule_type')
+        if schedule_type == 'interval':
+            every = data.get('every', 1)
+            period = data.get('period', 'seconds')
+            interval, _ = IntervalSchedule.objects.get_or_create(every=every, period=period)
+            task.interval = interval
+            task.crontab = None
+        elif schedule_type == 'crontab':
+            crontab_data = data.get('crontab', {})
+            minute = crontab_data.get('minute', '*')
+            hour = crontab_data.get('hour', '*')
+            day_of_week = crontab_data.get('day_of_week', '*')
+            day_of_month = crontab_data.get('day_of_month', '*')
+            month_of_year = crontab_data.get('month_of_year', '*')
+            crontab, _ = CrontabSchedule.objects.get_or_create(
+                minute=minute, hour=hour, day_of_week=day_of_week, 
+                day_of_month=day_of_month, month_of_year=month_of_year
+            )
+            task.crontab = crontab
+            task.interval = None
+            
+        task.save()
+        return Response({'status': 'success'})

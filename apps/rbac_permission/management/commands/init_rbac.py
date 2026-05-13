@@ -40,6 +40,10 @@ class Command(BaseCommand):
             ]},
             {"title": "操作审计", "title_en": "Audit Center", "key": "AuditLog", "path": "v1/system/audit-logs", "icon": "hugeicons:audit-01", "order": 6},
             {"title": "审批表", "title_en": "Approvals", "key": "approvals", "path": "v1/system/approvals", "icon": "fluent:approvals-app-48-filled", "order": 7},
+            {"title": "SRE运维", "title_en": "SRE", "key": "sre", "path": "sre", "icon": "carbon:uv-index-alt", "order": 8, "children": [
+                {"title": "告警中心", "title_en": "Alert Center", "key": "sre-alerts", "path": "v1/sre/alerts", "icon": "carbon:alarm", "order": 0},
+                {"title": "任务脉搏", "title_en": "Task Pulse", "key": "sre-pulse", "path": "v1/sre/pulse", "icon": "carbon:activity", "order": 1},
+            ]},
             {"title": "资源管理", "title_en": "Resources Management", "key": "resources", "path": "resources", "icon": "grommet-icons:resources", "order": 888, "children": [
                 {"title": "平台管理", "title_en": "Platform Management", "key": "platform", "path": "v1/system/platforms", "icon": "tdesign:control-platform", "order": 0},
                 {"title": "环境管理", "title_en": "Envs Management", "key": "envs", "path": "v1/system/envs", "icon": "fluent-mdl2:server-enviroment", "order": 1},
@@ -54,6 +58,7 @@ class Command(BaseCommand):
                 {"title": "权限管理", "title_en": "Permission Management", "key": "permissions", "path": "v1/system/permissions", "icon": "SafetyCertificateOutlined", "order": 2},
                 {"title": "角色管理", "title_en": "Roles Management", "key": "roles", "path": "v1/system/roles", "icon": "TeamOutlined", "order": 3},
                 {"title": "系统备份/还原", "title_en": "System Backup", "key": "backup", "path": "/v1/system/backup", "icon": "iconoir:database-backup", "order": 4},
+                {"title": "定时任务", "title_en": "Scheduled Tasks", "key": "periodic-tasks", "path": "/v1/system/periodic-tasks", "icon": "ant-design:schedule-outlined", "order": 5},
             ]},
         ]
 

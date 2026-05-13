@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     'apps.config_center',
     'apps.ai_engine',
     'apps.sre_management',
+    'apps.task_pulse',
 ]
 
 MIDDLEWARE = [
@@ -279,6 +280,11 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 # 开启扩展结果模式，数据库记录 task_name、args、kwargs 等额外信息
 CELERY_RESULT_EXTENDED = True
 
+# 开启事件广播 (TaskPulse 核心配置)
+CELERY_SEND_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+CELERY_WORKER_SEND_TASK_EVENTS = True
+
 # Spectacular 的具体配置
 SPECTACULAR_SETTINGS = {
     'TITLE': 'AnsFlow 运维平台 API',
@@ -320,6 +326,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'verify_platform_connectivity',
         # 'schedule': 3600.0,  # 每小时执行一次 (单位: 秒)
         'schedule': 60,
+    },
+    'task-pulse-maintenance-every-60s': {
+        'task': 'task_pulse.maintenance',
+        'schedule': 60.0,
     },
 }
 # 允许携带 Cookie

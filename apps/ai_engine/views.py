@@ -218,8 +218,11 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         top_k = rag.config.rag_top_k if rag.config else 5
         threshold = rag.config.rag_score_threshold if rag.config else 0.0
         
-        vector_docs_with_scores = rag.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 2)
-        score_map = {d.page_content.strip(): s for d, s in vector_docs_with_scores}
+        try:
+            vector_docs_with_scores = rag.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 3)
+            score_map = {d.page_content.strip(): s for d, s in vector_docs_with_scores}
+        except:
+            score_map = {}
         
         results = []
         for i, doc in enumerate(docs):
@@ -229,12 +232,25 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
             if threshold > 0 and score is not None and score < threshold:
                 continue
                 
+            metadata = doc.metadata or {}
+            source = metadata.get('source')
+            document_id = metadata.get('document_id')
+            
+            if not source or not document_id:
+                # 尝试从数据库找回
+                chunk = KnowledgeChunk.objects.filter(content=doc.page_content, document__kb_id=kb.id).first()
+                if chunk and chunk.document:
+                    source = chunk.document.title or chunk.document.file_name
+                    document_id = chunk.document.id
+                    metadata['source'] = source
+                    metadata['document_id'] = document_id
+                
             results.append({
                 "index": i + 1,
                 "content": doc.page_content,
-                "score": round(float(score), 4) if score is not None else None,
-                "metadata": doc.metadata,
-                "source": doc.metadata.get('source', 'unknown')
+                "score": round(float(score), 4) if score is not None else "BM25 强匹配",
+                "metadata": metadata,
+                "source": source or 'Unknown Source'
             })
             
         return Response(results)
@@ -247,6 +263,24 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
     resource_code = "ai:document"
     resource_type = "ai"
     filterset_fields = ['kb']
+
+    def perform_destroy(self, instance):
+        # 1. 同步删除底层向量库中的所有相关分块
+        try:
+            rag = RAGService(collection_name=instance.kb.collection_name if instance.kb else None)
+            rag.delete_document(instance.id)
+        except Exception as e:
+            print(f"Failed to delete vector data: {e}")
+
+        # 2. 物理删除文件
+        if instance.file_path and os.path.exists(instance.file_path):
+            try:
+                os.remove(instance.file_path)
+            except Exception as e:
+                print(f"Failed to delete physical file {instance.file_path}: {e}")
+
+        # 3. 删除 SQL 数据 (级联删除 Chunk)
+        instance.delete()
 
     def create(self, request, *args, **kwargs):
         file_obj = request.FILES.get('file')

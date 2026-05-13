@@ -7,7 +7,7 @@ from apps.host_management.views import HostViewSet, EnvironmentViewSet, Resource
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet, AnsibleScheduleViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
-from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet
+from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet, PeriodicTaskViewSet
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalResourceViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
@@ -17,6 +17,7 @@ from apps.ai_engine.views import (
     KnowledgeDocumentViewSet, KnowledgeChunkViewSet
 )
 from apps.sre_management.views import AlertEventViewSet, SelfHealingPolicyViewSet
+from apps.task_pulse.views import TaskPulseViewSet, WorkerNodeViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
 
 router = DefaultRouter()
@@ -47,6 +48,7 @@ router.register(r'artifactory/repositories', ArtifactoryRepositoryViewSet, basen
 router.register(r'system/health', SystemHealthViewSet, basename='system-health')
 router.register(r'system/dashboard', DashboardViewSet, basename='system-dashboard')
 router.register(r'system/backup', BackupViewSet, basename='system-backup')
+router.register(r'system/periodic-tasks', PeriodicTaskViewSet, basename='system-periodic-tasks')
 router.register(r'audit-logs', AuditLogViewSet, basename='审计日志')
 router.register(r'credentials', CredentialViewSet, basename='credentials')
 router.register(r'config/categories', ConfigCategoryViewSet, basename='config-categories')
@@ -65,6 +67,10 @@ router.register(r'ai/configs', AIConfigViewSet, basename='ai-configs')
 # SRE Management
 router.register(r'sre/alerts', AlertEventViewSet, basename='sre-alerts')
 router.register(r'sre/policies', SelfHealingPolicyViewSet, basename='sre-policies')
+
+# Task Pulse
+router.register(r'pulse/tasks', TaskPulseViewSet, basename='pulse-tasks')
+router.register(r'pulse/workers', WorkerNodeViewSet, basename='pulse-workers')
 
 app_router = DefaultRouter()
 router.register(r'approval_policies', ApprovalPolicyViewSet, basename='approval_policies')
