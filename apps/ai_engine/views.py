@@ -193,7 +193,6 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     permission_classes = [SmartRBACPermission]
     resource_code = "ai:knowledge_base"
     resource_type = "ai"
-    resource_owner_field = "creator"
 
     @action(detail=True, methods=['post'])
     def reindex(self, request, pk=None):
@@ -212,20 +211,24 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         
         rag = RAGService(collection_name=kb.collection_name)
         
-        # 1. 获取混合检索器进行实际召回 (包含 BM25 + Vector)
-        retriever = rag.get_retriever(kb_id=kb.id)
-        docs = retriever.invoke(query)
+        # 1. 获取带阈值过滤的检索结果
+        docs = rag.retrieve_with_threshold(query, kb_id=kb.id)
         
-        # 2. 为了显示分数，我们额外进行一次带分数的向量搜索，用于匹配分数
-        # 这样既能保证混合检索的召回率，又能尽可能显示分数
-        vector_docs_with_scores = rag.vectorstore.similarity_search_with_relevance_scores(query, k=rag.config.rag_top_k * 2)
+        # 2. 获取得分用于展示
+        top_k = rag.config.rag_top_k if rag.config else 5
+        threshold = rag.config.rag_score_threshold if rag.config else 0.0
+        
+        vector_docs_with_scores = rag.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 2)
         score_map = {d.page_content.strip(): s for d, s in vector_docs_with_scores}
         
         results = []
         for i, doc in enumerate(docs):
-            # 使用 strip() 增加匹配成功率
             score = score_map.get(doc.page_content.strip())
             
+            # 如果配置了阈值，且得分低于阈值，则跳过（retrieve_with_threshold 已经过滤过一次，这里作为双重保证或展示逻辑）
+            if threshold > 0 and score is not None and score < threshold:
+                continue
+                
             results.append({
                 "index": i + 1,
                 "content": doc.page_content,

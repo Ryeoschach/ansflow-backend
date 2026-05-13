@@ -49,6 +49,7 @@ class RAGService:
             os.makedirs(self.cache_directory)
 
         # 1. 初始化配置
+        self.config = AIConfig.objects.filter(name="default").first()
         self.llm_config = self._get_model_config(llm_id, "llm")
         self.emb_config = self._get_model_config(embedding_id, "embedding")
 
@@ -261,10 +262,14 @@ class RAGService:
         """Create a Hybrid Search retriever (BM25 + Vector)."""
         from .models import KnowledgeChunk
         
-        # 1. 向量检索器 (权重 0.7)
-        vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 3})
+        top_k = self.config.rag_top_k if self.config else 3
+        vector_weight = self.config.rag_vector_weight if self.config else 0.7
+        bm25_weight = self.config.rag_bm25_weight if self.config else 0.3
+
+        # 1. 向量检索器
+        vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": top_k})
         
-        # 2. BM25 检索器 (权重 0.3)
+        # 2. BM25 检索器
         # 从数据库加载所有启用的分块作为 BM25 语料
         chunks_qs = KnowledgeChunk.objects.filter(is_active=True)
         if kb_id:
@@ -276,12 +281,12 @@ class RAGService:
             return vector_retriever
             
         bm25_retriever = BM25Retriever.from_texts(chunk_list)
-        bm25_retriever.k = 3
+        bm25_retriever.k = top_k
         
         # 3. 混合检索
         ensemble_retriever = EnsembleRetriever(
             retrievers=[vector_retriever, bm25_retriever],
-            weights=[0.7, 0.3]
+            weights=[vector_weight, bm25_weight]
         )
         return ensemble_retriever
 
@@ -408,10 +413,30 @@ class RAGService:
     def format_docs(self, docs):
         return "\n\n".join(doc.page_content for doc in docs)
 
+    def retrieve_with_threshold(self, query: str, kb_id: int = None):
+        """检索并根据阈值过滤"""
+        retriever = self.get_retriever(kb_id=kb_id)
+        docs = retriever.invoke(query)
+        
+        threshold = self.config.rag_score_threshold if self.config else 0.0
+        if threshold <= 0:
+            return docs
+            
+        try:
+            # 获取向量得分映射以进行过滤
+            top_k = self.config.rag_top_k if self.config else 5
+            scored_docs = self.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 2)
+            score_map = {d.page_content.strip(): s for d, s in scored_docs}
+            
+            # 过滤
+            filtered_docs = [d for d in docs if score_map.get(d.page_content.strip(), 0.0) >= threshold]
+            return filtered_docs
+        except Exception as e:
+            print(f"[RAG] Threshold filtering error: {e}")
+            return docs
+
     def get_chat_chain(self, history_id: int = None, auth_context: dict = None):
         """Returns a LangChain runnable chain for chatting with Hybrid Search support."""
-        retriever = self.get_retriever()
-        
         # 加载历史消息作为上下文 (取最近 20 条)
         chat_memory_str = ""
         if history_id:
@@ -457,7 +482,7 @@ class RAGService:
         # 将静态内容作为变量注入，避免大括号解析错误
         chain = (
             {
-                "context": retriever | self.format_docs, 
+                "context": lambda x: self.format_docs(self.retrieve_with_threshold(x)), 
                 "question": RunnablePassthrough(),
                 "prefix": lambda x: self.personality['prefix'],
                 "auth_resources": lambda x: auth_str,
