@@ -61,11 +61,16 @@ backend/
 
 ### 1. RAG Knowledge Assistant (AI Engine)
 - **Knowledge Loop**: Supports one-click saving of AI responses or diagnosis results into the RAG system for continuous learning.
+- **Physical Sync**: Fully synchronized document lifecycle—deleting a document now physically removes the source file and thoroughly cleans its vector index.
 - **Semantic Cache**: Millisecond-level response for recurring issues using high-confidence vector similarity search.
 - **Categorized History**: Automatically distinguishes between "Diagnosis" and "General Chat" with support for title-based search.
 - **Typing Animation**: Sophisticated three-dot jumping animation for a more interactive and lively AI thinking process.
 
-### 2. Intelligent Diagnosis (DevOps + AI)
+### 2. Task Pulse Monitoring (SRE Center)
+- **Real-time Status**: High-frequency monitoring of asynchronous task health and execution trends.
+- **Pulse Heartbeat**: Background monitor (`pulse_monitor`) tracks task throughput and failure rates.
+
+### 3. Intelligent Diagnosis (DevOps + AI)
 - **Execution Memory**: Node trace view automatically displays historical diagnosis results to prevent redundant analysis.
 - **Root Cause Analysis**: AI automatically captures Error Logs and provides professional "three-stage" diagnostic reports.
 
