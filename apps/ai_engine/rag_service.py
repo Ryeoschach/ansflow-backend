@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.document_compressors.fastembed_rerank import FastEmbedRerank
+from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 from langchain.retrievers.document_compressors import DocumentCompressorRetriever
 import jieba
 
@@ -71,9 +71,8 @@ class RAGService:
 
         # 3. 初始化 Reranker (带缓存)
         if RAGService._reranker_cache is None:
-            RAGService._reranker_cache = FastEmbedRerank(
-                model_name="BAAI/bge-reranker-base", 
-                cache_dir=self.cache_directory
+            RAGService._reranker_cache = FlashrankRerank(
+                model_name="ms-marco-MultiBERT-L-12"
             )
         self.reranker = RAGService._reranker_cache
         
@@ -522,14 +521,15 @@ class RAGService:
             
         try:
             # 过滤逻辑：Rerank 后的文档如果相关性得分（存放在 metadata 中）过低，可以进行过滤
-            # 注意：FastEmbedRerank 会将得分写入 metadata['rerank_score']
+            # 注意：FlashrankRerank 会将得分写入 metadata['relevance_score']
             filtered_docs = []
             for d in docs:
-                rerank_score = d.metadata.get('rerank_score', 1.0) # 如果没有得分（如只有 BM25），默认保留
-                if rerank_score >= threshold:
-                    filtered_docs.append(d)
-                elif d.metadata.get('rerank_score') is None:
-                    # 对于非 Rerank 路径召回的文档，保持保留
+                rerank_score = d.metadata.get('relevance_score') # Flashrank 使用 relevance_score
+                if rerank_score is not None:
+                    if rerank_score >= threshold:
+                        filtered_docs.append(d)
+                else:
+                    # 对于非 Rerank 路径召回的文档，默认保留
                     filtered_docs.append(d)
                     
             return filtered_docs
