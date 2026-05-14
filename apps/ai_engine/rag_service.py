@@ -633,7 +633,7 @@ class RAGService:
 【参考知识库】
 {context}
 
-请按以下格式回答：
+请按以下格式回答（重要提示：必须严格针对上面【执行上下文】中指定的告警/任务名称进行诊断，【参考知识库】仅提供解决思路，切勿照抄知识库中的其他无关告警名称或旧的诊断回复）：
 ### 🔍 故障根因
 (描述为什么报错)
 
@@ -654,10 +654,14 @@ class RAGService:
         prompt = ChatPromptTemplate.from_template(template)
 
         def context_retriever(input_data):
-            query = input_data["log_content"]
-            # 诊断场景下，适当改写或直接针对日志检索
-            # 这里先直接复用 retrieve_with_threshold 提供的 Rerank 能力
-            docs = self.retrieve_with_threshold(query[:500]) # 截取一段日志进行检索
+            # 构建更精准的检索词
+            search_text = f"诊断 {input_data['target_name']} 错误: {input_data['error_summary']}"
+            if len(input_data["log_content"]) > 0:
+                # 提取日志或告警详情的精简特征
+                search_text += " " + input_data["log_content"][:200].replace('\n', ' ')
+            
+            optimized_query = self.rewrite_query(search_text)
+            docs = self.retrieve_with_threshold(optimized_query)
             return self.format_docs(docs)
 
         chain = (
