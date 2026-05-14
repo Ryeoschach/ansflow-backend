@@ -639,11 +639,14 @@ class RAGService:
 
 ### 🛠️ 修复建议
 (给出具体的步骤。如果【可用修复资源】中有匹配的流水线或任务，请明确指出并建议用户执行，必须指明 ID)
-(如果你认为现有的流水线无法解决问题，且需要编排新的步骤，请根据以下【节点类型规范】生成一个流水线草案，并在回答的最后以 `__PIPELINE_DRAFT__: {{"nodes": [...], "edges": [...]}}` 的格式输出纯 JSON。请确保 JSON 结构符合规范且逻辑正确)
+
+(如果你认为现有的流水线或任务无法解决问题，你可以手写一段新的 Ansible Playbook。在回答的末尾以 `__ANSIBLE_DRAFT__: {{"name": "...", "content": "..."}}` 的格式输出纯 JSON。请确保 JSON 结构符合规范且内容为 YAML 格式的完整 Playbook)
+
+(如果你认为需要编排全新的流水线步骤，请根据以下【节点类型规范】生成一个流水线草案，并在回答的最后以 `__PIPELINE_DRAFT__: {{"nodes": [...], "edges": [...]}}` 的格式输出纯 JSON。**如果你刚输出了 __ANSIBLE_DRAFT__，你可以在这里的 ansible_task_id 中填入 "{{{{__ANSIBLE_DRAFT_ID__}}}}" 作为占位符**)
 **注意：每个 node 必须包含 {{"id": "...", "type": "...", "position": {{"x": 0, "y": 0}}, "data": {{"label": "...", "ansible_task_id": ...}}}} 这种完整结构。** 请根据节点顺序自动递增 x 坐标（间距 300）。
 
 【节点类型规范】
-- ansible: 执行 Ansible 任务。参数放在 data 中: {{'ansible_task_id': int, 'label': string}}
+- ansible: 执行 Ansible 任务。参数放在 data 中: {{'ansible_task_id': int 或 string, 'label': string}}
 - k8s_deploy: 部署 K8s 资源。参数放在 data 中: {{'cluster_id': int, 'manifest': string, 'label': string}}
 - git_clone: 克隆代码。参数放在 data 中: {{'repo_url': string, 'branch': string}}
 - docker_build: 构建镜像。参数放在 data 中: {{'image_name': string, 'dockerfile': string}}
