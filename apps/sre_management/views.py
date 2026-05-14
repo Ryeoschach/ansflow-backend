@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from django.core.cache import cache
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission
 from .models import AlertEvent, SelfHealingPolicy
@@ -60,6 +61,40 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             obj.is_exported = True
             obj.save(update_fields=['is_exported'])
             return Response({"message": "Successfully exported to knowledge base"}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='re-diagnose')
+    def re_diagnose(self, request, pk=None):
+        """重新诊断失败的自愈流水线"""
+        obj = self.get_object()
+        if not obj.latest_run_id:
+            return Response({"error": "没有可供诊断的历史运行记录"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        from apps.pipeline_management.models import PipelineRun, PipelineNodeRun
+        run = PipelineRun.objects.filter(id=obj.latest_run_id).first()
+        if not run or run.status != 'failed':
+            return Response({"error": "最新运行记录并非失败状态，无需重诊"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        failed_node = PipelineNodeRun.objects.filter(run=run, status='failed').first()
+        if not failed_node or not failed_node.logs:
+            return Response({"error": "未找到具体的失败节点或缺失执行日志"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # 截取最后 1000 字符的日志
+        log_content = failed_node.logs[-1000:]
+        context_info = {"type": failed_node.node_type, "name": failed_node.node_label, "summary": f"自愈流水线节点失败: {failed_node.node_label}"}
+        
+        from apps.ai_engine.rag_service import RAGService
+        try:
+            rag = RAGService()
+            res = ""
+            for chunk in rag.diagnose_log(log_content, context_info):
+                res += chunk
+            
+            obj.ai_analysis = (obj.ai_analysis or "") + f"\n\n=== 失败重诊记录 (Run #{run.id}) ===\n{res}"
+            obj.healing_status = 'suggested'
+            obj.save(update_fields=['ai_analysis', 'healing_status'])
+            return Response({"message": "重新诊断完成"}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -126,12 +161,16 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                 }
             )
             
-            # 触发 AI 分析 Celery 任务
+            # 触发 AI 分析 Celery 任务 (引入 Redis 防抖)
             if should_analyze:
-                obj.healing_status = 'analyzing'
-                obj.save(update_fields=['healing_status'])
-                from .tasks import analyze_alert_event
-                analyze_alert_event.delay(obj.id)
+                lock_key = f"alert_analysis_lock_{fingerprint}"
+                if cache.add(lock_key, True, timeout=300):
+                    obj.healing_status = 'analyzing'
+                    obj.save(update_fields=['healing_status'])
+                    from .tasks import analyze_alert_event
+                    analyze_alert_event.delay(obj.id)
+                else:
+                    print(f"[SRE] Skipped analysis for fingerprint {fingerprint} due to debouncing.")
             
         return Response({"message": f"Successfully received {len(alerts)} alerts"}, status=status.HTTP_200_OK)
 

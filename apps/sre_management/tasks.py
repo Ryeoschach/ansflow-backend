@@ -63,6 +63,32 @@ def analyze_alert_event(self, alert_id):
             # 固化策略信息：记录策略名称，记录当时是否为自动
             alert.matched_policy_name = matched_policy.name
             alert.trigger_type = 'auto' if matched_policy.is_auto_execute else 'manual'
+        elif "__PIPELINE_DRAFT__:" in analysis_result:
+            try:
+                import json
+                import time
+                from apps.pipeline_management.models import Pipeline
+                draft_str = analysis_result.split("__PIPELINE_DRAFT__:")[1].strip()
+                start_idx = draft_str.find('{')
+                end_idx = draft_str.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    json_str = draft_str[start_idx:end_idx+1]
+                    graph_data = json.loads(json_str)
+                    
+                    dynamic_name = f"AI_Auto_Draft_{alert.id}_{int(time.time())}"
+                    pipeline = Pipeline.objects.create(
+                        name=dynamic_name,
+                        desc=f"由 AI 为告警 {alert.alert_name} 自动生成的诊断修复流水线",
+                        graph_data=graph_data,
+                        creator=get_system_bot(),
+                        is_active=True
+                    )
+                    alert.suggested_pipeline = pipeline
+                    alert.matched_policy_name = "AI 动态策略 (需确认)"
+                    alert.trigger_type = 'manual'
+                    logger.info(f"[SRE] Dynamic AI Pipeline created: {pipeline.id}")
+            except Exception as e:
+                logger.error(f"[SRE] Failed to parse AI Pipeline Draft: {e}")
         
         alert.healing_status = 'suggested'
         alert.save()
