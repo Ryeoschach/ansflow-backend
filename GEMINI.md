@@ -40,6 +40,7 @@ AnsFlow 是一个企业级 DevOps 平台后端。
 
 ### 2.5 RAG 与 AI 规范
 - **知识闭环：** AI 模块新增功能必须考虑如何将结果沉淀为知识。手动导出至 RAG 时，元数据必须包含 `source` 和 `type: human_verified_knowledge`。
+- **检索优化：** 必须使用 `Hybrid Search + Rerank` 链路。检索前应进行 `Query Rewrite` 以提升召回精度。
 - **物理同步：** 删除 `KnowledgeDocument` 时必须同步物理删除 `file_path` 指向的文件，并调用 `RAGService.delete_document` 彻底清理向量库。
 - **语义缓存：** 针对高频且重复的 AI 诊断请求，优先在 `RAGService` 中实现基于向量相似度的语义检索缓存（阈值建议 0.9+），以降低 LLM 调用成本。
 - **文档解析：** PDF 解析优先使用 `PyMuPDF`。针对扫描件或图片型 PDF，系统会自动触发基于 `Tesseract` 的 OCR 解析。开发时应确保环境已安装 `tesseract-ocr` 及其语言包。

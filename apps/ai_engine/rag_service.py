@@ -11,6 +11,8 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 from langchain_community.retrievers import BM25Retriever
+from langchain_community.document_compressors.fastembed_rerank import FastEmbedRerank
+from langchain.retrievers.document_compressors import DocumentCompressorRetriever
 import jieba
 
 def chinese_tokenizer(text: str):
@@ -45,6 +47,7 @@ class RAGService:
 
     _vectorstore_cache = {}
     _embeddings_cache = {}
+    _reranker_cache = None
 
     def __init__(self, collection_name: str = "ansflow_docs", personality: str = 'professional',
                  llm_id: int = None, embedding_id: int = None):
@@ -65,8 +68,16 @@ class RAGService:
         if emb_key not in self._embeddings_cache:
             self._embeddings_cache[emb_key] = self._init_embeddings()
         self.embeddings = self._embeddings_cache[emb_key]
+
+        # 3. 初始化 Reranker (带缓存)
+        if RAGService._reranker_cache is None:
+            RAGService._reranker_cache = FastEmbedRerank(
+                model_name="BAAI/bge-reranker-base", 
+                cache_dir=self.cache_directory
+            )
+        self.reranker = RAGService._reranker_cache
         
-        # 3. 初始化向量库 (带缓存)
+        # 4. 初始化向量库 (带缓存)
         safe_model_name = self.emb_config['name'].replace("/", "_").replace("-", "_")
         full_collection_name = f"{collection_name}_{safe_model_name}"
         
@@ -78,7 +89,7 @@ class RAGService:
             )
         self.vectorstore = self._vectorstore_cache[full_collection_name]
         
-        # 4. 初始化 LLM
+        # 5. 初始化 LLM
         self.llm = self._init_llm()
 
     def _get_model_config(self, model_id: int, model_type: str):
@@ -271,15 +282,15 @@ class RAGService:
             return 0
 
     def get_retriever(self, kb_id: int = None):
-        """Create a Hybrid Search retriever (BM25 + Vector)."""
+        """Create a Hybrid Search retriever (BM25 + Vector) with Rerank support."""
         from .models import KnowledgeChunk
         
         top_k = self.config.rag_top_k if self.config else 3
         vector_weight = self.config.rag_vector_weight if self.config else 0.7
         bm25_weight = self.config.rag_bm25_weight if self.config else 0.3
 
-        # 1. 向量检索器
-        vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": top_k})
+        # 1. 向量检索器 (召回数量适当放大，为 Rerank 提供空间)
+        vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": top_k * 4})
         
         # 2. BM25 检索器
         # 从数据库加载所有启用的分块作为 BM25 语料
@@ -292,21 +303,51 @@ class RAGService:
         metadata_list = [c['metadata'] for c in chunks]
         
         if not chunk_list:
-            return vector_retriever
+            # 只有向量检索时也进行重排序
+            self.reranker.top_n = top_k
+            return DocumentCompressorRetriever(
+                base_compressor=self.reranker, 
+                base_retriever=vector_retriever
+            )
             
         bm25_retriever = BM25Retriever.from_texts(
             texts=chunk_list, 
             metadatas=metadata_list,
             preprocess_func=chinese_tokenizer
         )
-        bm25_retriever.k = top_k
+        bm25_retriever.k = top_k * 4
         
         # 3. 混合检索
         ensemble_retriever = EnsembleRetriever(
             retrievers=[vector_retriever, bm25_retriever],
             weights=[vector_weight, bm25_weight]
         )
-        return ensemble_retriever
+
+        # 4. 引入 Rerank 压缩器 (最终只保留 top_k 个)
+        self.reranker.top_n = top_k
+        rerank_retriever = DocumentCompressorRetriever(
+            base_compressor=self.reranker, 
+            base_retriever=ensemble_retriever
+        )
+        return rerank_retriever
+
+    def rewrite_query(self, query: str):
+        """利用 LLM 改写查询，使其更适合在知识库中检索"""
+        template = """你是一个专业的搜索优化专家。请将用户的问题改写为一个更适合在技术文档知识库中进行语义检索的查询语句。
+如果你认为原始问题已经足够清晰，请直接返回原始问题。
+要求：只返回改写后的文本，不要有任何解释。
+
+原始问题：{query}
+
+优化后的查询："""
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = prompt | self.llm | StrOutputParser()
+        try:
+            new_query = chain.invoke({"query": query})
+            print(f"[RAG] Query Rewrite: '{query}' -> '{new_query.strip()}'")
+            return new_query.strip()
+        except:
+            return query
 
     def delete_document(self, document_id: int):
         """Delete all chunks of a document from both SQL and Vector store."""
@@ -470,7 +511,8 @@ class RAGService:
         return "\n\n".join(doc.page_content for doc in docs)
 
     def retrieve_with_threshold(self, query: str, kb_id: int = None):
-        """检索并根据阈值过滤"""
+        """检索、Rerank 并根据阈值过滤"""
+        # get_retriever 已经集成了 Hybrid Search 和 Rerank
         retriever = self.get_retriever(kb_id=kb_id)
         docs = retriever.invoke(query)
         
@@ -479,20 +521,15 @@ class RAGService:
             return docs
             
         try:
-            # 获取向量得分映射以进行过滤
-            top_k = self.config.rag_top_k if self.config else 5
-            scored_docs = self.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 3)
-            score_map = {d.page_content.strip(): s for d, s in scored_docs}
-            
-            # 过滤逻辑：保留高向量得分的，以及纯被 BM25 检索出来的（不在前 k*3 向量中）
+            # 过滤逻辑：Rerank 后的文档如果相关性得分（存放在 metadata 中）过低，可以进行过滤
+            # 注意：FastEmbedRerank 会将得分写入 metadata['rerank_score']
             filtered_docs = []
             for d in docs:
-                content = d.page_content.strip()
-                if content in score_map:
-                    if score_map[content] >= threshold:
-                        filtered_docs.append(d)
-                else:
-                    # BM25 强相关匹配，但向量匹配度过低未进入 score_map，强制保留
+                rerank_score = d.metadata.get('rerank_score', 1.0) # 如果没有得分（如只有 BM25），默认保留
+                if rerank_score >= threshold:
+                    filtered_docs.append(d)
+                elif d.metadata.get('rerank_score') is None:
+                    # 对于非 Rerank 路径召回的文档，保持保留
                     filtered_docs.append(d)
                     
             return filtered_docs
@@ -544,10 +581,18 @@ class RAGService:
         
         prompt = ChatPromptTemplate.from_template(template)
         
+        def context_retriever(input_data):
+            query = input_data["question"]
+            # 1. 查询改写 (Query Rewrite)
+            optimized_query = self.rewrite_query(query)
+            # 2. 检索并根据阈值过滤 (内部已包含 Rerank)
+            docs = self.retrieve_with_threshold(optimized_query)
+            return self.format_docs(docs)
+
         # 将静态内容作为变量注入，避免大括号解析错误
         chain = (
             {
-                "context": lambda x: self.format_docs(self.retrieve_with_threshold(x)), 
+                "context": context_retriever, 
                 "question": RunnablePassthrough(),
                 "prefix": lambda x: self.personality['prefix'],
                 "auth_resources": lambda x: auth_str,
@@ -565,8 +610,6 @@ class RAGService:
             yield chunk
 
     def diagnose_log(self, log_content: str, context_info: dict, auth_context: dict = None):
-        retriever = self.get_retriever()
-        
         auth_str = ""
         if auth_context:
             auth_str = "\n【当前用户可用的修复资源 (仅限以下)】\n"
@@ -606,11 +649,17 @@ class RAGService:
 (如何避免下次发生)
 """
         prompt = ChatPromptTemplate.from_template(template)
-        get_context = RunnablePassthrough() | (lambda x: retriever.invoke(x["log_content"])) | self.format_docs
+
+        def context_retriever(input_data):
+            query = input_data["log_content"]
+            # 诊断场景下，适当改写或直接针对日志检索
+            # 这里先直接复用 retrieve_with_threshold 提供的 Rerank 能力
+            docs = self.retrieve_with_threshold(query[:500]) # 截取一段日志进行检索
+            return self.format_docs(docs)
 
         chain = (
             {
-                "context": get_context, 
+                "context": context_retriever, 
                 "target_type": lambda x: x["target_type"],
                 "target_name": lambda x: x["target_name"],
                 "error_summary": lambda x: x["error_summary"],
