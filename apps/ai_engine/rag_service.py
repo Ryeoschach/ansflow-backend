@@ -74,7 +74,7 @@ class RAGService:
         # 3. 初始化 Reranker (带缓存)
         if RAGService._reranker_cache is None:
             RAGService._reranker_cache = FlashrankRerank(
-                model_name="ms-marco-MultiBERT-L-12"
+                model="ms-marco-MultiBERT-L-12"
             )
         self.reranker = RAGService._reranker_cache
         
@@ -584,7 +584,8 @@ class RAGService:
         prompt = ChatPromptTemplate.from_template(template)
         
         def context_retriever(input_data):
-            query = input_data["question"]
+            # input_data 这里接收的是原始 query 字符串
+            query = input_data
             # 1. 查询改写 (Query Rewrite)
             optimized_query = self.rewrite_query(query)
             # 2. 检索并根据阈值过滤 (内部已包含 Rerank)

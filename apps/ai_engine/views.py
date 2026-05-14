@@ -211,28 +211,19 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         
         rag = RAGService(collection_name=kb.collection_name)
         
-        # 1. 获取带阈值过滤的检索结果
-        docs = rag.retrieve_with_threshold(query, kb_id=kb.id)
+        # 1. 模拟 AI 聊天的 Query Rewrite 逻辑
+        optimized_query = rag.rewrite_query(query)
         
-        # 2. 获取得分用于展示
-        top_k = rag.config.rag_top_k if rag.config else 5
-        threshold = rag.config.rag_score_threshold if rag.config else 0.0
-        
-        try:
-            vector_docs_with_scores = rag.vectorstore.similarity_search_with_relevance_scores(query, k=top_k * 3)
-            score_map = {d.page_content.strip(): s for d, s in vector_docs_with_scores}
-        except:
-            score_map = {}
+        # 2. 获取带阈值过滤的检索结果 (内部包含 Rerank)
+        docs = rag.retrieve_with_threshold(optimized_query, kb_id=kb.id)
         
         results = []
         for i, doc in enumerate(docs):
-            score = score_map.get(doc.page_content.strip())
-            
-            # 如果配置了阈值，且得分低于阈值，则跳过（retrieve_with_threshold 已经过滤过一次，这里作为双重保证或展示逻辑）
-            if threshold > 0 and score is not None and score < threshold:
-                continue
-                
             metadata = doc.metadata or {}
+            
+            # 使用 Rerank 提供的相关性得分
+            score = metadata.get('relevance_score')
+            
             source = metadata.get('source')
             document_id = metadata.get('document_id')
             
@@ -248,9 +239,10 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
             results.append({
                 "index": i + 1,
                 "content": doc.page_content,
-                "score": round(float(score), 4) if score is not None else "BM25 强匹配",
+                "score": round(float(score), 4) if score is not None else "无重排得分(默认保留)",
                 "metadata": metadata,
-                "source": source or 'Unknown Source'
+                "source": source or 'Unknown Source',
+                "optimized_query": optimized_query if optimized_query != query else None
             })
             
         return Response(results)
