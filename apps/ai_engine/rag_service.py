@@ -12,7 +12,6 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
-from langchain.retrievers.document_compressors import DocumentCompressorRetriever
 import jieba
 
 def chinese_tokenizer(text: str):
@@ -22,8 +21,11 @@ def chinese_tokenizer(text: str):
 
 try:
     from langchain.retrievers import EnsembleRetriever
+    from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
 except ImportError:
     from langchain_classic.retrievers import EnsembleRetriever
+    from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
+
 from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
 
 class RAGService:
@@ -304,7 +306,7 @@ class RAGService:
         if not chunk_list:
             # 只有向量检索时也进行重排序
             self.reranker.top_n = top_k
-            return DocumentCompressorRetriever(
+            return ContextualCompressionRetriever(
                 base_compressor=self.reranker, 
                 base_retriever=vector_retriever
             )
@@ -324,7 +326,7 @@ class RAGService:
 
         # 4. 引入 Rerank 压缩器 (最终只保留 top_k 个)
         self.reranker.top_n = top_k
-        rerank_retriever = DocumentCompressorRetriever(
+        rerank_retriever = ContextualCompressionRetriever(
             base_compressor=self.reranker, 
             base_retriever=ensemble_retriever
         )
