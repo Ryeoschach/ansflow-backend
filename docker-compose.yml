@@ -34,6 +34,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+      args:
+        - http_proxy=${HTTP_PROXY}
+        - https_proxy=${HTTPS_PROXY}
+        - no_proxy=${NO_PROXY}
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.production
@@ -44,6 +48,9 @@ services:
       - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
       - VECTOR_STORE_TYPE=pgvector
+      - HTTP_PROXY=${HTTP_PROXY}
+      - HTTPS_PROXY=${HTTPS_PROXY}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,ansflow-db,ansflow-redis}
     env_file:
       - .env
     expose:
@@ -67,6 +74,10 @@ services:
     build:
       context: ../ansflow-frontend
       dockerfile: Dockerfile
+      args:
+        - http_proxy=${HTTP_PROXY}
+        - https_proxy=${HTTPS_PROXY}
+        - no_proxy=${NO_PROXY}
     ports:
       - "80:80"
     volumes:
@@ -84,6 +95,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+      args:
+        - http_proxy=${HTTP_PROXY}
+        - https_proxy=${HTTPS_PROXY}
+        - no_proxy=${NO_PROXY}
     command: ["celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.production
@@ -94,6 +109,9 @@ services:
       - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
       - ANSFLOW_WORKER_NAME=default-worker
       - VECTOR_STORE_TYPE=pgvector
+      - HTTP_PROXY=${HTTP_PROXY}
+      - HTTPS_PROXY=${HTTPS_PROXY}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,ansflow-db,ansflow-redis}
     env_file:
       - .env
     volumes:
