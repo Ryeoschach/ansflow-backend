@@ -38,13 +38,15 @@ ENV UV_COMPILE_BYTECODE=1
 COPY pyproject.toml uv.lock ./
 
 # 6. 使用 uv sync 同步依赖 (排除 GPU 依赖并清理缓存)
-RUN UV_HTTP_TIMEOUT=300 uv sync --no-dev --no-install-project && uv cache clean
+RUN UV_HTTP_TIMEOUT=300 UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu \
+    uv sync --no-dev --no-install-project && uv cache clean
 
 # 7. 拷贝项目代码 (受 .dockerignore 保护，排除 .venv 和模型缓存)
 COPY . .
 
 # 8. 安装项目本身
-RUN uv sync --no-dev && uv cache clean
+RUN UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu \
+    uv sync --no-dev && uv cache clean
 
 # 9. 默认启动命令
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
