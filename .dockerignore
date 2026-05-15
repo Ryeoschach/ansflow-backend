@@ -1,0 +1,43 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+bin/
+lib/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 排除本地模型缓存 (最占用空间)
+.model_cache/
+.ruff_cache/
+.idea/
+.vscode/
+
+# 排除数据库和日志
+*.sqlite3
+*.log
+logs/
+media/
+chroma_db/
+
+# 排除 Git 和敏感文件
+.git
+.gitignore
+.env
+.env.*
+!.env.example
