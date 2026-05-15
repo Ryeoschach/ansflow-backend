@@ -2,7 +2,7 @@ import os
 from typing import List, Optional
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+# 移除顶部的 FastEmbedEmbeddings 导入
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from django.conf import settings
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+# 移除顶部的 FlashrankRerank 导入
 import jieba
 
 def chinese_tokenizer(text: str):
@@ -73,9 +73,14 @@ class RAGService:
 
         # 3. 初始化 Reranker (带缓存)
         if RAGService._reranker_cache is None:
-            RAGService._reranker_cache = FlashrankRerank(
-                model="ms-marco-MultiBERT-L-12"
-            )
+            try:
+                from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+                RAGService._reranker_cache = FlashrankRerank(
+                    model="ms-marco-MultiBERT-L-12"
+                )
+            except Exception as e:
+                print(f"[RAG] Failed to init Reranker (maybe missing torch/onnx): {e}")
+                RAGService._reranker_cache = None
         self.reranker = RAGService._reranker_cache
         
         # 4. 初始化向量库 (带缓存)
@@ -147,6 +152,19 @@ class RAGService:
                 "api_key": os.environ.get("LLM_API_KEY")
             }
         else:
+            # 修改点：允许通过环境变量配置外部 Embedding
+            emb_name = os.environ.get("EMBEDDING_MODEL_NAME")
+            emb_key = os.environ.get("EMBEDDING_API_KEY")
+            emb_base = os.environ.get("EMBEDDING_API_BASE")
+            
+            if emb_name and emb_key:
+                return {
+                    "name": emb_name,
+                    "provider_type": "other",
+                    "base_url": emb_base,
+                    "api_key": emb_key
+                }
+            
             return {
                 "name": "BAAI/bge-small-en-v1.5",
                 "provider_type": "local",
@@ -157,6 +175,8 @@ class RAGService:
     def _init_embeddings(self):
         ptype = self.emb_config['provider_type']
         if ptype == "local" or "BAAI" in self.emb_config['name']:
+            # 只有在此路径下才导入 FastEmbed (进而触发 torch)
+            from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
             return FastEmbedEmbeddings(
                 model_name=self.emb_config['name'],
                 cache_dir=self.cache_directory
