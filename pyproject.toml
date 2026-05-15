@@ -57,6 +57,16 @@ dependencies = [
     "langchain-postgres>=0.0.17",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+onnxruntime = { index = "pytorch-cpu" }
+
 [dependency-groups]
 dev = [
     "django-stubs>=5.2.9",

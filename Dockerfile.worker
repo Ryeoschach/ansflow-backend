@@ -32,14 +32,12 @@ RUN curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/s
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 ENV UV_COMPILE_BYTECODE=1
-# 强制指定 CPU 版本的仓库地址，避免下载巨大的 NVIDIA/CUDA 包
-ENV UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 # 5. 仅拷贝依赖定义文件以利用 Docker 缓存
 COPY pyproject.toml uv.lock ./
 
-# 6. 使用 uv sync 同步依赖 (移除 --frozen 以提高容错性)
-RUN uv sync --no-dev --no-install-project
+# 6. 使用 uv sync 同步依赖 (排除 GPU 依赖并提高容错性)
+RUN UV_HTTP_TIMEOUT=300 uv sync --no-dev --no-install-project
 
 # 7. 拷贝项目代码
 COPY . .
