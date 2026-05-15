@@ -82,12 +82,37 @@ class RAGService:
         safe_model_name = self.emb_config['name'].replace("/", "_").replace("-", "_")
         full_collection_name = f"{collection_name}_{safe_model_name}"
         
+        vector_store_type = os.environ.get("VECTOR_STORE_TYPE", "chroma").lower()
+        
         if full_collection_name not in self._vectorstore_cache:
-            self._vectorstore_cache[full_collection_name] = Chroma(
-                collection_name=full_collection_name,
-                embedding_function=self.embeddings,
-                persist_directory=self.persist_directory
-            )
+            if vector_store_type == "pgvector":
+                try:
+                    from langchain_postgres import PGVector
+                    connection_string = os.environ.get("DATABASE_URL")
+                    # 将 postgres:// 转换为 postgresql:// 以符合 SQLAlchemy/LangChain 要求
+                    if connection_string and connection_string.startswith("postgres://"):
+                        connection_string = connection_string.replace("postgres://", "postgresql://", 1)
+                    
+                    self._vectorstore_cache[full_collection_name] = PGVector(
+                        embeddings=self.embeddings,
+                        collection_name=full_collection_name,
+                        connection=connection_string,
+                        use_jsonb=True,
+                    )
+                    print(f"[RAG] Using PGVector with collection: {full_collection_name}")
+                except Exception as e:
+                    print(f"[RAG] Failed to init PGVector: {e}. Falling back to Chroma.")
+                    self._vectorstore_cache[full_collection_name] = Chroma(
+                        collection_name=full_collection_name,
+                        embedding_function=self.embeddings,
+                        persist_directory=self.persist_directory
+                    )
+            else:
+                self._vectorstore_cache[full_collection_name] = Chroma(
+                    collection_name=full_collection_name,
+                    embedding_function=self.embeddings,
+                    persist_directory=self.persist_directory
+                )
         self.vectorstore = self._vectorstore_cache[full_collection_name]
         
         # 5. 初始化 LLM

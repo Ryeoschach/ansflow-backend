@@ -54,6 +54,7 @@ dependencies = [
     "reportlab>=4.5.1",
     "markdown>=3.10.2",
     "jieba>=0.42.1",
+    "langchain-postgres>=0.0.17",
 ]
 
 [dependency-groups]
