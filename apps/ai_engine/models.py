@@ -36,6 +36,7 @@ class AIModel(BaseModel):
     MODEL_TYPES = (
         ("llm", "分析模型 (LLM)"),
         ("embedding", "向量模型 (Embedding)"),
+        ("rerank", "重排序模型 (Rerank)"),
     )
     provider = models.ForeignKey(AIProvider, related_name="models", on_delete=models.CASCADE)
     name = models.CharField(max_length=100, verbose_name="模型标识 (如 gpt-4)")
@@ -53,6 +54,7 @@ class AIConfig(BaseModel):
     name = models.CharField(max_length=100, default="default", unique=True)
     default_llm = models.ForeignKey(AIModel, related_name="default_as_llm", on_delete=models.SET_NULL, null=True, blank=True)
     default_embedding = models.ForeignKey(AIModel, related_name="default_as_embedding", on_delete=models.SET_NULL, null=True, blank=True)
+    default_rerank = models.ForeignKey(AIModel, related_name="default_as_rerank", on_delete=models.SET_NULL, null=True, blank=True, verbose_name="默认重排序模型")
     
     # RAG 参数调优
     rag_top_k = models.IntegerField(default=5, verbose_name="检索召回数量 (Top-K)")

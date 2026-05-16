@@ -22,7 +22,7 @@ class AIConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConfig
         fields = [
-            "id", "name", "default_llm", "default_embedding", 
+            "id", "name", "default_llm", "default_embedding", "default_rerank",
             "rag_top_k", "rag_score_threshold", "rag_vector_weight", "rag_bm25_weight",
             "update_time"
         ]

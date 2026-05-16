@@ -64,6 +64,7 @@ class RAGService:
         self.config = AIConfig.objects.filter(name="default").first()
         self.llm_config = self._get_model_config(llm_id, "llm")
         self.emb_config = self._get_model_config(embedding_id, "embedding")
+        self.rerank_config = self._get_model_config(None, "rerank")
 
         # 2. 初始化 Embeddings (带缓存)
         emb_key = f"{self.emb_config['name']}_{self.emb_config['provider_type']}"
@@ -73,14 +74,34 @@ class RAGService:
 
         # 3. 初始化 Reranker (带缓存)
         if RAGService._reranker_cache is None:
-            try:
-                from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
-                RAGService._reranker_cache = FlashrankRerank(
-                    model="ms-marco-MultiBERT-L-12"
-                )
-            except Exception as e:
-                print(f"[RAG] Failed to init Reranker (maybe missing torch/onnx): {e}")
-                RAGService._reranker_cache = None
+            rerank_ptype = self.rerank_config.get('provider_type')
+            reranker_base = self.rerank_config.get('base_url')
+            reranker_model = self.rerank_config.get('name')
+
+            # 优先尝试远程 Reranker (如 Xinference)
+            if rerank_ptype != "local" and reranker_base:
+                try:
+                    from langchain_community.document_compressors import XinferenceRerank
+                    # 纠错：XinferenceRerank 内部通常会自动拼路径，如果用户填了 /v1 则去掉它
+                    clean_rerank_base = reranker_base.rstrip('/').replace("/v1", "")
+                    RAGService._reranker_cache = XinferenceRerank(
+                        base_url=clean_rerank_base,
+                        model_name=reranker_model
+                    )
+                    print(f"[RAG] Using Remote Reranker: {reranker_model} at {clean_rerank_base}")
+                except Exception as e:
+                    print(f"[RAG] Failed to init Remote Reranker: {e}")
+
+            # 如果没有配置远程或初始化失败，尝试本地 Flashrank
+            if RAGService._reranker_cache is None:
+                try:
+                    from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+                    RAGService._reranker_cache = FlashrankRerank(
+                        model="ms-marco-MultiBERT-L-12"
+                    )
+                except Exception as e:
+                    print(f"[RAG] Failed to init Local Reranker (maybe missing torch/onnx): {e}")
+                    RAGService._reranker_cache = None
         self.reranker = RAGService._reranker_cache
         
         # 4. 初始化向量库 (带缓存)
@@ -133,7 +154,12 @@ class RAGService:
             # 尝试获取全局默认
             global_config = AIConfig.objects.filter(name="default").first()
             if global_config:
-                model = global_config.default_llm if model_type == "llm" else global_config.default_embedding
+                if model_type == "llm":
+                    model = global_config.default_llm
+                elif model_type == "embedding":
+                    model = global_config.default_embedding
+                elif model_type == "rerank":
+                    model = global_config.default_rerank
 
         if model:
             return {
@@ -151,8 +177,7 @@ class RAGService:
                 "base_url": os.environ.get("LLM_API_BASE", "https://api.deepseek.com"),
                 "api_key": os.environ.get("LLM_API_KEY")
             }
-        else:
-            # 修改点：允许通过环境变量配置外部 Embedding
+        elif model_type == "embedding":
             emb_name = os.environ.get("EMBEDDING_MODEL_NAME")
             emb_key = os.environ.get("EMBEDDING_API_KEY")
             emb_base = os.environ.get("EMBEDDING_API_BASE")
@@ -164,31 +189,55 @@ class RAGService:
                     "base_url": emb_base,
                     "api_key": emb_key
                 }
-            
             return {
                 "name": "BAAI/bge-small-en-v1.5",
                 "provider_type": "local",
                 "base_url": None,
                 "api_key": None
             }
+        elif model_type == "rerank":
+            rerank_name = os.environ.get("RERANKER_MODEL_NAME", "bge-reranker-v2-m3")
+            rerank_base = os.environ.get("RERANKER_API_BASE")
+            rerank_key = os.environ.get("RERANKER_API_KEY")
+            if rerank_base:
+                return {
+                    "name": rerank_name,
+                    "provider_type": "other",
+                    "base_url": rerank_base,
+                    "api_key": rerank_key
+                }
+            return {
+                "name": "ms-marco-MultiBERT-L-12",
+                "provider_type": "local",
+                "base_url": None,
+                "api_key": None
+            }
+        return {}
 
     def _init_embeddings(self):
         ptype = self.emb_config['provider_type']
+        base_url = self.emb_config['base_url']
+        
+        # 1. 本地 FastEmbed 路径 (依然保持延迟加载以避开 torch)
         if ptype == "local" or "BAAI" in self.emb_config['name']:
-            # 只有在此路径下才导入 FastEmbed (进而触发 torch)
             from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
             return FastEmbedEmbeddings(
                 model_name=self.emb_config['name'],
                 cache_dir=self.cache_directory
             )
-        else:
-            # 支持 OpenAI 兼容的 Embedding 接口
-            from langchain_openai import OpenAIEmbeddings
-            return OpenAIEmbeddings(
-                model=self.emb_config['name'],
-                openai_api_key=self.emb_config['api_key'],
-                openai_api_base=self.emb_config['base_url']
-            )
+        
+        # 2. 自动识别是否为 OpenAI 官方接口
+        is_official_openai = base_url and "api.openai.com" in base_url
+        
+        # 统一使用最新版本的 langchain_openai 适配器
+        from langchain_openai import OpenAIEmbeddings
+        return OpenAIEmbeddings(
+            model=self.emb_config['name'],
+            api_key=self.emb_config['api_key'] or "none",
+            base_url=base_url,
+            # 对于非官方接口（Xinference 等），关闭本地长度检查以防止强行转换 Token
+            check_embedding_ctx_length=is_official_openai
+        )
 
     def _init_llm(self):
         ptype = self.llm_config['provider_type']
