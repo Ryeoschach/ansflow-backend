@@ -14,6 +14,7 @@ class Pipeline(BaseModel):
     # Cron 调度相关字段
     cron_expression = models.CharField(max_length=100, blank=True, null=True, verbose_name="Cron调度表达式", help_text="例如: 0 2 * * *")
     is_cron_enabled = models.BooleanField(default=False, verbose_name="是否启用定时调度")
+    auto_kb_summary = models.BooleanField(default=False, verbose_name="成功后自动生成知识摘要", help_text="流水线成功后，自动调用 AI 总结执行经验并存入知识库")
     celery_periodic_task_id = models.IntegerField(null=True, blank=True, verbose_name="绑定的 Celery PeriodicTask 的 ID")
 
     class Meta:

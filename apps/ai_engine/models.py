@@ -55,6 +55,7 @@ class AIConfig(BaseModel):
     default_llm = models.ForeignKey(AIModel, related_name="default_as_llm", on_delete=models.SET_NULL, null=True, blank=True)
     default_embedding = models.ForeignKey(AIModel, related_name="default_as_embedding", on_delete=models.SET_NULL, null=True, blank=True)
     default_rerank = models.ForeignKey(AIModel, related_name="default_as_rerank", on_delete=models.SET_NULL, null=True, blank=True, verbose_name="默认重排序模型")
+    default_kb = models.ForeignKey('KnowledgeBase', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="默认知识库")
     
     # RAG 参数调优
     rag_top_k = models.IntegerField(default=5, verbose_name="检索召回数量 (Top-K)")

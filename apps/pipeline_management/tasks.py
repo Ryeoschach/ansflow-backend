@@ -729,6 +729,16 @@ def advance_pipeline_engine(self, run_id):
                 run.status = 'failed'
             else:
                 run.status = 'success'
+                # --- AI 知识闭环：自动摘要 ---
+                if run.pipeline.auto_kb_summary:
+                    try:
+                        from apps.ai_engine.tasks import auto_summarize_run_task
+                        auto_summarize_run_task.delay(run.id)
+                        logger.info(f"✨ 已触发流水线 #{run_id} 自动知识总结")
+                    except Exception as ai_err:
+                        logger.error(f"无法触发 AI 总结: {str(ai_err)}")
+                # --- End AI ---
+
             run.end_time = timezone.now()
             run.save(update_fields=['status', 'end_time'])
             push_pipeline_status_to_ws(run)

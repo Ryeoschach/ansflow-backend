@@ -511,14 +511,21 @@ class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
     def save_to_knowledge(self, request, pk=None):
         chat_history = self.get_object()
         message_id = request.data.get('message_id')
+        custom_title = request.data.get('title')
+        custom_content = request.data.get('content')
         
         try:
             msg = AIChatMessage.objects.get(id=message_id, history=chat_history)
             
+            # 使用用户提供的内容或原始消息内容
+            final_content = custom_content or msg.content
+            final_title = custom_title or f"AI 诊断结论 {os.urandom(2).hex()}"
+
             # 调用 RAG 服务存入向量库
             rag_service = RAGService()
             success = rag_service.add_knowledge(
-                content=msg.content,
+                content=final_content,
+                title=final_title,
                 metadata={
                     "source": f"chat_history_{pk}",
                     "type": "human_verified_knowledge",
@@ -535,6 +542,22 @@ class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
             return Response({"error": "Message not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'], url_path='manual-summarize-run')
+    def manual_summarize_run(self, request):
+        """手动总结流水线执行经验并存入知识库"""
+        run_id = request.data.get('run_id')
+        if not run_id:
+            return Response({"error": "run_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        from .tasks import auto_summarize_run_task
+        # 触发异步总结任务
+        auto_summarize_run_task.delay(run_id)
+        
+        return Response({
+            "status": "success", 
+            "message": "AI 总结任务已启动，完成后将自动沉淀至知识库"
+        })
 
     @action(detail=True, methods=['post'], url_path='diagnose')
     def diagnose(self, request, pk=None):

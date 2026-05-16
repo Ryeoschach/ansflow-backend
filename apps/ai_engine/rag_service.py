@@ -444,6 +444,42 @@ class RAGService:
         except:
             return query
 
+    def summarize_pipeline_run(self, run_id: int):
+        """分析流水线运行记录并生成知识摘要"""
+        from apps.pipeline_management.models import PipelineRun, PipelineNodeRun
+        try:
+            run = PipelineRun.objects.get(id=run_id)
+            nodes = PipelineNodeRun.objects.filter(run=run).order_by('start_time')
+            
+            # 汇总核心日志和步骤
+            summary_context = []
+            for node in nodes:
+                summary_context.append(f"节点: {node.node_label} ({node.node_type})\n状态: {node.status}\n产出: {node.output_data}")
+
+            context_str = "\n---\n".join(summary_context)
+            
+            template = """你是一个专业的 SRE 专家。请根据以下流水线执行记录，总结出一份技术知识文档。
+要求：
+1. 提取执行的核心目标和最终产出（如镜像版本、部署环境）。
+2. 总结成功的关键步骤。
+3. 提炼出可供以后参考的“最佳实践”或“注意事项”。
+4. 使用 Markdown 格式。
+5. 语言要求：中文。
+
+流水线名称：{name}
+执行记录详情：
+{context}
+
+知识总结："""
+            prompt = ChatPromptTemplate.from_template(template)
+            chain = prompt | self.llm | StrOutputParser()
+            
+            summary = chain.invoke({"name": run.pipeline.name, "context": context_str})
+            return summary
+        except Exception as e:
+            logger.error(f"Failed to summarize pipeline run #{run_id}: {str(e)}")
+            return None
+
     def delete_document(self, document_id: int):
         """Delete all chunks of a document from both SQL and Vector store."""
         from .models import KnowledgeChunk
