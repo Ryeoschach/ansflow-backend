@@ -66,6 +66,7 @@ def run_ansible_task(self, execution_id, extra_vars=None):
         runner_kwargs = {
             'private_data_dir': private_data_dir,
             'inventory': inventory,
+            'forks': getattr(task, 'forks', 5), # 动态获取并发数
             'envvars': {
                 'ANSIBLE_HOST_KEY_CHECKING': 'False',
                 'ANSIBLE_STDOUT_CALLBACK': 'default',

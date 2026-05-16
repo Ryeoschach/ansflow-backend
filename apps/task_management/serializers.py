@@ -18,9 +18,10 @@ class AnsibleExecutionSerializer(serializers.ModelSerializer):
         model = AnsibleExecution
         fields = [
             'id', 'task', 'task_name', 'task_type', 'resource_pool_name', 'status', 
-            'executor', 'executor_name', 'result_summary', 'celery_task_id', 'start_time', 'end_time', 'create_time'
+            'executor', 'executor_name', 'result_summary', 'extra_vars_snapshot',
+            'celery_task_id', 'start_time', 'end_time', 'create_time'
         ]
-        read_only_fields = ['status', 'result_summary', 'create_time', 'start_time', 'end_time']
+        read_only_fields = ['status', 'result_summary', 'extra_vars_snapshot', 'create_time', 'start_time', 'end_time']
 
 
 class AnsibleTaskSerializer(serializers.ModelSerializer):
@@ -32,7 +33,7 @@ class AnsibleTaskSerializer(serializers.ModelSerializer):
         model = AnsibleTask
         fields = [
             'id', 'name', 'task_type', 'resource_pool', 'resource_pool_name',
-            'content', 'extra_vars', 'timeout', 'creator', 'creator_name', 'create_time', 
+            'content', 'extra_vars', 'forks', 'timeout', 'creator', 'creator_name', 'create_time', 
             'update_time', 'last_execution_status'
         ]
         read_only_fields = ['creator', 'create_time', 'update_time']

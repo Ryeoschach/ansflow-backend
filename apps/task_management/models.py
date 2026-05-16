@@ -23,6 +23,9 @@ class AnsibleTask(BaseModel):
     content = models.TextField(verbose_name="内容", help_text="指令或剧本内容")
     extra_vars = models.JSONField(default=dict, blank=True, verbose_name="额外变量")
     
+    # 执行控制
+    forks = models.IntegerField(default=5, verbose_name="并发数", help_text="Ansible forks 参数")
+
     # 超时设置 (秒)
     timeout = models.IntegerField(default=3600, verbose_name="超时时间(秒)")
     
@@ -58,6 +61,7 @@ class AnsibleExecution(BaseModel):
     
     # 结果摘要
     result_summary = models.JSONField(null=True, blank=True, verbose_name="结果摘要")
+    extra_vars_snapshot = models.JSONField(null=True, blank=True, verbose_name="变量快照")
     
     # 关联的异步任务 ID (用于停止/控制)
     celery_task_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="Celery 任务 ID")

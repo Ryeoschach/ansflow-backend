@@ -82,12 +82,13 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
             return approval_res
         # --- End 拦截 ---
 
+        extra_vars = _get_extra_vars(task)
         execution = AnsibleExecution.objects.create(
             task=task,
             executor=request.user,
-            status='pending'
+            status='pending',
+            extra_vars_snapshot=extra_vars
         )
-        extra_vars = _get_extra_vars(task)
         res = run_ansible_task.delay(execution.id, extra_vars)
         execution.celery_task_id = res.id
         execution.save()

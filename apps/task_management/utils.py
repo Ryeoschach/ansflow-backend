@@ -27,6 +27,16 @@ def generate_ansible_inventory(resource_pool_id):
                 "ansible_host": h.private_ip or h.ip_address,
                 "ansible_port": int(h.ports) if h.ports and h.ports.isdigit() else 22,
                 "ansible_connection": "ssh", # 强制 SSH
+                
+                # --- 元数据自动注入 ---
+                "node_hostname": h.hostname,
+                "node_os_type": h.os_type,
+                "node_cpu": h.cpu,
+                "node_memory": h.memory,
+                "node_disk": h.disk,
+                "node_env_code": h.env.code if h.env else "unknown",
+                "node_env_name": h.env.name if h.env else "unknown",
+                "node_platform": h.platform.name if h.platform else "physical",
             }
             
             # 凭据逻辑：主机特定凭据 > 平台默认凭据
