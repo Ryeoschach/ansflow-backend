@@ -226,19 +226,38 @@ class BackupViewSet(viewsets.ViewSet):
         return backup_dir
 
     @action(detail=False, methods=['get'])
+    def modules(self, request):
+        """
+        获取可备份/恢复的模块列表
+        """
+        from .backup import MODULE_DEFINITIONS
+        return Response([
+            {"key": k, "label": v['label']} for k, v in MODULE_DEFINITIONS.items()
+        ])
+
+    @action(detail=False, methods=['get', 'post'])
     def generate(self, request):
         """
-        创建系统全量备份
+        创建系统备份
         """
         from .backup import BackupExporter
 
+        # 获取请求中的模块过滤列表
+        selected_modules = None
+        if request.method == 'POST':
+            selected_modules = request.data.get('modules')
+        else:
+            # 兼容 GET query params: ?modules=rbac&modules=host
+            selected_modules = request.query_params.getlist('modules')
+
         try:
             exporter = BackupExporter()
-            backup_data = exporter.export()
+            backup_data = exporter.export(selected_modules=selected_modules)
 
             # 生成文件名
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f'ansflow_backup_{timestamp}.json.gz'
+            suffix = "_modular" if selected_modules else "_full"
+            filename = f'ansflow_backup_{timestamp}{suffix}.json.gz'
             file_path = os.path.join(self._get_backup_dir(), filename)
 
             # 写入压缩文件
@@ -328,6 +347,8 @@ class BackupViewSet(viewsets.ViewSet):
         from .backup import BackupImporter
 
         filename = request.data.get('filename')
+        selected_modules = request.data.get('modules') # 获取选中的模块
+        
         if not filename:
             return Response({'error': '缺少 filename 参数'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -337,7 +358,7 @@ class BackupViewSet(viewsets.ViewSet):
 
         try:
             importer = BackupImporter({})
-            result = importer.import_from_file(file_path)
+            result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             return Response({
                 'success': result['success'],
@@ -359,6 +380,8 @@ class BackupViewSet(viewsets.ViewSet):
         from .backup import BackupImporter
 
         file = request.FILES.get('file')
+        selected_modules = request.data.get('modules') # 获取选中的模块
+        
         if not file:
             return Response({'error': '缺少备份文件'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -377,7 +400,7 @@ class BackupViewSet(viewsets.ViewSet):
 
             # 执行恢复
             importer = BackupImporter({})
-            result = importer.import_from_file(file_path)
+            result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             # 删除临时上传文件
             os.remove(file_path)

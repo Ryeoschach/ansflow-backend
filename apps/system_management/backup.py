@@ -46,11 +46,52 @@ def get_encrypted_field_names() -> set:
         'ArtifactoryInstance.api_key',
         'ArtifactoryInstance.password',
         'ConfigItem.value',
+        'AIProvider.api_key',
     }
 
 
 def is_encrypted_field(model_name: str, field_name: str) -> bool:
     return f'{model_name}.{field_name}' in get_encrypted_field_names()
+
+
+# ============================================================
+# 模块定义
+# ============================================================
+
+MODULE_DEFINITIONS = {
+    'rbac': {
+        'label': '权限与用户 (RBAC)',
+        'models': ['Permission', 'Menu', 'Role', 'DataPolicy', 'User']
+    },
+    'host': {
+        'label': '主机与资源池 (Hosts)',
+        'models': ['SshCredential', 'Environment', 'Platform', 'Host', 'ResourcePool']
+    },
+    'pipeline': {
+        'label': '流水线 (Pipeline)',
+        'models': ['Pipeline', 'PipelineVersion', 'PipelineWebhook', 'CIEnvironment', 'PipelineRun', 'PipelineNodeRun']
+    },
+    'registry': {
+        'label': '镜像与制品 (Registry)',
+        'models': ['ImageRegistry', 'ArtifactoryInstance', 'ArtifactoryRepository', 'Artifact', 'ArtifactVersion']
+    },
+    'task': {
+        'label': '自动化任务 (Tasks)',
+        'models': ['AnsibleTask', 'AnsibleExecution', 'AnsibleSchedule']
+    },
+    'config': {
+        'label': '配置中心 (Config)',
+        'models': ['ConfigCategory', 'ConfigItem']
+    },
+    'approval': {
+        'label': '审批中心 (Approval)',
+        'models': ['ApprovalPolicy', 'ApprovalTicket']
+    },
+    'ai': {
+        'label': 'AI 引擎与知识库 (AI)',
+        'models': ['KnowledgeBase', 'AIProvider', 'AIModel', 'AIConfig']
+    },
+}
 
 
 # ============================================================
@@ -309,6 +350,38 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         unique_fields=['id'],
         export_order=23,
     ),
+    'KnowledgeBase': ModelInfo(
+        app_label='ai_engine', model_name='KnowledgeBase', table_name='ai_knowledge_base',
+        exclude_fields=['remark'],
+        unique_fields=['name'],
+        export_order=23.5,
+    ),
+    'AIProvider': ModelInfo(
+        app_label='ai_engine', model_name='AIProvider', table_name='ai_provider',
+        exclude_fields=['remark'],
+        encrypted_fields=['api_key'],
+        unique_fields=['name'],
+        export_order=24,
+    ),
+    'AIModel': ModelInfo(
+        app_label='ai_engine', model_name='AIModel', table_name='ai_model',
+        fk_fields={'provider': ('AIProvider', 'id')},
+        exclude_fields=['remark'],
+        unique_fields=['provider', 'name'],
+        export_order=25,
+    ),
+    'AIConfig': ModelInfo(
+        app_label='ai_engine', model_name='AIConfig', table_name='ai_config',
+        fk_fields={
+            'default_llm': ('AIModel', 'id'),
+            'default_embedding': ('AIModel', 'id'),
+            'default_rerank': ('AIModel', 'id'),
+            'default_kb': ('KnowledgeBase', 'id'),
+        },
+        exclude_fields=['remark'],
+        unique_fields=['name'],
+        export_order=26,
+    ),
 }
 
 
@@ -327,12 +400,29 @@ class BackupExporter:
             'encrypted_fields': list(get_encrypted_field_names()),
         }
 
-    def export(self) -> Dict[str, Any]:
-        """执行全量导出"""
+    def export(self, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
+        """执行导出
+        :param selected_modules: 指定要导出的模块列表（key），None 表示导出全部
+        """
         from django.apps import apps
 
-        sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
+        # 1. 确定要导出的模型范围
+        target_model_names = []
+        if selected_modules:
+            for mod_key in selected_modules:
+                if mod_key in MODULE_DEFINITIONS:
+                    target_model_names.extend(MODULE_DEFINITIONS[mod_key]['models'])
+        else:
+            target_model_names = list(MODEL_INFOS.keys())
 
+        # 2. 过滤并按顺序排序
+        sorted_models = []
+        for name in target_model_names:
+            if name in MODEL_INFOS:
+                sorted_models.append((name, MODEL_INFOS[name]))
+        sorted_models.sort(key=lambda x: x[1].export_order)
+
+        # 3. 执行导出
         for model_name, model_info in sorted_models:
             Model = apps.get_model(model_info.app_label, model_name)
             records = []
@@ -403,16 +493,33 @@ class BackupImporter:
         self.errors.append(msg)
         logger.error(f"[Restore] 错误: {msg}")
 
-    def import_all(self) -> Dict[str, Any]:
-        """执行全量恢复（三阶段）"""
+    def import_all(self, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
+        """执行恢复导入
+        :param selected_modules: 指定要恢复的模块列表（key），None 表示恢复全部
+        """
         from django.apps import apps
 
-        sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
+        # 1. 确定要恢复的模型范围
+        target_model_names = []
+        if selected_modules:
+            for mod_key in selected_modules:
+                if mod_key in MODULE_DEFINITIONS:
+                    target_model_names.extend(MODULE_DEFINITIONS[mod_key]['models'])
+        else:
+            # 如果不指定，则恢复备份文件中包含的所有模型
+            target_model_names = list(self.data.keys())
+
+        # 2. 过滤并按顺序排序
+        sorted_models = []
+        for name in target_model_names:
+            if name in MODEL_INFOS:
+                sorted_models.append((name, MODEL_INFOS[name]))
+        sorted_models.sort(key=lambda x: x[1].export_order)
 
         try:
             with transaction.atomic():
-                # Phase 1: 创建基础实例（忽略所有 FK 和 M2M）
-                self._log("=== 阶段 1: 创建基础实例 ===")
+                # Phase 1: 创建基础实例
+                self._log(f"=== 阶段 1: 创建基础实例 (模块: {selected_modules or 'ALL'}) ===")
                 for model_name, model_info in sorted_models:
                     records = self.data.get(model_name, [])
                     if records:
@@ -590,10 +697,10 @@ class BackupImporter:
             except Exception as e:
                 self._error(f"  {model_name}[{old_id}] Phase3 失败: {str(e)}")
 
-    def import_from_file(self, file_path: str) -> Dict[str, Any]:
+    def import_from_file(self, file_path: str, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
         """从 gzip 压缩的 JSON 文件恢复"""
         with gzip.open(file_path, 'rt', encoding='utf-8') as f:
             backup_data = json.load(f)
         self.data = backup_data.get('data', {})
         self.metadata = backup_data.get('metadata', {})
-        return self.import_all()
+        return self.import_all(selected_modules=selected_modules)

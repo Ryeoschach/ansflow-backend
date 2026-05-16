@@ -1,3 +1,5 @@
+import logging
+from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -6,6 +8,8 @@ from .serializers import WorkerNodeSerializer, TaskPulseSerializer
 from utils.rbac_permission import SmartRBACPermission
 from utils.pagination import MyCustomPagination
 from config.celery import app as celery_app
+
+logger = logging.getLogger(__name__)
 
 class TaskPulseViewSet(viewsets.ReadOnlyModelViewSet):
     """任务脉搏实时追踪 API"""
@@ -19,7 +23,6 @@ class TaskPulseViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'])
     def throughput(self, request):
         """过去 24 小时任务吞吐量统计"""
-        from django.utils import timezone
         from datetime import timedelta
         from django.db.models.functions import TruncHour
         from django.db.models import Count
