@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
 from apps.rbac_permission.models import User
 from apps.pipeline_management.models import Pipeline, PipelineRun, PipelineNodeRun
@@ -10,7 +11,7 @@ import shutil
 
 class PipelineEngineTestCase(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='testuser', password='password')
+        self.user = User.objects.create_superuser(username='testuser', password='password', email='test@test.com')
         # 创建一个简单的流水线图：node1 -> node2
         self.graph_data = {
             "nodes": [
@@ -110,6 +111,64 @@ class PipelineEngineTestCase(TestCase):
         node_run.refresh_from_db()
         self.assertEqual(node_run.status, "failed")
         self.assertIn("流水线已取消", node_run.logs)
+
+    def test_pipeline_approval_flow(self):
+        """测试审批节点的暂停与恢复逻辑"""
+        approval_graph = {
+            "nodes": [
+                {"id": "node1", "type": "input", "data": {"label": "Start"}},
+                {"id": "node2", "type": "approval", "data": {"label": "Manual Approval"}},
+                {"id": "node3", "type": "http_webhook", "data": {"label": "Finish"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "node1", "target": "node2"},
+                {"id": "e2", "source": "node2", "target": "node3"},
+            ]
+        }
+        self.pipeline.graph_data = approval_graph
+        self.pipeline.save()
+
+        run = PipelineRun.objects.create(pipeline=self.pipeline, trigger_user=self.user, status='running')
+        PipelineNodeRun.objects.create(run=run, node_id="node1", node_type="input", status="success")
+
+        # 1. 触发引擎 - 应该下发 node2 (Approval)
+        with patch('apps.pipeline_management.tasks.push_pipeline_status_to_ws'):
+            advance_pipeline_engine(run.id)
+        
+        node2_run = PipelineNodeRun.objects.get(run=run, node_id="node2")
+        self.assertEqual(node2_run.status, "waiting") # 验证引擎成功拦截并置为等待
+
+        # 2. 模拟调用 API 通过审批
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        url = reverse('pipeline_node_runs-approve', args=[node2_run.id])
+        
+        with patch('apps.pipeline_management.tasks.advance_pipeline_engine.delay') as mock_advance:
+            response = client.post(url, {"action": "pass", "comment": "All good"})
+            self.assertEqual(response.status_code, 200)
+            
+            node2_run.refresh_from_db()
+            self.assertEqual(node2_run.status, "success")
+            self.assertEqual(node2_run.approver, self.user)
+            self.assertTrue(mock_advance.called) # 验证引擎被重新唤醒
+
+    def test_node_workspace_isolation(self):
+        """测试并行的节点是否拥有独立的工作目录"""
+        run = PipelineRun.objects.create(pipeline=self.pipeline, trigger_user=self.user, status='running')
+        node_run = PipelineNodeRun.objects.create(
+            run=run, node_id="test_node_99", node_type="input", status="pending"
+        )
+        
+        with patch('apps.pipeline_management.tasks.push_pipeline_status_to_ws'):
+            execute_pipeline_node(node_run.id)
+            
+        # 验证目录是否存在
+        node_workspace = f"/tmp/ansflow_workspaces/run_{run.id}/node_test_node_99"
+        self.assertTrue(os.path.exists(node_workspace))
+        
+        # 清理
+        shutil.rmtree(f"/tmp/ansflow_workspaces/run_{run.id}", ignore_errors=True)
 
     def test_dag_deadlock_detection_concept(self):
         """测试循环依赖导致的死锁（验证现状）"""

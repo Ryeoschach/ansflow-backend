@@ -151,6 +151,7 @@ class PipelineNodeRun(BaseModel):
     """流水线运行时：具体各个节点的执行状态与日志"""
     STATUS_CHOICES = (
         ('pending', '等待前置节点完成'),
+        ('waiting', '等待人工审批'),
         ('running', '正在执行本节点'),
         ('success', '本节点成功'),
         ('failed', '本节点失败'),
@@ -163,6 +164,11 @@ class PipelineNodeRun(BaseModel):
     node_label = models.CharField(max_length=100, blank=True, verbose_name="节点可视化名称")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     
+    # 审批相关
+    approver = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_pipeline_nodes', verbose_name="审批人")
+    approval_time = models.DateTimeField(null=True, blank=True, verbose_name="审批时间")
+    approval_comment = models.TextField(blank=True, null=True, verbose_name="审批意见")
+
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     logs = models.TextField(blank=True, null=True, verbose_name="执行日志")

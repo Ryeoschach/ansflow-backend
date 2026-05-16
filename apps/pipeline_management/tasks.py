@@ -144,14 +144,14 @@ def execute_pipeline_node(self, node_run_id):
     import shutil
     
     # 统一工作区路径：基于 PipelineRun 的 ID，所有容器和脚本挂载都在此进行
-    # 重试时复用父 run 的工作目录，避免重新 clone 代码
+    # 并行隔离：为每个节点分配独立的子目录
     parent_run_id = node_run.run.parent_run_id
-    if parent_run_id:
-        workspace_dir = f"/tmp/ansflow_workspaces/run_{parent_run_id}"
-    else:
-        workspace_dir = f"/tmp/ansflow_workspaces/run_{run_id}"
-    os.makedirs(workspace_dir, exist_ok=True)
-    source_dir = os.path.join(workspace_dir, 'source')
+    base_workspace = f"/tmp/ansflow_workspaces/run_{parent_run_id or run_id}"
+    node_workspace = os.path.join(base_workspace, f"node_{node_run.node_id}")
+    os.makedirs(node_workspace, exist_ok=True)
+    
+    # 源代码目录（共享或按需克隆）
+    source_dir = os.path.join(base_workspace, 'source')
     
     try:
         # ---- 根据 node_type 进行不同业务分流 ----
@@ -710,9 +710,15 @@ def advance_pipeline_engine(self, run_id):
         if ready_nodes:
             pipeline_timeout = run.pipeline.timeout or 3600
             for nr in ready_nodes:
-                nr.status = 'running'
-                nr.save(update_fields=['status'])
-                execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
+                if nr.node_type == 'approval':
+                    # 审批节点：置为等待状态，暂停执行，等待人工通过 API 恢复
+                    nr.status = 'waiting'
+                    nr.save(update_fields=['status'])
+                    logger.info(f"⏳ 节点 {nr.node_id} (Approval) 进入等待审批状态")
+                else:
+                    nr.status = 'running'
+                    nr.save(update_fields=['status'])
+                    execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
             push_pipeline_status_to_ws(run)
                 
         elif not has_running_or_pending:

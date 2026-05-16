@@ -5,7 +5,7 @@ from rest_framework import status # Added for status.HTTP_400_BAD_REQUEST
 from django.utils import timezone
 from config.celery import app as celery_app
 from .models import Pipeline, PipelineRun, CIEnvironment, PipelineNodeRun, PipelineWebhook, PipelineVersion
-from .serializers import PipelineSerializer, PipelineRunSerializer, CIEnvironmentSerializer, PipelineWebhookSerializer, PipelineVersionSerializer
+from .serializers import PipelineSerializer, PipelineRunSerializer, PipelineNodeRunSerializer, CIEnvironmentSerializer, PipelineWebhookSerializer, PipelineVersionSerializer
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from utils.approval_decorator import require_approval
 
@@ -427,3 +427,48 @@ class PipelineVersionViewSet(DataScopeMixin, viewsets.ReadOnlyModelViewSet):
         if pipeline_id:
             qs = qs.filter(pipeline_id=pipeline_id)
         return qs
+
+
+class PipelineNodeRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    流水线节点运行记录
+    """
+    queryset = PipelineNodeRun.objects.all()
+    serializer_class = PipelineNodeRunSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'pipeline:run'
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """
+        审批通过或驳回流水线节点
+        """
+        node_run = self.get_object()
+        if node_run.status != 'waiting':
+            return Response({"error": "该节点当前不处于等待审批状态"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        action_type = request.data.get('action') # 'pass' or 'reject'
+        comment = request.data.get('comment', '')
+
+        if action_type == 'pass':
+            node_run.status = 'success'
+            node_run.end_time = timezone.now()
+            node_run.logs = (node_run.logs or "") + f"\n[审批通过] 操作人: {request.user.username}\n意见: {comment}"
+        else:
+            node_run.status = 'failed'
+            node_run.end_time = timezone.now()
+            node_run.logs = (node_run.logs or "") + f"\n[审批驳回] 操作人: {request.user.username}\n意见: {comment}"
+        
+        node_run.approver = request.user
+        node_run.approval_time = timezone.now()
+        node_run.approval_comment = comment
+        node_run.save()
+
+        # 实时推送状态
+        from apps.pipeline_management.tasks import push_pipeline_status_to_ws, advance_pipeline_engine
+        push_pipeline_status_to_ws(node_run.run)
+
+        # 唤醒引擎继续决策
+        advance_pipeline_engine.delay(node_run.run.id)
+
+        return Response({"message": f"审批操作成功: {action_type}"})

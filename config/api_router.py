@@ -5,7 +5,7 @@ from apps.k8s_management.views import K8sClusterViewSet, HelmRepositoryViewSet
 from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewSet, MenuViewSet, AuditLogViewSet
 from apps.host_management.views import HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet, AnsibleScheduleViewSet
-from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
+from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, PipelineNodeRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
 from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet, PeriodicTaskViewSet
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalResourceViewSet
@@ -37,6 +37,7 @@ router.register(r'k8s', K8sClusterViewSet, basename='k8s_management')
 router.register(r'helm_repositories', HelmRepositoryViewSet, basename='helm_repositories')
 router.register(r'pipelines', PipelineViewSet, basename='pipelines')
 router.register(r'pipeline_runs', PipelineRunViewSet, basename='pipeline_runs')
+router.register(r'pipeline_node_runs', PipelineNodeRunViewSet, basename='pipeline_node_runs')
 router.register(r'ci_environments', CIEnvironmentViewSet, basename='ci_environments')
 router.register(r'pipeline/webhooks', PipelineWebhookViewSet, basename='pipeline-webhooks')
 router.register(r'pipeline/versions', PipelineVersionViewSet, basename='pipeline-versions')
