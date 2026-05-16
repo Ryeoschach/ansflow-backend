@@ -51,8 +51,35 @@ class TaskPulseViewSet(viewsets.ReadOnlyModelViewSet):
     def revoke(self, request, pk=None):
         """撤销任务"""
         instance = self.get_object()
-        celery_app.control.revoke(instance.task_id, terminate=True)
-        return Response({'status': 'revoking', 'task_id': instance.task_id})
+        
+        # 1. 发送撤销指令给 Celery
+        try:
+            celery_app.control.revoke(instance.task_id, terminate=True)
+        except Exception as e:
+            logger.warning(f"Failed to send revoke command to Celery for {instance.task_id}: {e}")
+
+        # 2. 立即更新数据库状态 (防止 Monitor 未及时处理事件)
+        instance.state = 'REVOKED'
+        instance.end_time = timezone.now()
+        instance.save(update_fields=['state', 'end_time'])
+
+        # 3. [增强] 尝试同步更新关联的业务记录
+        # 如果是流水线任务
+        if "pipeline" in instance.name:
+            from apps.pipeline_management.models import PipelineRun
+            # 假设 task_id 存储在 PipelineRun 中 (通常在创建时记录)
+            PipelineRun.objects.filter(celery_task_id=instance.task_id).update(status='cancelled')
+        
+        # 如果是 Ansible 任务
+        if "ansible" in instance.name:
+            from apps.task_management.models import AnsibleExecution
+            AnsibleExecution.objects.filter(celery_task_id=instance.task_id).update(status='cancelled')
+
+        return Response({
+            'status': 'revoked', 
+            'task_id': instance.task_id,
+            'message': '任务已撤销并已更新数据库状态'
+        })
 
 class WorkerNodeViewSet(viewsets.ReadOnlyModelViewSet):
     """Worker 节点状态 API"""
