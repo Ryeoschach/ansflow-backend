@@ -170,6 +170,34 @@ class PipelineEngineTestCase(TestCase):
         # 清理
         shutil.rmtree(f"/tmp/ansflow_workspaces/run_{run.id}", ignore_errors=True)
 
+    def test_pipeline_variable_resolution(self):
+        """测试流水线变量引用逻辑"""
+        from .utils import resolve_pipeline_vars
+        
+        run = PipelineRun.objects.create(pipeline=self.pipeline, trigger_user=self.user, status='running')
+        # 模拟上游节点产出了变量
+        PipelineNodeRun.objects.create(
+            run=run, node_id="node1", node_type="kaniko_build", 
+            status="success", output_data={"tag": "v1.2.3", "image": "my-app"}
+        )
+
+        # 待解析的配置数据
+        raw_data = {
+            "image_tag": "{{ nodes.node1.tag }}",
+            "full_name": "{{ nodes.node1.image }}:{{ nodes.node1.tag }}",
+            "constant": "static-val",
+            "nested": {
+                "ref": "{{ nodes.node1.tag }}"
+            }
+        }
+
+        resolved = resolve_pipeline_vars(raw_data, run.id)
+
+        self.assertEqual(resolved["image_tag"], "v1.2.3")
+        self.assertEqual(resolved["full_name"], "my-app:v1.2.3")
+        self.assertEqual(resolved["constant"], "static-val")
+        self.assertEqual(resolved["nested"]["ref"], "v1.2.3")
+
     def test_dag_deadlock_detection_concept(self):
         """测试循环依赖导致的死锁（验证现状）"""
         circular_graph = {

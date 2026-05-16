@@ -153,6 +153,19 @@ def execute_pipeline_node(self, node_run_id):
     # 源代码目录（共享或按需克隆）
     source_dir = os.path.join(base_workspace, 'source')
     
+    # 准备节点配置数据
+    pipeline_graph = node_run.run.pipeline.graph_data
+    if isinstance(pipeline_graph, str):
+        import json
+        pipeline_graph = json.loads(pipeline_graph)
+    nodes_config = pipeline_graph.get('nodes', [])
+    current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
+    
+    # --- 核心：变量解析与注入 ---
+    from .utils import resolve_pipeline_vars
+    raw_node_data = current_node_config.get('data', {})
+    node_data = resolve_pipeline_vars(raw_node_data, run_id)
+    
     try:
         # ---- 根据 node_type 进行不同业务分流 ----
         node_type = node_run.node_type
@@ -162,11 +175,6 @@ def execute_pipeline_node(self, node_run_id):
             success = True
             
         elif node_type == 'git_clone':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             repo_url = node_data.get('git_repo')
             branch = node_data.get('git_branch', 'main')
             
@@ -191,11 +199,6 @@ def execute_pipeline_node(self, node_run_id):
                 push_node_log_to_ws(node_run.run_id, node_run.node_id, finish_msg)
                 
         elif node_type == 'docker_build':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             ci_env_id = node_data.get('ci_env_id')
             build_script = node_data.get('build_script')
             
@@ -240,11 +243,6 @@ def execute_pipeline_node(self, node_run_id):
                 push_node_log_to_ws(node_run.run_id, node_run.node_id, fail_msg)
 
         elif node_type == 'kaniko_build':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             registry_id = node_data.get('registry_id')
             image_name = node_data.get('image_name')
             image_tag = node_data.get('image_tag', f"v{run_id}")
@@ -273,22 +271,16 @@ def execute_pipeline_node(self, node_run_id):
                 auth_url = registry_url_clean
                 push_host = registry_url_clean
 
-            # 格式化镜像名称与 Tag，防止出现双冒号或非法标签
-            # 如果 image_name 中已经包含了标签 (例如 my-app:v1)，则优先处理
+            # 格式化镜像名称与 Tag
             if ":" in image_name:
                 parts = image_name.split(":", 1)
                 real_name = parts[0]
-                # 如果在界面上也填了 tag，或者有默认 tag，需要进行抉择
-                # 这里我们采取策略：如果 image_name 带了 tag，且 tag 字段也是有效的，则可能发生了误填，我们尝试修复
                 if image_tag and image_tag != f"v{run_id}":
-                    # 此时 image_name="a:b", image_tag="c" -> 使用 image_tag 作为最终版本
                     image_name = real_name
                 else:
-                    # 如果 tag 字段是默认的，就用 name 里的 tag
                     image_name = real_name
                     image_tag = parts[1]
 
-            # 清理可能存在的首尾冒号
             image_name = image_name.strip(":")
             image_tag = image_tag.strip(":")
 
@@ -296,14 +288,15 @@ def execute_pipeline_node(self, node_run_id):
                 full_image = f"{push_host}/{registry.namespace}/{image_name}:{image_tag}"
             else:
                 full_image = f"{push_host}/{image_name}:{image_tag}"
-                
+            
+            init_msg = f"🚀 正在启动 Kaniko 容器进行镜像构建并推送...\n> 目标镜像: {full_image}\n> Dockerfile: {dockerfile_path}\n"
             node_run.logs = (node_run.logs or "") + init_msg
             node_run.save(update_fields=['logs'])
             push_node_log_to_ws(node_run.run_id, node_run.node_id, init_msg)
             
             auth_string = f"{registry.username}:{registry.password}"
             auth_b64 = base64.b64encode(auth_string.encode('utf-8')).decode('utf-8')
-            kaniko_dir = os.path.join(workspace_dir, '.kaniko')
+            kaniko_dir = os.path.join(node_workspace, '.kaniko') # 使用隔离目录
             os.makedirs(kaniko_dir, exist_ok=True)
             config_json_path = os.path.join(kaniko_dir, 'config.json')
             
@@ -380,12 +373,6 @@ def execute_pipeline_node(self, node_run_id):
                 success = False
             
         elif node_type == 'ansible':
-            # 获取配置
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             ansible_task_id = node_data.get('ansible_task_id')
             if not ansible_task_id:
                 raise ValueError("Ansible 节点未配置关联的任务 ID")
@@ -432,15 +419,10 @@ def execute_pipeline_node(self, node_run_id):
                 success = (execution.status == 'success')
                 
         elif node_type == 'k8s_deploy':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-
             cluster_id = node_data.get('k8s_cluster_id')
             release_name = node_data.get('k8s_release_name')
             namespace = node_data.get('k8s_namespace', 'default')
-            chart_name = node_data.get('k8s_chart_name') # 新增 Chart 选择
+            chart_name = node_data.get('k8s_chart_name')
 
             if not all([cluster_id, release_name]):
                 raise ValueError("K8s 节点未配置完整的集群或 Release 名称")
@@ -452,16 +434,19 @@ def execute_pipeline_node(self, node_run_id):
             node_run.logs = f"集群: {cluster.name}, 正在执行 Helm Upgrade: {release_name} (Namespace: {namespace})...\n"
             node_run.save()
             
-            # 尝试从上游节点获取动态生成的镜像信息
-            upstream_nodes = PipelineNodeRun.objects.filter(run_id=run_id, status='success').exclude(output_data={})
-            dynamic_repository = None
-            dynamic_tag = None
-            for un in upstream_nodes:
-                if un.output_data and 'tag' in un.output_data:
-                    dynamic_tag = un.output_data.get('tag')
-                    dynamic_repository = un.output_data.get('repository')
-                    node_run.logs += f"已扫描到上游镜像制品：{dynamic_repository}:{dynamic_tag}\n"
-                    break
+            # 变量注入逻辑：如果 node_data 中已经通过 {{ }} 获取到了 tag，则直接使用
+            dynamic_tag = node_data.get('image_tag')
+            dynamic_repository = node_data.get('image_repository')
+            
+            # 如果没有显式指定变量，则保留原有的自动扫描逻辑作为兼容
+            if not dynamic_tag:
+                upstream_nodes = PipelineNodeRun.objects.filter(run_id=run_id, status='success').exclude(output_data={})
+                for un in upstream_nodes:
+                    if un.output_data and 'tag' in un.output_data:
+                        dynamic_tag = un.output_data.get('tag')
+                        dynamic_repository = un.output_data.get('repository')
+                        node_run.logs += f"已通过智能扫描获取到上游镜像：{dynamic_repository}:{dynamic_tag}\n"
+                        break
                     
             import time
             import yaml
