@@ -21,6 +21,15 @@ class K8sCluster(BaseModel):
 
     status = models.CharField(max_length=20, default='pending', verbose_name="连接状态")
     version = models.CharField(max_length=50, blank=True, verbose_name="K8s 版本")
+    
+    # 动态状态指标
+    node_count = models.IntegerField(default=0, verbose_name="节点总数")
+    ready_node_count = models.IntegerField(default=0, verbose_name="就绪节点数")
+    cpu_capacity = models.CharField(max_length=50, blank=True, null=True, verbose_name="总CPU容量")
+    memory_capacity = models.CharField(max_length=50, blank=True, null=True, verbose_name="总内存容量")
+    
+    last_seen = models.DateTimeField(null=True, blank=True, verbose_name="最后同步时间")
+    error_message = models.TextField(null=True, blank=True, verbose_name="错误信息")
 
     class Meta:
         db_table = 'k8s_clusters'

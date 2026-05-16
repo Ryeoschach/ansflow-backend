@@ -423,22 +423,36 @@ def execute_pipeline_node(self, node_run_id):
             release_name = node_data.get('k8s_release_name')
             namespace = node_data.get('k8s_namespace', 'default')
             chart_name = node_data.get('k8s_chart_name')
+            repo_id = node_data.get('k8s_repo_id') # 新增仓库 ID
 
             if not all([cluster_id, release_name]):
                 raise ValueError("K8s 节点未配置完整的集群或 Release 名称")
 
-            from apps.k8s_management.models import K8sCluster
+            from apps.k8s_management.models import K8sCluster, HelmRepository
             from apps.k8s_management.utils.helm_runner import run_helm_upgrade
-            
+
             cluster = K8sCluster.objects.get(id=cluster_id)
             node_run.logs = f"集群: {cluster.name}, 正在执行 Helm Upgrade: {release_name} (Namespace: {namespace})...\n"
+
+            # 处理远程仓库信息
+            repo_url = None
+            repo_auth = None
+            if repo_id:
+                try:
+                    repo_obj = HelmRepository.objects.get(id=repo_id)
+                    repo_url = repo_obj.url
+                    if repo_obj.username:
+                        repo_auth = {'username': repo_obj.username, 'password': repo_obj.password}
+                    node_run.logs += f"使用远程仓库: {repo_obj.name} ({repo_url})\n"
+                except HelmRepository.DoesNotExist:
+                    node_run.logs += f"警告: 指定的 Helm 仓库 (ID:{repo_id}) 不存在，尝试回退到本地/自动探测模式。\n"
+
             node_run.save()
-            
-            # 变量注入逻辑：如果 node_data 中已经通过 {{ }} 获取到了 tag，则直接使用
+
+            # 变量注入与智能扫描 (保持原有逻辑)
             dynamic_tag = node_data.get('image_tag')
             dynamic_repository = node_data.get('image_repository')
-            
-            # 如果没有显式指定变量，则保留原有的自动扫描逻辑作为兼容
+
             if not dynamic_tag:
                 upstream_nodes = PipelineNodeRun.objects.filter(run_id=run_id, status='success').exclude(output_data={})
                 for un in upstream_nodes:
@@ -447,32 +461,34 @@ def execute_pipeline_node(self, node_run_id):
                         dynamic_repository = un.output_data.get('repository')
                         node_run.logs += f"已通过智能扫描获取到上游镜像：{dynamic_repository}:{dynamic_tag}\n"
                         break
-                    
+
             import time
             import yaml
-            extra_values_dict = {
-                "pipeline_redeploy_ts": int(time.time())
-            }
-            
+            extra_values_dict = { "pipeline_redeploy_ts": int(time.time()) }
             if dynamic_tag:
-                extra_values_dict['image'] = {
-                    'tag': dynamic_tag
-                }
-                if dynamic_repository:
-                    extra_values_dict['image']['repository'] = dynamic_repository
-            
-            extra_values = yaml.dump(extra_values_dict)
-            
+                extra_values_dict['image'] = { 'tag': dynamic_tag }
+                if dynamic_repository: extra_values_dict['image']['repository'] = dynamic_repository
+
+            # 合并用户自定义 values
+            custom_values = node_data.get('k8s_values', '')
+            if custom_values:
+                node_run.logs += f"\n[审计] 注入自定义 Values:\n{custom_values}\n"
+
+            full_values = yaml.dump(extra_values_dict) + "\n" + custom_values
+
             ok, output = run_helm_upgrade(
                 cluster, 
                 release_name, 
                 namespace=namespace, 
                 chart=chart_name, 
-                values=extra_values,
-                force=node_data.get('k8s_force', False)
+                values=full_values,
+                force=node_data.get('k8s_force', False),
+                repo_url=repo_url,
+                repo_auth=repo_auth
             )
             node_run.logs += output
             success = ok
+
             
         elif node_type == 'http_webhook':
             pipeline_graph = node_run.run.pipeline.graph_data

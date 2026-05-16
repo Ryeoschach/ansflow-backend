@@ -41,35 +41,52 @@ def get_persistent_chart_path(chart_name):
     filename = chart_name if chart_name.endswith('.tgz') else f"{chart_name}.tgz"
     return os.path.join(charts_dir, filename)
 
-def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None, force=False, version=None):
+def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None, force=False, version=None, repo_url=None, repo_auth=None):
     """
-    执行 Helm 升级/部署逻辑
+    执行 Helm 升级/部署逻辑 (增强版：支持远程拉取)
+    :param repo_auth: {'username': 'xxx', 'password': 'xxx'}
     """
     kubeconfig_path = get_temp_kubeconfig(cluster)
     temp_val_path = None
     
+    # --- 并行隔离设计 ---
+    # 为 Helm 创建独立的临时家目录，防止并发执行时的锁冲突
+    helm_home = tempfile.mkdtemp(prefix='helm-home-')
+    env = os.environ.copy()
+    env.update({
+        'HELM_CACHE_HOME': os.path.join(helm_home, 'cache'),
+        'HELM_CONFIG_HOME': os.path.join(helm_home, 'config'),
+        'HELM_DATA_HOME': os.path.join(helm_home, 'data'),
+    })
+
     try:
-        # 如果指定了 Chart 名，检查是否是 media 目录下的本地文件
-        if chart:
+        # 1. 处理 Chart 来源
+        target_chart = chart
+        
+        # 如果提供了仓库地址，先拉取
+        if repo_url:
+            repo_name = f"repo-{hash(repo_url)}"
+            add_cmd = ['helm', 'repo', 'add', repo_name, repo_url, '--kubeconfig', kubeconfig_path]
+            if repo_auth:
+                add_cmd.extend(['--username', repo_auth['username'], '--password', repo_auth['password']])
+            
+            subprocess.run(add_cmd, env=env, capture_output=True)
+            subprocess.run(['helm', 'repo', 'update', repo_name, '--kubeconfig', kubeconfig_path], env=env, capture_output=True)
+            
+            # target_chart 变为 repo/chart_name
+            target_chart = f"{repo_name}/{chart}"
+
+        elif chart:
+            # 兼容旧逻辑：检查本地 media 目录
             p_path = get_persistent_chart_path(chart)
             if os.path.exists(p_path):
-                chart = p_path
-                
-        # 如果没有指定 Chart，尝试从现有的 Release 中自动探测
-        if not chart:
-            list_cmd = ['helm', 'list', '-n', namespace, '--filter', f'^{name}$', '--output', 'json', '--kubeconfig', kubeconfig_path]
-            list_res = subprocess.run(list_cmd, capture_output=True, text=True)
-            if list_res.returncode == 0:
-                releases = json.loads(list_res.stdout)
-                if releases:
-                    c_fullname = releases[0].get('chart')
-                    p_path = get_persistent_chart_path(c_fullname)
-                    chart = p_path if os.path.exists(p_path) else None
+                target_chart = p_path
         
-        if not chart:
-            return False, "未能定位到该 Release 的 Chart 存储副本。如果您是通过在线编辑器刚创建的 Chart（或者是旧版本数据），由于以前并未持久化保存该 Chart 的物理包，导致自动匹配失败。\n解决办法：请前往【应用发布 - K8s 资源中心】重新创建一个新的应用，然后再到流水线配置节点明确选中这个 Chart 运行即可发布更新。"
+        if not target_chart:
+             return False, "未能定位到有效的 Chart 来源 (本地文件或远程仓库)"
 
-        cmd = ['helm', 'upgrade', name, chart, '-n', namespace, '--kubeconfig', kubeconfig_path, '--install']
+        # 2. 构造部署命令
+        cmd = ['helm', 'upgrade', name, target_chart, '-n', namespace, '--kubeconfig', kubeconfig_path, '--install']
         
         if values:
             fd, temp_val_path = tempfile.mkstemp(suffix='.yaml')
@@ -82,11 +99,9 @@ def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None
             
         if version:
             cmd.extend(['--version', str(version)])
-            
-        # 为了应对一些变动，增加更多的选项，比如等待部署完成
-        # cmd.append('--wait') 
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # 3. 执行
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         if result.returncode != 0:
             return False, result.stderr or result.stdout
         
@@ -95,7 +110,7 @@ def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None
     except Exception as e:
         return False, str(e)
     finally:
-        if os.path.exists(kubeconfig_path):
-            os.remove(kubeconfig_path)
-        if temp_val_path and os.path.exists(temp_val_path):
-            os.remove(temp_val_path)
+        # 4. 强力清理
+        if os.path.exists(kubeconfig_path): os.remove(kubeconfig_path)
+        if temp_val_path and os.path.exists(temp_val_path): os.remove(temp_val_path)
+        shutil.rmtree(helm_home, ignore_errors=True)
