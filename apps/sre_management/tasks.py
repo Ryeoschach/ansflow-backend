@@ -43,6 +43,16 @@ def analyze_alert_event(self, alert_id):
         analysis_result = chain.invoke(question)
         logger.info(f"[SRE] AI Analysis result received: {analysis_result[:100]}...")
 
+        # 2.1 [优化] 增加告警降噪分析
+        recent_same_alerts = AlertEvent.objects.filter(
+            fingerprint=alert.fingerprint,
+            create_time__gte=timezone.now() - timezone.timedelta(hours=1)
+        ).exclude(id=alert.id).count()
+        
+        if recent_same_alerts > 3:
+            noise_reduction_msg = f"\n\n### 🛡️ 告警降噪建议\n检测到该告警在过去 1 小时内已发生 {recent_same_alerts} 次，可能存在抖动。建议检查相关阈值配置或开启静默。"
+            analysis_result += noise_reduction_msg
+
         # 3. 匹配自愈策略
         matched_policy = None
         policies = SelfHealingPolicy.objects.filter(is_active=True)
@@ -206,12 +216,23 @@ def trigger_self_healing(alert_id):
         alert.healing_status = 'executing'
         alert.save()
 
+        # [优化] 将告警上下文注入流水线变量池
+        pipeline_vars = {
+            "alert": {
+                "id": alert.id,
+                "name": alert.alert_name,
+                "labels": alert.labels,
+                "severity": alert.severity
+            }
+        }
+
         # 创建流水线运行记录
         run = PipelineRun.objects.create(
             pipeline=alert.suggested_pipeline,
             status='pending',
             trigger_user=bot,
-            trigger_type='automation'
+            trigger_type='automation',
+            extra_vars=pipeline_vars # 注入变量
         )
 
         # 记录关键信息到告警事件

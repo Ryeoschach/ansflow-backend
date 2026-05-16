@@ -41,6 +41,10 @@ def resolve_pipeline_vars(content: Any, run_id: int) -> Any:
             "nodes": {}
         }
         
+        # 注入运行实例自带的全局变量 (如自愈触发时注入的 alert 信息)
+        if run.extra_vars:
+            context.update(run.extra_vars)
+        
         for node in success_nodes:
             context["nodes"][node.node_id] = node.output_data
 

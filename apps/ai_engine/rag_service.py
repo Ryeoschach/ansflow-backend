@@ -799,11 +799,38 @@ class RAGService:
             
             optimized_query = self.rewrite_query(search_text)
             docs = self.retrieve_with_threshold(optimized_query)
+            
+            # 记录引用的文档元数据，供后续流式输出
+            input_data['_referenced_docs'] = [
+                {"id": d.metadata.get('id'), "title": d.metadata.get('title') or d.page_content[:30]} 
+                for d in docs if d.metadata.get('id')
+            ]
+            
             return self.format_docs(docs)
+
+        # 这里我们需要先运行一次检索，以便获取 _referenced_docs
+        # 但由于 LangChain Chain 的特性，检索通常在运行中触发。
+        # 我们改为先手动检索。
+        
+        search_text = f"诊断 {context_info.get('name')} 错误: {context_info.get('summary')}"
+        if log_content:
+            search_text += " " + log_content[:200].replace('\n', ' ')
+        
+        optimized_query = self.rewrite_query(search_text)
+        referenced_docs = self.retrieve_with_threshold(optimized_query)
+        
+        # 输出引用标记
+        import json
+        refs = [
+            {"id": d.metadata.get('document_id'), "title": d.metadata.get('title') or "相关文档"} 
+            for d in referenced_docs if d.metadata.get('document_id')
+        ]
+        if refs:
+            yield f"__REFERENCES__:{json.dumps(refs)}\n"
 
         chain = (
             {
-                "context": context_retriever, 
+                "context": lambda x: self.format_docs(referenced_docs), 
                 "target_type": lambda x: x["target_type"],
                 "target_name": lambda x: x["target_name"],
                 "error_summary": lambda x: x["error_summary"],

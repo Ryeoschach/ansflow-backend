@@ -143,6 +143,7 @@ class PipelineRun(BaseModel):
     trigger_type = models.CharField(max_length=20, choices=TRIGGER_TYPE_CHOICES, default='manual', verbose_name="触发类型")
     parent_run = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='retry_runs', verbose_name="父级 Run（重试时）")
     start_node_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="重试起始节点 ID")
+    extra_vars = JSONField(default=dict, blank=True, verbose_name="运行变量池")
 
     class Meta:
         db_table = 'pipeline_run_instance'
