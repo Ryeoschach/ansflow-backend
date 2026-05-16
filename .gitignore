@@ -51,7 +51,7 @@ logs/
 # ============================
 test.js
 check_pipeline.py
-test_helm.py
+test_*.py
  AnsFlow/settings.py
  AnsFlow/wsgi.py
  AnsFlow/asgi.py
