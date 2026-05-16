@@ -83,6 +83,35 @@ class HostViewSet(viewsets.ModelViewSet):
 
     resource_code = 'resource:hosts'
 
+    @action(detail=False, methods=['post'])
+    def bulk_import(self, request):
+        """
+        批量导入主机
+        格式要求: [{"hostname": "xxx", "private_ip": "1.1.1.1", "env": 1, ...}]
+        """
+        data = request.data
+        if not isinstance(data, list):
+            return Response({"error": "数据格式错误，期望收到列表格式"}, status=status.HTTP_400_BAD_REQUEST)
+
+        success_count = 0
+        errors = []
+
+        for index, item in enumerate(data):
+            try:
+                # 使用 Serializer 验证单条数据
+                serializer = self.get_serializer(data=item)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
+                success_count += 1
+            except Exception as e:
+                errors.append(f"第 {index+1} 条记录错误: {str(e)}")
+
+        return Response({
+            "status": "success",
+            "message": f"成功导入 {success_count} 台主机",
+            "errors": errors
+        })
+
 class EnvironmentViewSet(viewsets.ModelViewSet):
     queryset = Environment.objects.all()
     serializer_class = EnvironmentSerializer
