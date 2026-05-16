@@ -16,6 +16,37 @@ class TaskPulseViewSet(viewsets.ReadOnlyModelViewSet):
     resource_code = "task:pulse"
     filterset_fields = ['state', 'worker']
     
+    @action(detail=False, methods=['get'])
+    def throughput(self, request):
+        """过去 24 小时任务吞吐量统计"""
+        from django.utils import timezone
+        from datetime import timedelta
+        from django.db.models.functions import TruncHour
+        from django.db.models import Count
+        
+        last_24h = timezone.now() - timedelta(hours=24)
+        stats = TaskPulse.objects.filter(create_time__gte=last_24h)\
+            .annotate(hour=TruncHour('create_time'))\
+            .values('hour')\
+            .annotate(count=Count('id'))\
+            .order_by('hour')
+            
+        data = []
+        # 填充 24 小时的空点，确保图表平滑
+        for i in range(24):
+            time_point = (timezone.now() - timedelta(hours=23-i)).replace(minute=0, second=0, microsecond=0)
+            count = 0
+            for s in stats:
+                if s['hour'] == time_point:
+                    count = s['count']
+                    break
+            data.append({
+                "time": time_point.strftime("%H:00"),
+                "value": count
+            })
+            
+        return Response(data)
+
     @action(detail=True, methods=['post'])
     def revoke(self, request, pk=None):
         """撤销任务"""
