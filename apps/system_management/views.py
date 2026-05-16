@@ -15,6 +15,7 @@ from apps.task_management.models import AnsibleExecution
 from apps.pipeline_management.models import PipelineRun
 from django.utils import timezone
 from datetime import timedelta
+from django.db import models
 from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.conf import settings
@@ -103,7 +104,7 @@ class SystemHealthViewSet(viewsets.ViewSet):
 
 class DashboardViewSet(viewsets.ViewSet):
     """
-    仪表盘概览数据视图
+    仪表盘概览数据视图 (优化版)
     """
     permission_classes = [IsAuthenticated]
 
@@ -112,17 +113,22 @@ class DashboardViewSet(viewsets.ViewSet):
         now = timezone.now()
         last_24h = now - timedelta(hours=24)
 
-        # 基础指标 (Metrics)
-        total_hosts = Host.objects.count()
-        online_hosts = Host.objects.filter(status=1).count()
-        total_pools = ResourcePool.objects.count()
+        # 1. 基础指标聚合查询 (Host 状态统计)
+        host_stats = Host.objects.aggregate(
+            total=models.Count('id'),
+            online=models.Count('id', filter=models.Q(status=1))
+        )
         
-        # 任务执行统计 (24小时内)
+        # 2. 资产分布统计 (饼图数据)
+        platform_dist = Host.objects.values('platform__name').annotate(count=models.Count('id')).order_by('-count')
+        env_dist = Host.objects.values('env__name', 'env__color').annotate(count=models.Count('id')).order_by('-count')
+
+        # 3. 任务执行统计
         daily_executions = AnsibleExecution.objects.filter(create_time__gte=last_24h)
         daily_task_runs = daily_executions.count()
         daily_failed_tasks = daily_executions.filter(status='failed').count()
 
-        # 任务趋势 (Task Trend - 每4小时一个点)
+        # 4. 任务趋势 (每4小时一个采样点)
         task_trend = []
         for i in range(6):
             start = now - timedelta(hours=(6-i)*4)
@@ -135,58 +141,72 @@ class DashboardViewSet(viewsets.ViewSet):
                 "failed": period_data.filter(status='failed').count()
             })
 
-        # 最近任务 (Recent Tasks - 混合 Ansible 和 Pipeline)
+        # 5. 实时告警数据
+        from apps.sre_management.models import AlertEvent
+        firing_alerts = AlertEvent.objects.filter(status='firing').order_by('-create_time')[:5].values(
+            'id', 'alert_name', 'severity', 'create_time'
+        )
+
+        # 6. 最近动态 (混合排序与脱敏)
         ansible_recent = AnsibleExecution.objects.all().select_related('task', 'executor').order_by('-create_time')[:10]
         pipeline_recent = PipelineRun.objects.all().select_related('pipeline', 'trigger_user').order_by('-create_time')[:10]
         
         combined_recent = []
-        for task in ansible_recent:
+        for t in ansible_recent:
             combined_recent.append({
-                "raw_id": task.id,
-                "id": f"TSK-{task.id}",
+                "raw_id": t.id,
+                "id": f"TSK-{t.id}",
                 "type": "ansible",
-                "name": task.task.name if task.task else "Unknown Task",
-                "status": task.status.upper(),
-                "time": task.create_time,
-                "user": task.executor.username if task.executor else "System"
+                "name": t.task.name if t.task else "Ad-hoc Task",
+                "status": t.status.upper(),
+                "time": t.create_time,
+                "user": t.executor.username if t.executor else "System"
             })
         
-        for run in pipeline_recent:
+        for p in pipeline_recent:
             combined_recent.append({
-                "raw_id": run.id,
-                "id": f"RUN-{run.id}",
+                "raw_id": p.id,
+                "id": f"RUN-{p.id}",
                 "type": "pipeline",
-                "name": run.pipeline.name if run.pipeline else "Unknown Pipeline",
-                "status": run.status.upper(),
-                "time": run.create_time,
-                "user": run.trigger_user.username if run.trigger_user else "System"
+                "name": p.pipeline.name if p.pipeline else "Unknown Pipeline",
+                "status": p.status.upper(),
+                "time": p.create_time,
+                "user": p.trigger_user.username if p.trigger_user else "System"
             })
             
-        # 按时间排序并取前 8 条
+        # 按时间全量排序
         combined_recent.sort(key=lambda x: x['time'], reverse=True)
-        final_recent = combined_recent[:8]
+        final_recent = combined_recent[:10]
 
-        for task in final_recent:
-            # 简单的时间友好化处理
-            delta = now - task['time']
-            if delta.seconds < 3600:
-                time_str = f"{delta.seconds // 60} mins ago"
+        for item in final_recent:
+            # 时间友好化处理
+            delta = now - item['time']
+            if delta.total_seconds() < 60:
+                time_str = "just now"
+            elif delta.total_seconds() < 3600:
+                time_str = f"{int(delta.total_seconds() // 60)}m ago"
             elif delta.days < 1:
-                time_str = f"{delta.seconds // 3600} hours ago"
+                time_str = f"{int(delta.total_seconds() // 3600)}h ago"
             else:
-                time_str = f"{delta.days} days ago"
-            task['time_label'] = time_str
-            # 将 datetime 对象移除，因为 Response 不能序列化它，或者转为字符串
-            task['time'] = task['time'].isoformat()
+                time_str = f"{delta.days}d ago"
+            item['time_label'] = time_str
+            item['time'] = item['time'].isoformat() # 序列化兼容
 
         return Response({
             "metrics": {
-                "totalHosts": total_hosts,
-                "onlineHosts": online_hosts,
-                "totalResourcePools": total_pools,
+                "totalHosts": host_stats['total'] or 0,
+                "onlineHosts": host_stats['online'] or 0,
+                "totalResourcePools": ResourcePool.objects.count(),
                 "dailyTaskRuns": daily_task_runs,
                 "dailyFailedTasks": daily_failed_tasks,
             },
+            "platformDistribution": [
+                {"name": item['platform__name'] or "Local", "value": item['count']} for item in platform_dist
+            ],
+            "envDistribution": [
+                {"name": item['env__name'] or "Unknown", "value": item['count'], "color": item['env__color']} for item in env_dist
+            ],
+            "firingAlerts": list(firing_alerts),
             "taskTrend": task_trend,
             "recentTasks": final_recent
         })
