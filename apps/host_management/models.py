@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.validators import RegexValidator
 from utils.base_model import BaseModel
 from utils.fields import EncryptedCharField, EncryptedTextField
 
@@ -19,6 +20,7 @@ class SshCredential(BaseModel):
     password = EncryptedCharField(max_length=512, blank=True, null=True, verbose_name="密码")
     private_key = EncryptedTextField(blank=True, null=True, verbose_name="私钥内容")
     passphrase = EncryptedCharField(max_length=512, blank=True, null=True, verbose_name="私钥密码")
+    description = models.TextField(blank=True, null=True, verbose_name="描述备注")
 
     class Meta:
         db_table = 'cmdb_ssh_credential'
@@ -35,6 +37,7 @@ class Environment(BaseModel):
     """
     name = models.CharField(max_length=50, unique=True, verbose_name="环境名称")
     code = models.CharField(max_length=20, unique=True, verbose_name="环境标识")
+    color = models.CharField(max_length=20, default='#1890ff', verbose_name="环境颜色")
 
     class Meta:
         db_table = 'cmdb_environment'
@@ -62,9 +65,9 @@ class Platform(BaseModel):
     name = models.CharField(max_length=100, null=True, blank=True, verbose_name="平台名称")
     type = models.CharField(max_length=50, choices=PLATFORM_TYPES, default='vmware', null=True, blank=True, verbose_name="平台类型")
 
-    # 云平台连接信息 (AccessKey/SecretKey/API Endpoint)
-    access_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Access Key")
-    secret_key = models.CharField(max_length=255, blank=True, null=True, verbose_name="Secret Key")
+    # 云平台连接信息 (AccessKey/SecretKey/API Endpoint) - 已改为加密存储
+    access_key = EncryptedCharField(max_length=255, blank=True, null=True, verbose_name="Access Key")
+    secret_key = EncryptedCharField(max_length=255, blank=True, null=True, verbose_name="Secret Key")
     api_endpoint = models.CharField(max_length=255, blank=True, null=True, verbose_name="API 端点")
 
     # 连通性状态
@@ -167,8 +170,19 @@ class ResourcePool(BaseModel):
     一个资源池可以精选组合来自不同“平台”和“环境”的主机。
     """
     name = models.CharField(max_length=100, unique=True, verbose_name="资源池名称")
-    code = models.CharField(max_length=50, unique=True, verbose_name="资源池标识(用作Ansible中Group名称)",
-                            help_text="只能包含英文和下划线，如: web_servers")
+    code = models.CharField(
+        max_length=50, 
+        unique=True, 
+        verbose_name="资源池标识(用作Ansible中Group名称)",
+        help_text="只能包含英文数字和下划线，且必须以字母开头，如: web_servers",
+        validators=[
+            RegexValidator(
+                regex=r'^[a-zA-Z][a-zA-Z0-9_]*$',
+                message="资源池标识必须以字母开头，且仅能包含字母、数字和下划线。"
+            )
+        ]
+    )
+    remark = models.TextField(blank=True, null=True, verbose_name="备注")
 
     # 组合关联，一个池子包含任意多台主机
     hosts = models.ManyToManyField(

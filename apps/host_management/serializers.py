@@ -38,11 +38,12 @@ class HostSerializer(serializers.ModelSerializer):
 
     platform_name = serializers.CharField(source='platform.name', read_only=True)
     env_name = serializers.CharField(source='env.name', read_only=True)
+    env_color = serializers.CharField(source='env.color', read_only=True)
     credential_name = serializers.CharField(source='credential.name', read_only=True)
 
     class Meta:
         model = Host
-        fields = ['id', 'hostname', 'ports', 'ip_address', 'private_ip', 'os_type', 'cpu', 'memory', 'disk', 'status', 'env', 'platform', 'platform_name', 'env_name', 'credential', 'credential_name', 'create_time', 'update_time']
+        fields = ['id', 'hostname', 'ports', 'ip_address', 'private_ip', 'os_type', 'cpu', 'memory', 'disk', 'status', 'env', 'platform', 'platform_name', 'env_name', 'env_color', 'credential', 'credential_name', 'create_time', 'update_time']
 
 
 class EnvironmentSerializer(serializers.ModelSerializer):
@@ -60,6 +61,7 @@ class PlatformSerializer(serializers.ModelSerializer):
                   'default_credential', 'default_credential_name', 'create_time', 'update_time']
         read_only_fields = ['connectivity_status', 'last_verified_at', 'error_message']
         extra_kwargs = {
+            'access_key': {'write_only': True},
             'secret_key': {'write_only': True}  # 敏感信息不返回前端
         }
 

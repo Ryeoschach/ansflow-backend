@@ -147,3 +147,67 @@ def sync_platform_assets(platform_id):
     except Exception as e:
         logger.error(f"同步资产失败: {str(e)}")
         raise e
+
+@shared_task(name="check_host_connectivity")
+def check_host_connectivity():
+    """
+    定期检查所有标记为“在线”的主机的 SSH 连通性
+    """
+    from apps.host_management.models import Host
+    import paramiko
+    import io
+
+    hosts = Host.objects.filter(status=1) # 仅检查在线主机
+    checked_count = 0
+    fail_count = 0
+
+    for host in hosts:
+        # 获取最有效的凭据 (主机特定凭据 > 平台默认凭据)
+        credential = host.credential or (host.platform.default_credential if host.platform else None)
+        if not credential:
+            continue
+
+        checked_count += 1
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        try:
+            if credential.auth_type == 'password':
+                client.connect(
+                    hostname=host.private_ip or host.ip_address,
+                    port=22,
+                    username=credential.username,
+                    password=credential.password,
+                    timeout=5
+                )
+            else:
+                # 处理私钥
+                key_stream = io.StringIO(credential.private_key)
+                if 'BEGIN RSA PRIVATE KEY' in credential.private_key:
+                    pkey = paramiko.RSAKey.from_private_key(key_stream, password=credential.passphrase)
+                elif 'BEGIN OPENSSH PRIVATE KEY' in credential.private_key:
+                    pkey = paramiko.Ed25519Key.from_private_key(key_stream, password=credential.passphrase)
+                else:
+                    pkey = paramiko.RSAKey.from_private_key(key_stream, password=credential.passphrase)
+
+                client.connect(
+                    hostname=host.private_ip or host.ip_address,
+                    port=22,
+                    username=credential.username,
+                    pkey=pkey,
+                    timeout=5
+                )
+            client.close()
+            # 探测成功，保持在线
+            if host.status != 1:
+                host.status = 1
+                host.save(update_fields=['status', 'update_time'])
+        except Exception as e:
+            logger.warning(f"主机 {host.hostname} ({host.private_ip}) 连通性探测失败: {str(e)}")
+            # 探测失败，标记为故障 (status=2)
+            host.status = 2
+            host.save(update_fields=['status', 'update_time'])
+            fail_count += 1
+
+    return f"主机心跳检查完成。共检查 {checked_count} 台，失败 {fail_count} 台。"
+
