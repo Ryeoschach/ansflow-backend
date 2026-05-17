@@ -1,9 +1,38 @@
+# ============================================================
+# AnsFlow 测试环境 Docker Compose
+# 特性：
+# 1. 共享单镜像：所有后端服务复用同一个 ansflow-backend:latest 镜像
+# 2. 构建加速：利用 YAML 锚点减少重复定义
+# 3. 部署安全：强制 CPU 模式，环境隔离
+# ============================================================
+
+# --- 复用构建块 ---
+x-backend-build: &backend-build
+  context: .
+  dockerfile: Dockerfile.worker
+  args:
+    - http_proxy=${HTTP_PROXY}
+    - https_proxy=${HTTPS_PROXY}
+    - no_proxy=${NO_PROXY}
+
+# --- 复用环境变量 ---
+x-backend-env: &backend-env
+  DJANGO_SETTINGS_MODULE: config.settings.production
+  DATABASE_URL: postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
+  CELERY_BROKER_URL: redis://ansflow-redis:6379/6
+  REDIS_URL: redis://ansflow-redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:-django-insecure-test-key}
+  BACKEND_URL: ${BACKEND_URL:-http://localhost:8000}
+  VECTOR_STORE_TYPE: pgvector
+  CUDA_VISIBLE_DEVICES: -1
+  TORCH_CUDA_ARCH_LIST: ""
+  USE_CUDA: 0
+
 services:
-  # --- 数据库初始化 (仅运行一次) ---
+  # --- 数据库初始化 (所有后端服务共享 ansflow-backend:latest) ---
   ansflow-init:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+    image: ansflow-backend:latest
+    build: *backend-build
     command: >
       sh -c "python manage.py migrate --noinput &&
              python manage.py createsuperuser --noinput || true &&
@@ -12,68 +41,86 @@ services:
              python manage.py init_notification_config &&
              python manage.py collectstatic --noinput"
     environment:
-      - DJANGO_SETTINGS_MODULE=config.settings.production
-      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
-      - REDIS_URL=redis://ansflow-redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
-      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
-      - CUDA_VISIBLE_DEVICES=-1
-      - TORCH_CUDA_ARCH_LIST=""
-      - USE_CUDA=0
-      - DJANGO_SUPERUSER_USERNAME=${DJANGO_SUPERUSER_USERNAME:-admin}
-      - DJANGO_SUPERUSER_PASSWORD=${DJANGO_SUPERUSER_PASSWORD:-ansflow_admin_password}
-      - DJANGO_SUPERUSER_EMAIL=${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
-    env_file:
-      - .env
+      <<: *backend-env
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-admin}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-ansflow_admin_password}
+      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
+    env_file: [ .env ]
     volumes:
       - ansflow-static:/app/static
     depends_on:
-      ansflow-db:
-        condition: service_healthy
-      ansflow-redis:
-        condition: service_healthy
-    networks:
-      - ansflow-common-network
+      ansflow-db: { condition: service_healthy }
+      ansflow-redis: { condition: service_healthy }
+    networks: [ ansflow-common-network ]
 
   # --- 核心后端 API ---
   ansflow-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-      args:
-        - http_proxy=${HTTP_PROXY}
-        - https_proxy=${HTTPS_PROXY}
-        - no_proxy=${NO_PROXY}
+    image: ansflow-backend:latest
+    build: *backend-build
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
     environment:
-      - DJANGO_SETTINGS_MODULE=config.settings.production
-      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
-      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
-      - REDIS_URL=redis://ansflow-redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
-      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
-      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
-      - VECTOR_STORE_TYPE=pgvector
-      - HTTP_PROXY=${HTTP_PROXY}
-      - HTTPS_PROXY=${HTTPS_PROXY}
-      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,ansflow-db,ansflow-redis}
-      - CUDA_VISIBLE_DEVICES=-1
-    env_file:
-      - .env
-    expose:
-      - "8000"
+      <<: *backend-env
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+    env_file: [ .env ]
+    expose: [ "8000" ]
     volumes:
       - ansflow-media:/app/media
       - ./logs:/app/logs
+      - ./.model_cache:/app/.model_cache
+      - ./.env:/app/.env
     depends_on:
-      ansflow-init:
-        condition: service_completed_successfully
-      ansflow-db:
-        condition: service_healthy
-      ansflow-redis:
-        condition: service_healthy
-    networks:
-      - ansflow-common-network
+      ansflow-init: { condition: service_completed_successfully }
+    networks: [ ansflow-common-network ]
+    restart: always
+
+  # --- Celery Worker ---
+  ansflow-worker:
+    image: ansflow-backend:latest
+    build: *backend-build
+    command: ["celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
+    environment:
+      <<: *backend-env
+      ANSFLOW_WORKER_NAME: default-worker
+    env_file: [ .env ]
+    volumes:
+      - /tmp/ansflow_workspaces:/tmp/ansflow_workspaces
+      - ./helm_charts:/tmp/helm_charts
+      - ansflow-media:/app/media
+      - ./logs:/app/logs
+      - ./.model_cache:/app/.model_cache
+      - ./.env:/app/.env
+    depends_on:
+      ansflow-init: { condition: service_completed_successfully }
+    networks: [ ansflow-common-network ]
+    restart: always
+
+  # --- Celery Beat ---
+  ansflow-beat:
+    image: ansflow-backend:latest
+    build: *backend-build
+    command: ["celery", "-A", "config", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
+    environment:
+      <<: *backend-env
+    env_file: [ .env ]
+    volumes: 
+      - "./logs:/app/logs"
+      - "./.env:/app/.env"
+    depends_on:
+      ansflow-init: { condition: service_completed_successfully }
+    networks: [ ansflow-common-network ]
+    restart: always
+
+  # --- TaskPulse 监控器 ---
+  ansflow-monitor:
+    image: ansflow-backend:latest
+    build: *backend-build
+    command: ["python", "manage.py", "pulse_monitor"]
+    environment:
+      <<: *backend-env
+    env_file: [ .env ]
+    depends_on:
+      ansflow-init: { condition: service_completed_successfully }
+    networks: [ ansflow-common-network ]
     restart: always
 
   # --- 前端服务 & Nginx 网关 ---
@@ -81,121 +128,12 @@ services:
     build:
       context: ../ansflow-frontend
       dockerfile: Dockerfile
-      args:
-        - http_proxy=${HTTP_PROXY}
-        - https_proxy=${HTTPS_PROXY}
-        - no_proxy=${NO_PROXY}
-    ports:
-      - "80:80"
+    ports: [ "80:80" ]
     volumes:
-      # 共享命名卷：确保与后端容器读写一致
       - ansflow-media:/usr/share/nginx/media:ro
       - ansflow-static:/usr/share/nginx/static:ro
-    depends_on:
-      - ansflow-api
-    networks:
-      - ansflow-common-network
-    restart: always
-
-  # --- Celery Worker ---
-  ansflow-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-      args:
-        - http_proxy=${HTTP_PROXY}
-        - https_proxy=${HTTPS_PROXY}
-        - no_proxy=${NO_PROXY}
-    command: ["celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
-    environment:
-      - DJANGO_SETTINGS_MODULE=config.settings.production
-      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
-      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
-      - REDIS_URL=redis://ansflow-redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
-      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
-      - ANSFLOW_WORKER_NAME=default-worker
-      - VECTOR_STORE_TYPE=pgvector
-      - HTTP_PROXY=${HTTP_PROXY}
-      - HTTPS_PROXY=${HTTPS_PROXY}
-      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,ansflow-db,ansflow-redis}
-      - CUDA_VISIBLE_DEVICES=-1
-    env_file:
-      - .env
-    volumes:
-      - /tmp/ansflow_workspaces:/tmp/ansflow_workspaces
-      - ./helm_charts:/tmp/helm_charts
-      - ansflow-media:/app/media
-      - ./logs:/app/logs
-    depends_on:
-      ansflow-init:
-        condition: service_completed_successfully
-      ansflow-db:
-        condition: service_healthy
-      ansflow-redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - ansflow-common-network
-    restart: always
-
-  # --- Celery Beat ---
-  ansflow-beat:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    command: ["celery", "-A", "config", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
-    environment:
-      - DJANGO_SETTINGS_MODULE=config.settings.production
-      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
-      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
-      - REDIS_URL=redis://ansflow-redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
-      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
-      - CUDA_VISIBLE_DEVICES=-1
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-    depends_on:
-      ansflow-init:
-        condition: service_completed_successfully
-      ansflow-db:
-        condition: service_healthy
-      ansflow-redis:
-        condition: service_healthy
-    networks:
-      - ansflow-common-network
-    restart: always
-
-  # --- TaskPulse 监控器 (替代 Flower) ---
-  ansflow-monitor:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    command: ["uv", "run", "python", "manage.py", "pulse_monitor"]
-    environment:
-      - DJANGO_SETTINGS_MODULE=config.settings.production
-      - DATABASE_URL=postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
-      - CELERY_BROKER_URL=redis://ansflow-redis:6379/6
-      - REDIS_URL=redis://ansflow-redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-django-insecure-default-change-me}
-      - CUDA_VISIBLE_DEVICES=-1
-    env_file:
-      - .env
-    depends_on:
-      ansflow-init:
-        condition: service_completed_successfully
-      ansflow-db:
-        condition: service_healthy
-      ansflow-redis:
-        condition: service_healthy
-    networks:
-      - ansflow-common-network
+    depends_on: [ ansflow-api ]
+    networks: [ ansflow-common-network ]
     restart: always
 
   # --- PostgreSQL ---
@@ -212,8 +150,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - ansflow-common-network
+    networks: [ ansflow-common-network ]
     restart: always
 
   # --- Redis ---
@@ -227,8 +164,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - ansflow-common-network
+    networks: [ ansflow-common-network ]
     restart: always
 
 networks:
