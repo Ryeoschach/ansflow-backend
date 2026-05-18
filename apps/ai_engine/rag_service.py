@@ -1,4 +1,14 @@
 import os
+from django.conf import settings
+
+# 必须在导入任何 AI 库之前设置环境变量，确保缓存路径被全局识别
+CACHE_DIR = os.path.join(settings.BASE_DIR, ".model_cache")
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+os.environ["FLASHRANK_CACHE_DIR"] = CACHE_DIR
+os.environ["FASTEMBED_CACHE_PATH"] = CACHE_DIR
+
 from typing import List, Optional
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -55,11 +65,8 @@ class RAGService:
                  llm_id: int = None, embedding_id: int = None):
         self.personality = self.PERSONALITIES.get(personality, self.PERSONALITIES['professional'])
         self.persist_directory = os.path.join(settings.BASE_DIR, "chroma_db")
-        self.cache_directory = os.path.join(settings.BASE_DIR, ".model_cache")
+        self.cache_directory = CACHE_DIR
         
-        if not os.path.exists(self.cache_directory):
-            os.makedirs(self.cache_directory)
-
         # 1. 初始化配置
         self.config = AIConfig.objects.filter(name="default").first()
         self.llm_config = self._get_model_config(llm_id, "llm")
