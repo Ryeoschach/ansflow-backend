@@ -90,14 +90,21 @@ class RAGService:
             # 优先尝试远程 Reranker (OpenAI 兼容接口)
             if is_remote_configured:
                 try:
-                    from langchain_community.document_compressors import XinferenceRerank
+                    # 尝试多种可能的导入路径
+                    try:
+                        from langchain_community.document_compressors.xinference import XinferenceRerank
+                    except ImportError:
+                        from langchain_community.document_compressors import XinferenceRerank
+                    
                     RAGService._reranker_cache = XinferenceRerank(
                         base_url=reranker_base.rstrip('/').replace("/v1", ""),
                         model_name=reranker_model
                     )
                     print(f"[RAG] Connected to Remote Reranker ({rerank_ptype}): {reranker_model}")
                 except Exception as e:
-                    print(f"[RAG] Failed to init Remote Reranker: {e}")
+                    print(f"[RAG] Failed to init Remote Reranker wrapper: {e}. Trying generic implementation...")
+                    # 如果官方包装器失败，这里未来可以扩展一个自定义的通用 Reranker 类
+                    RAGService._reranker_cache = None
 
             # 仅在未配置远程且未加载成功时，才尝试本地 Flashrank
             if RAGService._reranker_cache is None and not is_remote_configured:
