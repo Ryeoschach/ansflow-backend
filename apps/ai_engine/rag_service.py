@@ -96,8 +96,15 @@ class RAGService:
             if RAGService._reranker_cache is None:
                 try:
                     from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+                    
+                    # 针对某些 Pydantic v2 环境的修复：确保模型类已构建
+                    try:
+                        FlashrankRerank.model_rebuild()
+                    except:
+                        pass
+
                     # 动态使用配置中的模型名称，如果没有则回退到轻量级模型
-                    target_model = reranker_model if reranker_model else "ms-marco-MultiBERT-L-12"
+                    target_model = reranker_model if reranker_model else "ms-marco-MiniLM-L-12-v2"
                     
                     RAGService._reranker_cache = FlashrankRerank(
                         model=target_model,
@@ -424,12 +431,20 @@ class RAGService:
         )
 
         # 4. 引入 Rerank 压缩器 (最终只保留 top_k 个)
-        self.reranker.top_n = top_k
-        rerank_retriever = ContextualCompressionRetriever(
-            base_compressor=self.reranker, 
-            base_retriever=ensemble_retriever
-        )
-        return rerank_retriever
+        if self.reranker:
+            try:
+                self.reranker.top_n = top_k
+                rerank_retriever = ContextualCompressionRetriever(
+                    base_compressor=self.reranker, 
+                    base_retriever=ensemble_retriever
+                )
+                return rerank_retriever
+            except Exception as e:
+                print(f"[RAG] Error setting up Rerank compressor: {e}")
+        
+        # 如果没有 Reranker，直接返回混合检索结果 (取 top_k 个)
+        ensemble_retriever.k = top_k
+        return ensemble_retriever
 
     def rewrite_query(self, query: str):
         """利用 LLM 改写查询，使其更适合在知识库中检索"""
