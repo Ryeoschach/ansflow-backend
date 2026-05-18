@@ -59,6 +59,10 @@ class RAGService:
         
         if not os.path.exists(self.cache_directory):
             os.makedirs(self.cache_directory)
+            
+        # 强制设置 Flashrank 和 FastEmbed 的环境变量，确保它们优先使用挂载的目录
+        os.environ["FLASHRANK_CACHE_DIR"] = self.cache_directory
+        os.environ["FASTEMBED_CACHE_PATH"] = self.cache_directory
 
         # 1. 初始化配置
         self.config = AIConfig.objects.filter(name="default").first()
