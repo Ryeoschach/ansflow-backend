@@ -21,9 +21,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libsasl2-dev \
     libssl-dev \
     libpq-dev \
-    tesseract-ocr \
-    tesseract-ocr-chi-sim \
-    libmagic1 \
     && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash \
     && rm -rf /var/lib/apt/lists/*
 

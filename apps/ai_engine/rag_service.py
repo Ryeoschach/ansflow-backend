@@ -288,39 +288,23 @@ class RAGService:
 
         ext = os.path.splitext(file_path)[1].lower()
         docs = []
-        # ... (解析逻辑保持不变)
         if ext == '.pdf':
-            # ...
             try:
-                from langchain_community.document_loaders import PyMuPDFLoader
-                loader = PyMuPDFLoader(file_path)
-                docs = loader.load()
-                
-                # 检查是否为扫描件或内容极少的 PDF (平均每页少于 100 字符)
-                total_chars = sum(len(d.page_content) for d in docs)
-                avg_chars_per_page = total_chars / len(docs) if docs else 0
-                
-                if avg_chars_per_page < 100:
-                    print(f"[RAG] PDF appears to be an image or scan (avg {avg_chars_per_page:.1f} chars/page). Switching to OCR...")
-                    from unstructured.partition.pdf import partition_pdf
-                    from langchain_core.documents import Document
-                    
-                    elements = partition_pdf(
-                        filename=file_path,
-                        strategy="hi_res",
-                        languages=["chi_sim", "eng"]
-                    )
-                    docs = [Document(page_content="\n".join([str(el) for el in elements]), 
-                                    metadata={"source": os.path.basename(file_path), "method": "ocr"})]
-            except Exception as e:
-                print(f"[RAG] Advanced PDF loading failed: {e}. Falling back to basic loader.")
                 from langchain_community.document_loaders import PyPDFLoader
                 loader = PyPDFLoader(file_path)
                 docs = loader.load()
+            except Exception as e:
+                print(f"[RAG] PDF loading failed: {e}")
         elif ext == '.md':
             from langchain_community.document_loaders import UnstructuredMarkdownLoader
-            loader = UnstructuredMarkdownLoader(file_path)
-            docs = loader.load()
+            # 注意：如果卸载了 unstructured，这里建议也换成 TextLoader 或基础 Markdown 解析
+            try:
+                loader = UnstructuredMarkdownLoader(file_path)
+                docs = loader.load()
+            except:
+                from langchain_community.document_loaders import TextLoader
+                loader = TextLoader(file_path)
+                docs = loader.load()
         else:
             from langchain_community.document_loaders import TextLoader
             loader = TextLoader(file_path)
