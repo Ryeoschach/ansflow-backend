@@ -168,14 +168,22 @@ class RAGService:
             if new_reranker is None and not is_remote_configured:
                 try:
                     from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
-                    try:
-                        FlashrankRerank.model_rebuild()
-                    except:
-                        pass
-
+                    from flashrank import Ranker
+                    
                     target_model = reranker_model if reranker_model else "ms-marco-MiniLM-L-12-v2"
-                    new_reranker = FlashrankRerank(model=target_model)
-                    print(f"[RAG] Using Local Reranker: {target_model}")
+                    
+                    # 关键修复：手动创建底层的 Ranker 客户端，强制指定 cache_dir
+                    # 这样就绕过了 flashrank 内部硬编码的 /tmp
+                    flashrank_client = Ranker(
+                        model_name=target_model,
+                        cache_dir=CACHE_DIR
+                    )
+                    
+                    new_reranker = FlashrankRerank(
+                        client=flashrank_client,
+                        model=target_model
+                    )
+                    print(f"[RAG] Using Local Reranker (Manual Init): {target_model} in {CACHE_DIR}")
                 except Exception as e:
                     print(f"[RAG] Failed to init Local Reranker: {e}")
             
