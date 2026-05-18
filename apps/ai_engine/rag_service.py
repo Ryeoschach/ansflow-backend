@@ -753,6 +753,9 @@ class RAGService:
                 
                 if rerank_score is not None:
                     print(f"[RAG] Doc Score: {rerank_score} (Threshold: {threshold})")
+                    # 标准化分数字段名为 relevance_score，供 views.py 和前端展示
+                    d.metadata['relevance_score'] = rerank_score
+                    
                     if float(rerank_score) >= threshold:
                         filtered_docs.append(d)
                 else:
