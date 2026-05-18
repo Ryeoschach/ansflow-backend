@@ -67,7 +67,7 @@ class Command(BaseCommand):
         # 4. 创建向量模型 (Embedding)
         # 默认优先使用本地模型，除非明确配置了外部 API
         emb_api_key = os.getenv("EMBEDDING_API_KEY")
-        emb_model_name = os.getenv("EMBEDDING_MODEL_NAME", "bge-small-zh-v1.5")
+        emb_model_name = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5")
         
         emb_provider = provider if (emb_api_key and provider_type != "local") else local_provider
         embedding, _ = AIModel.objects.get_or_create(
