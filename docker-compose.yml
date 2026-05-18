@@ -52,6 +52,7 @@ services:
     env_file: [ .env ]
     volumes:
       - ansflow-static:/app/static
+      - ./.model_cache:/app/.model_cache
     depends_on:
       ansflow-db: { condition: service_healthy }
       ansflow-redis: { condition: service_healthy }

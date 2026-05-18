@@ -96,11 +96,16 @@ class RAGService:
             if RAGService._reranker_cache is None:
                 try:
                     from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
+                    # 动态使用配置中的模型名称，如果没有则回退到轻量级模型
+                    target_model = reranker_model if reranker_model else "ms-marco-MultiBERT-L-12"
+                    
                     RAGService._reranker_cache = FlashrankRerank(
-                        model="ms-marco-MultiBERT-L-12"
+                        model=target_model,
+                        cache_dir=self.cache_directory
                     )
+                    print(f"[RAG] Using Local Reranker: {target_model}")
                 except Exception as e:
-                    print(f"[RAG] Failed to init Local Reranker (maybe missing torch/onnx): {e}")
+                    print(f"[RAG] Failed to init Local Reranker: {e}")
                     RAGService._reranker_cache = None
         self.reranker = RAGService._reranker_cache
         
