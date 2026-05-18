@@ -111,8 +111,7 @@ class RAGService:
                     target_model = reranker_model if reranker_model else "ms-marco-MiniLM-L-12-v2"
                     
                     RAGService._reranker_cache = FlashrankRerank(
-                        model=target_model,
-                        cache_dir=self.cache_directory
+                        model=target_model
                     )
                     print(f"[RAG] Using Local Reranker: {target_model}")
                 except Exception as e:
@@ -438,8 +437,13 @@ class RAGService:
             except Exception as e:
                 print(f"[RAG] Error setting up Rerank compressor: {e}")
         
-        # 如果没有 Reranker，直接返回混合检索结果 (取 top_k 个)
-        ensemble_retriever.k = top_k
+        # 如果没有 Reranker，直接返回混合检索结果
+        # 注意：EnsembleRetriever 会合并 vector 和 bm25 的结果，最终数量约为 2 * (top_k*4)
+        # 如果需要精确限制，建议在 sub-retrievers 中将 k 设回 top_k
+        if not self.reranker:
+            vector_retriever.search_kwargs["k"] = top_k
+            bm25_retriever.k = top_k
+            
         return ensemble_retriever
 
     def rewrite_query(self, query: str):
