@@ -85,17 +85,20 @@ class RAGService:
             reranker_base = self.rerank_config.get('base_url')
             reranker_model = self.rerank_config.get('name')
 
-            # 优先尝试远程 Reranker (如 Xinference)
+            # 优先尝试远程 Reranker (OpenAI 兼容接口)
             if rerank_ptype != "local" and reranker_base:
                 try:
+                    # 尝试寻找更通用的 Reranker 包装器，或者使用兼容 Xinference 的方式
+                    # 因为大多数开源 Rerank 接口（如 Xinference）都符合同一规范
                     from langchain_community.document_compressors import XinferenceRerank
-                    # 纠错：XinferenceRerank 内部通常会自动拼路径，如果用户填了 /v1 则去掉它
-                    clean_rerank_base = reranker_base.rstrip('/').replace("/v1", "")
+                    
+                    # 这里的 XinferenceRerank 实际上是一个标准的 POST /rerank 客户端
+                    # 我们将其作为一个通用的“远程 Reranker”来使用
                     RAGService._reranker_cache = XinferenceRerank(
-                        base_url=clean_rerank_base,
+                        base_url=reranker_base.rstrip('/').replace("/v1", ""),
                         model_name=reranker_model
                     )
-                    print(f"[RAG] Using Remote Reranker: {reranker_model} at {clean_rerank_base}")
+                    print(f"[RAG] Connected to Remote Reranker ({rerank_ptype}): {reranker_model}")
                 except Exception as e:
                     print(f"[RAG] Failed to init Remote Reranker: {e}")
 
@@ -675,13 +678,18 @@ class RAGService:
             return docs
             
         try:
-            # 过滤逻辑：Rerank 后的文档如果相关性得分（存放在 metadata 中）过低，可以进行过滤
-            # 注意：FlashrankRerank 会将得分写入 metadata['relevance_score']
+            # 过滤逻辑：自动寻找得分字段，不依赖具体引擎
             filtered_docs = []
             for d in docs:
-                rerank_score = d.metadata.get('relevance_score') # Flashrank 使用 relevance_score
+                # 自动匹配包含 score 的字段 (如 relevance_score, rerank_score, score)
+                rerank_score = None
+                for key in ['relevance_score', 'rerank_score', 'score']:
+                    if key in d.metadata:
+                        rerank_score = d.metadata[key]
+                        break
+                
                 if rerank_score is not None:
-                    if rerank_score >= threshold:
+                    if float(rerank_score) >= threshold:
                         filtered_docs.append(d)
                 else:
                     # 对于非 Rerank 路径召回的文档，默认保留
