@@ -122,7 +122,7 @@ class RAGService:
 
     _vectorstore_cache = {}
     _embeddings_cache = {}
-    _reranker_cache = None
+    _reranker_cache = {}  # 改为字典以支持多配置缓存
 
     def __init__(self, collection_name: str = "ansflow_docs", personality: str = 'professional',
                  llm_id: int = None, embedding_id: int = None):
@@ -142,19 +142,20 @@ class RAGService:
             self._embeddings_cache[emb_key] = self._init_embeddings()
         self.embeddings = self._embeddings_cache[emb_key]
 
-        # 3. 初始化 Reranker (带缓存)
-        if RAGService._reranker_cache is None:
+        # 3. 初始化 Reranker (带缓存识别)
+        rerank_key = f"{self.rerank_config.get('name')}_{self.rerank_config.get('provider_type')}"
+        if rerank_key not in self._reranker_cache:
             rerank_ptype = self.rerank_config.get('provider_type')
             reranker_base = self.rerank_config.get('base_url')
             reranker_model = self.rerank_config.get('name')
             
             is_remote_configured = rerank_ptype != "local" and reranker_base
+            new_reranker = None
 
             # 优先尝试远程 Reranker (OpenAI 兼容接口)
             if is_remote_configured:
                 try:
-                    # 使用我们自定义的通用 Rerank 适配器，不再依赖 langchain-community 内部插件
-                    RAGService._reranker_cache = GenericRerank(
+                    new_reranker = GenericRerank(
                         base_url=reranker_base,
                         model_name=reranker_model,
                         api_key=self.rerank_config.get('api_key')
@@ -162,30 +163,25 @@ class RAGService:
                     print(f"[RAG] Connected to Remote Reranker (Generic): {reranker_model}")
                 except Exception as e:
                     print(f"[RAG] Failed to init Generic Reranker: {e}")
-                    RAGService._reranker_cache = None
 
             # 仅在未配置远程且未加载成功时，才尝试本地 Flashrank
-            if RAGService._reranker_cache is None and not is_remote_configured:
+            if new_reranker is None and not is_remote_configured:
                 try:
                     from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
-                    
-                    # 针对某些 Pydantic v2 环境的修复：确保模型类已构建
                     try:
                         FlashrankRerank.model_rebuild()
                     except:
                         pass
 
-                    # 动态使用配置中的模型名称，如果没有则回退到轻量级模型
                     target_model = reranker_model if reranker_model else "ms-marco-MiniLM-L-12-v2"
-                    
-                    RAGService._reranker_cache = FlashrankRerank(
-                        model=target_model
-                    )
+                    new_reranker = FlashrankRerank(model=target_model)
                     print(f"[RAG] Using Local Reranker: {target_model}")
                 except Exception as e:
                     print(f"[RAG] Failed to init Local Reranker: {e}")
-                    RAGService._reranker_cache = None
-        self.reranker = RAGService._reranker_cache
+            
+            self._reranker_cache[rerank_key] = new_reranker
+            
+        self.reranker = self._reranker_cache[rerank_key]
         
         # 4. 初始化向量库 (带缓存)
         safe_model_name = self.emb_config['name'].replace("/", "_").replace("-", "_")
