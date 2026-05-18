@@ -61,7 +61,13 @@ class GenericRerank(BaseDocumentCompressor):
         
         try:
             # 构造标准 Rerank 请求
-            url = f"{self.base_url.rstrip('/')}/rerank"
+            # 如果 base_url 已经包含了 /v1，则直接拼接 /rerank
+            base = self.base_url.rstrip('/')
+            if "/v1" in base:
+                url = f"{base}/rerank"
+            else:
+                url = f"{base}/v1/rerank"
+                
             payload = {
                 "model": self.model_name,
                 "query": query,
@@ -148,7 +154,7 @@ class RAGService:
                 try:
                     # 使用我们自定义的通用 Rerank 适配器，不再依赖 langchain-community 内部插件
                     RAGService._reranker_cache = GenericRerank(
-                        base_url=reranker_base.rstrip('/').replace("/v1", ""),
+                        base_url=reranker_base,
                         model_name=reranker_model,
                         api_key=self.rerank_config.get('api_key')
                     )
