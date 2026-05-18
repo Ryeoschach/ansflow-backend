@@ -78,7 +78,8 @@ class Command(BaseCommand):
         )
 
         # 5. 创建重排序模型 (Rerank)
-        rerank_model_name = os.getenv("RERANK_MODEL_NAME", "bge-reranker-v2-m3")
+        # 默认使用轻量级模型以降低初次下载负担 (约 34MB)
+        rerank_model_name = os.getenv("RERANK_MODEL_NAME", "ms-marco-MiniLM-L-12-v2")
         rerank, _ = AIModel.objects.get_or_create(
             provider=local_provider,
             name=rerank_model_name,
