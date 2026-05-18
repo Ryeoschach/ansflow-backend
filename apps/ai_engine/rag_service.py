@@ -77,7 +77,8 @@ class GenericRerank(BaseDocumentCompressor):
             headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
             
             print(f"[RAG] Requesting Remote Rerank: {url} with model {self.model_name}")
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            # 设置合理的超时：连接 5s，总计等待 25s
+            response = requests.post(url, json=payload, headers=headers, timeout=(5, 25))
             response.raise_for_status()
             result = response.json()
 
@@ -85,7 +86,7 @@ class GenericRerank(BaseDocumentCompressor):
             final_docs = []
             data = result.get("results") or result.get("data") or []
             print(f"[RAG] Remote Rerank success, returned {len(data)} results")
-            
+
             for item in data[:self.top_n]:
                 idx = item.get("index")
                 score = item.get("relevance_score") or item.get("score")
@@ -93,12 +94,16 @@ class GenericRerank(BaseDocumentCompressor):
                     doc = documents[idx]
                     doc.metadata["rerank_score"] = score
                     final_docs.append(doc)
-            
-            return final_docs
-        except Exception as e:
-            print(f"[RAG] Generic Rerank failed: {e}")
-            return documents[:self.top_n]
 
+            # 如果 Rerank 没返回结果，返回前 N 个兜底
+            return final_docs if final_docs else documents[:self.top_n]
+        except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+            print(f"[RAG] Generic Rerank timed out or failed: {e}. Falling back to pre-rerank results.")
+            # 超时或失败时，直接返回初筛结果，避免接口整体崩溃
+            return documents[:self.top_n]
+        except Exception as e:
+            print(f"[RAG] Generic Rerank unexpected error: {e}")
+            return documents[:self.top_n]
 from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
 
 class RAGService:

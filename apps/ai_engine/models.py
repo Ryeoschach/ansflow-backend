@@ -69,11 +69,22 @@ class AIConfig(BaseModel):
         verbose_name_plural = verbose_name
 
 class KnowledgeBase(BaseModel):
+    REINDEX_STATUS = (
+        ("idle", "空闲"),
+        ("processing", "重建中"),
+        ("success", "重建成功"),
+        ("error", "重建异常"),
+    )
     name = models.CharField(max_length=255, verbose_name="知识库名称")
     name_en = models.CharField(max_length=255, blank=True, null=True, verbose_name="知识库英文名称")
     description = models.TextField(blank=True, null=True, verbose_name="描述")
     description_en = models.TextField(blank=True, null=True, verbose_name="英文描述")
     collection_name = models.CharField(max_length=255, unique=True, verbose_name="向量集合名称")
+    
+    # 重建状态记录
+    reindex_status = models.CharField(max_length=20, choices=REINDEX_STATUS, default="idle", verbose_name="重建状态")
+    last_reindex_at = models.DateTimeField(null=True, blank=True, verbose_name="最近重建时间")
+    reindex_error = models.TextField(blank=True, null=True, verbose_name="重建错误信息")
 
     class Meta:
         db_table = "ai_knowledge_base"

@@ -58,16 +58,35 @@ def ingest_document_task(document_id: int):
         doc.save(update_fields=['status'])
         return False
 
+from .models import KnowledgeDocument, AIConfig, KnowledgeBase
+from django.utils import timezone
+
 @shared_task(name="apps.ai_engine.tasks.reindex_kb_task")
 def reindex_kb_task(kb_id: int):
     """
     异步重建知识库索引
     """
+    kb = KnowledgeBase.objects.filter(id=kb_id).first()
+    if not kb:
+        return False
+    
+    kb.reindex_status = 'processing'
+    kb.reindex_error = None
+    kb.save(update_fields=['reindex_status', 'reindex_error'])
+    
     try:
         rag = RAGService()
         count = rag.reindex_all(kb_id=kb_id)
+        
+        kb.reindex_status = 'success'
+        kb.last_reindex_at = timezone.now()
+        kb.save(update_fields=['reindex_status', 'last_reindex_at'])
+        
         logger.info(f"[RAG Task] Successfully reindexed knowledge base {kb_id}, documents: {count}")
         return True
     except Exception as e:
         logger.exception(f"[RAG Task] Failed to reindex knowledge base {kb_id}: {str(e)}")
+        kb.reindex_status = 'error'
+        kb.reindex_error = str(e)
+        kb.save(update_fields=['reindex_status', 'reindex_error'])
         return False
