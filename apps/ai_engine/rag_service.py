@@ -394,12 +394,20 @@ class RAGService:
         metadata_list = [c['metadata'] for c in chunks]
         
         if not chunk_list:
-            # 只有向量检索时也进行重排序
-            self.reranker.top_n = top_k
-            return ContextualCompressionRetriever(
-                base_compressor=self.reranker, 
-                base_retriever=vector_retriever
-            )
+            # 只有向量检索时也进行重排序 (增加判空检查)
+            if self.reranker:
+                try:
+                    self.reranker.top_n = top_k
+                    return ContextualCompressionRetriever(
+                        base_compressor=self.reranker, 
+                        base_retriever=vector_retriever
+                    )
+                except Exception as e:
+                    print(f"[RAG] Vector-only rerank failed: {e}")
+            
+            # 回退到纯向量检索
+            vector_retriever.search_kwargs["k"] = top_k
+            return vector_retriever
             
         bm25_retriever = BM25Retriever.from_texts(
             texts=chunk_list, 
