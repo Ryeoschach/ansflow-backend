@@ -1,8 +1,9 @@
 from django.core.management.base import BaseCommand
 from apps.rbac_permission.models import Menu, Permission, Role, User
+import os
 
 class Command(BaseCommand):
-    help = "初始化/重置 RBAC 基础数据（菜单、角色、权限）"
+    help = "初始化/重置 RBAC 基础数据及系统默认配置"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -11,12 +12,84 @@ class Command(BaseCommand):
             help='强制覆盖已存在的菜单属性（如标题、图标、路径、排序）',
         )
 
+    def init_ai_settings(self):
+        """从环境变量同步初始 AI 配置到数据库"""
+        try:
+            from apps.ai_engine.models import AIProvider, AIModel, AIConfig
+        except ImportError:
+            self.stdout.write(self.style.WARNING("AI 引擎模块未找到，跳过 AI 配置初始化。"))
+            return
+
+        api_key = os.getenv("LLM_API_KEY")
+        base_url = os.getenv("LLM_API_BASE", "https://api.deepseek.com")
+        
+        if not api_key:
+            self.stdout.write("未检测到 LLM_API_KEY 环境变量，跳过 AI 供应商初始化。")
+            return
+
+        # 1. 创建/获取供应商 (默认为 DeepSeek 或根据 URL 判定)
+        provider_name = "DeepSeek" if "deepseek" in base_url.lower() else "Default Provider"
+        provider_type = "deepseek" if "deepseek" in base_url.lower() else "other"
+        
+        provider, created = AIProvider.objects.get_or_create(
+            provider_type=provider_type,
+            defaults={
+                "name": provider_name,
+                "base_url": base_url,
+                "api_key": api_key,
+                "is_active": True
+            }
+        )
+        if created:
+            self.stdout.write(self.style.SUCCESS(f"创建默认 AI 供应商: {provider_name}"))
+        elif not provider.api_key:
+             provider.api_key = api_key
+             provider.save()
+
+        # 2. 创建默认模型
+        llm_model_name = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
+        llm, _ = AIModel.objects.get_or_create(
+            provider=provider,
+            name=llm_model_name,
+            model_type="llm",
+            defaults={"display_name": llm_model_name}
+        )
+
+        emb_model_name = os.getenv("EMBEDDING_MODEL_NAME", "bge-small-zh-v1.5")
+        embedding, _ = AIModel.objects.get_or_create(
+            provider=provider,
+            name=emb_model_name,
+            model_type="embedding",
+            defaults={"display_name": emb_model_name}
+        )
+
+        # 3. 初始化全局配置
+        ai_config, created = AIConfig.objects.get_or_create(
+            name="default",
+            defaults={
+                "default_llm": llm,
+                "default_embedding": embedding,
+                "rag_top_k": 5,
+                "rag_score_threshold": 0.4
+            }
+        )
+        if created:
+            self.stdout.write(self.style.SUCCESS("初始化全局 AI 配置成功"))
+        else:
+            if not ai_config.default_llm:
+                ai_config.default_llm = llm
+            if not ai_config.default_embedding:
+                ai_config.default_embedding = embedding
+            ai_config.save()
+
     def handle(self, *args, **options):
         force = options['force']
-        self.stdout.write(f"开始同步 RBAC 数据 (强制模式: {'开启' if force else '关闭'})...")
+        self.stdout.write(f"开始同步系统基础数据 (强制模式: {'开启' if force else '关闭'})...")
 
-        # 1. 深度嵌套的菜单树 (同步自生产库 db.sqlite3)
-        # 结构：[{ title, title_en, key, path, icon, order, children: [...] }]
+        # 1. 同步 AI 配置 (从环境变量)
+        self.init_ai_settings()
+
+        # 2. 深度嵌套的菜单树
         menus_tree = [
             {"title": "Dashboard", "title_en": "", "key": "dashboard", "path": "v1/dashboard", "icon": "DashboardOutlined", "order": 0},
             {"title": "状态监控", "title_en": "Monitoring", "key": "system-monitor", "path": "v1/system/monitor", "icon": "HeartOutlined", "order": 1},
