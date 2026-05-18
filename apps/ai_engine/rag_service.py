@@ -92,6 +92,8 @@ class GenericRerank(BaseDocumentCompressor):
             print(f"[RAG] Generic Rerank failed: {e}")
             return documents[:self.top_n]
 
+from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
+
 class RAGService:
     PERSONALITIES = {
         'professional': {
