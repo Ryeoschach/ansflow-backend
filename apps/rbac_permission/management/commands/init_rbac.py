@@ -78,13 +78,16 @@ class Command(BaseCommand):
         )
 
         # 5. 创建重排序模型 (Rerank)
-        # 默认使用轻量级模型以降低初次下载负担 (约 34MB)
+        # 默认优先使用本地模型，除非明确配置了外部 API
+        rerank_api_base = os.getenv("RERANK_API_BASE")
         rerank_model_name = os.getenv("RERANK_MODEL_NAME", "ms-marco-MiniLM-L-12-v2")
+        
+        rerank_provider = provider if rerank_api_base else local_provider
         rerank, _ = AIModel.objects.get_or_create(
-            provider=local_provider,
+            provider=rerank_provider,
             name=rerank_model_name,
             model_type="rerank",
-            defaults={"display_name": f"Local - {rerank_model_name}"}
+            defaults={"display_name": f"Remote - {rerank_model_name}" if rerank_provider == provider else f"Local - {rerank_model_name}"}
         )
 
         # 6. 初始化全局配置

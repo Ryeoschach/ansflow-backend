@@ -84,16 +84,13 @@ class RAGService:
             rerank_ptype = self.rerank_config.get('provider_type')
             reranker_base = self.rerank_config.get('base_url')
             reranker_model = self.rerank_config.get('name')
+            
+            is_remote_configured = rerank_ptype != "local" and reranker_base
 
             # 优先尝试远程 Reranker (OpenAI 兼容接口)
-            if rerank_ptype != "local" and reranker_base:
+            if is_remote_configured:
                 try:
-                    # 尝试寻找更通用的 Reranker 包装器，或者使用兼容 Xinference 的方式
-                    # 因为大多数开源 Rerank 接口（如 Xinference）都符合同一规范
                     from langchain_community.document_compressors import XinferenceRerank
-                    
-                    # 这里的 XinferenceRerank 实际上是一个标准的 POST /rerank 客户端
-                    # 我们将其作为一个通用的“远程 Reranker”来使用
                     RAGService._reranker_cache = XinferenceRerank(
                         base_url=reranker_base.rstrip('/').replace("/v1", ""),
                         model_name=reranker_model
@@ -102,8 +99,8 @@ class RAGService:
                 except Exception as e:
                     print(f"[RAG] Failed to init Remote Reranker: {e}")
 
-            # 如果没有配置远程或初始化失败，尝试本地 Flashrank
-            if RAGService._reranker_cache is None:
+            # 仅在未配置远程且未加载成功时，才尝试本地 Flashrank
+            if RAGService._reranker_cache is None and not is_remote_configured:
                 try:
                     from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
                     
@@ -217,9 +214,9 @@ class RAGService:
                 "api_key": None
             }
         elif model_type == "rerank":
-            rerank_name = os.environ.get("RERANKER_MODEL_NAME", "bge-reranker-v2-m3")
-            rerank_base = os.environ.get("RERANKER_API_BASE")
-            rerank_key = os.environ.get("RERANKER_API_KEY")
+            rerank_name = os.environ.get("RERANK_MODEL_NAME", "ms-marco-MiniLM-L-12-v2")
+            rerank_base = os.environ.get("RERANK_API_BASE")
+            rerank_key = os.environ.get("RERANK_API_KEY")
             if rerank_base:
                 return {
                     "name": rerank_name,
@@ -228,7 +225,7 @@ class RAGService:
                     "api_key": rerank_key
                 }
             return {
-                "name": "ms-marco-MultiBERT-L-12",
+                "name": rerank_name,
                 "provider_type": "local",
                 "base_url": None,
                 "api_key": None
