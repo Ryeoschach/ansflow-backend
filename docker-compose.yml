@@ -27,6 +27,8 @@ x-backend-env: &backend-env
   CUDA_VISIBLE_DEVICES: -1
   TORCH_CUDA_ARCH_LIST: ""
   USE_CUDA: 0
+  FLASHRANK_CACHE_DIR: /app/.model_cache
+  FASTEMBED_CACHE_PATH: /app/.model_cache
 
 services:
   # --- 数据库初始化 (所有后端服务共享 ansflow-backend:latest) ---
