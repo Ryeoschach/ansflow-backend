@@ -752,6 +752,7 @@ class RAGService:
                         break
                 
                 if rerank_score is not None:
+                    print(f"[RAG] Doc Score: {rerank_score} (Threshold: {threshold})")
                     if float(rerank_score) >= threshold:
                         filtered_docs.append(d)
                 else:
