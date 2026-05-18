@@ -221,8 +221,12 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         for i, doc in enumerate(docs):
             metadata = doc.metadata or {}
             
-            # 使用 Rerank 提供的相关性得分
-            score = metadata.get('relevance_score')
+            # 改进：扫描所有可能的得分字段，确保即便标准化失败也能拿到值
+            score = None
+            for key in ['relevance_score', 'rerank_score', 'score']:
+                if key in metadata:
+                    score = metadata[key]
+                    break
             
             source = metadata.get('source')
             document_id = metadata.get('document_id')
