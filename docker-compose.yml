@@ -35,13 +35,17 @@ services:
     build: *backend-build
     command: >
       sh -c "python manage.py migrate --noinput &&
-             python manage.py createsuperuser --noinput || true &&
-             python manage.py sync_perms &&
-             python manage.py init_rbac &&
-             python manage.py init_notification_config &&
-             python manage.py collectstatic --noinput"
+             python manage.py collectstatic --noinput &&
+             if [ \"${INIT_SYSTEM_DATA}\" = \"true\" ]; then
+               echo 'Starting heavy system initialization...' &&
+               python manage.py createsuperuser --noinput || true &&
+               python manage.py sync_perms &&
+               python manage.py init_rbac &&
+               python manage.py init_notification_config;
+             fi"
     environment:
       <<: *backend-env
+      INIT_SYSTEM_DATA: ${INIT_SYSTEM_DATA:-false}
       DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-admin}
       DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-ansflow_admin_password}
       DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
