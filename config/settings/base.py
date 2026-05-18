@@ -29,7 +29,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # sys.path.insert(0, os.path.join(BASE_DIR, 'apps'))
 
 # 读取 .env 文件
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+# 尝试读取 .env 文件（如果存在），主要用于本地开发环境
+# 在生产环境下，推荐通过环境变量直接注入，无需依赖物理文件
+DOTENV_PATH = os.path.join(BASE_DIR, '.env')
+if os.path.exists(DOTENV_PATH):
+    environ.Env.read_env(DOTENV_PATH)
 
 
 # 从 .env 中读取 SECRET_KEY

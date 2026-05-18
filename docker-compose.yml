@@ -67,7 +67,6 @@ services:
       - ansflow-media:/app/media
       - ./logs:/app/logs
       - ./.model_cache:/app/.model_cache
-      - ./.env:/app/.env
     depends_on:
       ansflow-init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
@@ -88,7 +87,6 @@ services:
       - ansflow-media:/app/media
       - ./logs:/app/logs
       - ./.model_cache:/app/.model_cache
-      - ./.env:/app/.env
     depends_on:
       ansflow-init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
@@ -104,7 +102,6 @@ services:
     env_file: [ .env ]
     volumes: 
       - "./logs:/app/logs"
-      - "./.env:/app/.env"
     depends_on:
       ansflow-init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
