@@ -36,7 +36,61 @@ except ImportError:
     from langchain_classic.retrievers import EnsembleRetriever
     from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
 
-from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
+from langchain_core.documents import Document
+from langchain_core.documents.compressor import BaseDocumentCompressor
+from pydantic import Field, ConfigDict
+import requests
+
+class GenericRerank(BaseDocumentCompressor):
+    """通用的远程重排序器，支持所有遵循 POST /rerank 规范的引擎 (如 Xinference)"""
+    base_url: str
+    model_name: str
+    top_n: int = 5
+    api_key: Optional[str] = None
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def compress_documents(
+        self,
+        documents: List[Document],
+        query: str,
+        callbacks: Optional[any] = None,
+    ) -> List[Document]:
+        if not documents:
+            return []
+        
+        try:
+            # 构造标准 Rerank 请求
+            url = f"{self.base_url.rstrip('/')}/rerank"
+            payload = {
+                "model": self.model_name,
+                "query": query,
+                "documents": [doc.page_content for doc in documents],
+                "top_n": self.top_n
+            }
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+            
+            # 解析结果并回填分数
+            final_docs = []
+            # 兼容 Xinference 和标准返回格式
+            data = result.get("results") or result.get("data") or []
+            
+            for item in data[:self.top_n]:
+                idx = item.get("index")
+                score = item.get("relevance_score") or item.get("score")
+                if idx is not None and idx < len(documents):
+                    doc = documents[idx]
+                    doc.metadata["rerank_score"] = score
+                    final_docs.append(doc)
+            
+            return final_docs
+        except Exception as e:
+            print(f"[RAG] Generic Rerank failed: {e}")
+            return documents[:self.top_n]
 
 class RAGService:
     PERSONALITIES = {
@@ -90,20 +144,15 @@ class RAGService:
             # 优先尝试远程 Reranker (OpenAI 兼容接口)
             if is_remote_configured:
                 try:
-                    # 尝试多种可能的导入路径
-                    try:
-                        from langchain_community.document_compressors.xinference import XinferenceRerank
-                    except ImportError:
-                        from langchain_community.document_compressors import XinferenceRerank
-                    
-                    RAGService._reranker_cache = XinferenceRerank(
+                    # 使用我们自定义的通用 Rerank 适配器，不再依赖 langchain-community 内部插件
+                    RAGService._reranker_cache = GenericRerank(
                         base_url=reranker_base.rstrip('/').replace("/v1", ""),
-                        model_name=reranker_model
+                        model_name=reranker_model,
+                        api_key=self.rerank_config.get('api_key')
                     )
-                    print(f"[RAG] Connected to Remote Reranker ({rerank_ptype}): {reranker_model}")
+                    print(f"[RAG] Connected to Remote Reranker (Generic): {reranker_model}")
                 except Exception as e:
-                    print(f"[RAG] Failed to init Remote Reranker wrapper: {e}. Trying generic implementation...")
-                    # 如果官方包装器失败，这里未来可以扩展一个自定义的通用 Reranker 类
+                    print(f"[RAG] Failed to init Generic Reranker: {e}")
                     RAGService._reranker_cache = None
 
             # 仅在未配置远程且未加载成功时，才尝试本地 Flashrank
