@@ -27,7 +27,7 @@ class Command(BaseCommand):
             self.stdout.write("未检测到 LLM_API_KEY 环境变量，跳过 AI 供应商初始化。")
             return
 
-        # 1. 创建/获取供应商 (默认为 DeepSeek 或根据 URL 判定)
+        # 1. 创建/获取 LLM 供应商 (从环境变量)
         provider_name = "DeepSeek" if "deepseek" in base_url.lower() else "Default Provider"
         provider_type = "deepseek" if "deepseek" in base_url.lower() else "other"
         
@@ -41,34 +41,58 @@ class Command(BaseCommand):
             }
         )
         if created:
-            self.stdout.write(self.style.SUCCESS(f"创建默认 AI 供应商: {provider_name}"))
+            self.stdout.write(self.style.SUCCESS(f"创建默认 LLM 供应商: {provider_name}"))
         elif not provider.api_key:
              provider.api_key = api_key
              provider.save()
 
-        # 2. 创建默认模型
+        # 2. 创建/获取本地供应商 (用于 Embedding 和 Rerank)
+        local_provider, _ = AIProvider.objects.get_or_create(
+            provider_type="local",
+            defaults={
+                "name": "Local Model Service",
+                "is_active": True
+            }
+        )
+
+        # 3. 创建分析模型 (LLM)
         llm_model_name = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
         llm, _ = AIModel.objects.get_or_create(
             provider=provider,
             name=llm_model_name,
             model_type="llm",
-            defaults={"display_name": llm_model_name}
+            defaults={"display_name": f"{provider_name} - {llm_model_name}"}
         )
 
+        # 4. 创建向量模型 (Embedding)
+        # 默认优先使用本地模型，除非明确配置了外部 API
+        emb_api_key = os.getenv("EMBEDDING_API_KEY")
         emb_model_name = os.getenv("EMBEDDING_MODEL_NAME", "bge-small-zh-v1.5")
+        
+        emb_provider = provider if (emb_api_key and provider_type != "local") else local_provider
         embedding, _ = AIModel.objects.get_or_create(
-            provider=provider,
+            provider=emb_provider,
             name=emb_model_name,
             model_type="embedding",
-            defaults={"display_name": emb_model_name}
+            defaults={"display_name": f"Local - {emb_model_name}" if emb_provider == local_provider else emb_model_name}
         )
 
-        # 3. 初始化全局配置
+        # 5. 创建重排序模型 (Rerank)
+        rerank_model_name = os.getenv("RERANK_MODEL_NAME", "bge-reranker-v2-m3")
+        rerank, _ = AIModel.objects.get_or_create(
+            provider=local_provider,
+            name=rerank_model_name,
+            model_type="rerank",
+            defaults={"display_name": f"Local - {rerank_model_name}"}
+        )
+
+        # 6. 初始化全局配置
         ai_config, created = AIConfig.objects.get_or_create(
             name="default",
             defaults={
                 "default_llm": llm,
                 "default_embedding": embedding,
+                "default_rerank": rerank,
                 "rag_top_k": 5,
                 "rag_score_threshold": 0.4
             }
@@ -76,11 +100,20 @@ class Command(BaseCommand):
         if created:
             self.stdout.write(self.style.SUCCESS("初始化全局 AI 配置成功"))
         else:
+            update_fields = []
             if not ai_config.default_llm:
                 ai_config.default_llm = llm
+                update_fields.append("default_llm")
             if not ai_config.default_embedding:
                 ai_config.default_embedding = embedding
-            ai_config.save()
+                update_fields.append("default_embedding")
+            if not ai_config.default_rerank:
+                ai_config.default_rerank = rerank
+                update_fields.append("default_rerank")
+            
+            if update_fields:
+                ai_config.save(update_fields=update_fields)
+                self.stdout.write(f"更新全局 AI 配置字段: {', '.join(update_fields)}")
 
     def handle(self, *args, **options):
         force = options['force']
