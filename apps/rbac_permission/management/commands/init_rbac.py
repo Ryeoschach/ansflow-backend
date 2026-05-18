@@ -44,6 +44,7 @@ class Command(BaseCommand):
                 {"title": "告警中心", "title_en": "Alert Center", "key": "sre-alerts", "path": "v1/sre/alerts", "icon": "carbon:alarm", "order": 0},
                 {"title": "任务脉搏", "title_en": "Task Pulse", "key": "sre-pulse", "path": "v1/sre/pulse", "icon": "carbon:activity", "order": 1},
             ]},
+            {"title": "AI与RAG配置", "title_en": "Config AI&RAG", "key": "configAI", "path": "v1/ai-rag/config", "icon": "arcticons:ai-chat-open-assistant-chatbot", "order": 9},
             {"title": "资源管理", "title_en": "Resources Management", "key": "resources", "path": "resources", "icon": "grommet-icons:resources", "order": 888, "children": [
                 {"title": "平台管理", "title_en": "Platform Management", "key": "platform", "path": "v1/system/platforms", "icon": "tdesign:control-platform", "order": 0},
                 {"title": "环境管理", "title_en": "Envs Management", "key": "envs", "path": "v1/system/envs", "icon": "fluent-mdl2:server-enviroment", "order": 1},
