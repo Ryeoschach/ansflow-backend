@@ -76,14 +76,15 @@ class GenericRerank(BaseDocumentCompressor):
             }
             headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
             
+            print(f"[RAG] Requesting Remote Rerank: {url} with model {self.model_name}")
             response = requests.post(url, json=payload, headers=headers, timeout=30)
             response.raise_for_status()
             result = response.json()
-            
+
             # 解析结果并回填分数
             final_docs = []
-            # 兼容 Xinference 和标准返回格式
             data = result.get("results") or result.get("data") or []
+            print(f"[RAG] Remote Rerank success, returned {len(data)} results")
             
             for item in data[:self.top_n]:
                 idx = item.get("index")
@@ -494,6 +495,7 @@ class RAGService:
 
         # 4. 引入 Rerank 压缩器 (最终只保留 top_k 个)
         if self.reranker:
+            print(f"[RAG] Activating Reranker: {type(self.reranker).__name__}")
             try:
                 self.reranker.top_n = top_k
                 rerank_retriever = ContextualCompressionRetriever(
