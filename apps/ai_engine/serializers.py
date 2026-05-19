@@ -16,13 +16,13 @@ class AIModelSerializer(serializers.ModelSerializer):
     provider_name = serializers.ReadOnlyField(source='provider.name')
     class Meta:
         model = AIModel
-        fields = ["id", "provider", "provider_name", "name", "display_name", "model_type", "is_active", "create_time"]
+        fields = ["id", "provider", "provider_name", "name", "display_name", "model_type", "capabilities", "num_ctx", "is_active", "create_time"]
 
 class AIConfigSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConfig
         fields = [
-            "id", "name", "default_llm", "default_embedding", "default_rerank", "default_kb",
+            "id", "name", "default_llm", "default_embedding", "default_vision", "default_rerank", "default_kb",
             "rag_top_k", "rag_score_threshold", "rag_vector_weight", "rag_bm25_weight",
             "update_time"
         ]
@@ -35,7 +35,7 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
 class KnowledgeDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = KnowledgeDocument
-        fields = ["id", "kb", "title", "content", "source_type", "status", "chunk_count", "metadata", "create_time"]
+        fields = ["id", "kb", "title", "content", "source_type", "status", "parser_type", "parsing_prompt", "chunk_count", "metadata", "create_time"]
 
 class KnowledgeChunkSerializer(serializers.ModelSerializer):
     class Meta:

@@ -281,6 +281,8 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         file_obj = request.FILES.get('file')
         kb_id = request.data.get('kb')
+        parser_type = request.data.get('parser_type', 'auto')
+        parsing_prompt = request.data.get('parsing_prompt', '')
         
         if file_obj:
             # 1. 确保目录存在
@@ -298,8 +300,11 @@ class KnowledgeDocumentViewSet(viewsets.ModelViewSet):
                 title=file_obj.name,
                 content="", # 后续异步填充
                 file_path=full_path,
+                file_type=file_obj.content_type,
                 source_type="file",
-                status="pending"
+                status="pending",
+                parser_type=parser_type,
+                parsing_prompt=parsing_prompt
             )
             
             # 4. 触发异步解析任务

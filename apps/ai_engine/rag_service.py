@@ -15,7 +15,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_community.retrievers import BM25Retriever
 
-# 核心修复：恢复环境兼容性导入
+# 核心导入修复：恢复环境兼容性导入
 try:
     from langchain.retrievers import EnsembleRetriever
     from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
@@ -90,6 +90,7 @@ class GenericRerank(BaseDocumentCompressor):
             return documents[:self.top_n]
 
 from .models import AIConfig, AIModel, AIProvider, KnowledgeChunk, KnowledgeDocument, KnowledgeBase
+from .vision_parser import VisionParser
 
 class RAGService:
     PERSONALITIES = {
@@ -169,11 +170,23 @@ class RAGService:
 
     def _init_embeddings(self):
         ptype = self.emb_config.get('provider_type', 'local')
-        if ptype == "local" or "BAAI" in self.emb_config.get('name', ''):
+        name = self.emb_config.get('name', 'default')
+        if ptype == "local" or "BAAI" in name:
             from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-            return FastEmbedEmbeddings(model_name=self.emb_config['name'], cache_dir=self.cache_directory)
+            return FastEmbedEmbeddings(model_name=name, cache_dir=self.cache_directory)
+        
         from langchain_openai import OpenAIEmbeddings
-        return OpenAIEmbeddings(model=self.emb_config['name'], api_key=self.emb_config['api_key'] or "none", base_url=self.emb_config['base_url'])
+        base_url = self.emb_config.get('base_url', '').rstrip('/')
+        # 自动补全 /v1，适配本地常用服务
+        if base_url and not base_url.endswith('/v1'):
+            base_url = f"{base_url}/v1"
+            
+        return OpenAIEmbeddings(
+            model=name, 
+            api_key=self.emb_config.get('api_key') or "not-needed", 
+            base_url=base_url,
+            chunk_size=16 # 降低批处理大小，适配本地低配环境
+        )
 
     def _init_llm(self):
         return ChatOpenAI(model=self.llm_config['name'], api_key=self.llm_config['api_key'], base_url=self.llm_config['base_url'], streaming=True)
@@ -182,8 +195,10 @@ class RAGService:
         from .models import KnowledgeChunk
         top_k = self.config.rag_top_k if self.config else 3
         vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": top_k * 4})
+        
         chunks_qs = KnowledgeChunk.objects.filter(is_active=True)
         if kb_id: chunks_qs = chunks_qs.filter(document__kb_id=kb_id)
+        
         chunks = list(chunks_qs.values('content', 'metadata'))
         if not chunks:
             if self.reranker and ContextualCompressionRetriever:
@@ -216,7 +231,7 @@ class RAGService:
 你连接了 AnsFlow 的全量知识库系统，当前包含以下库：
 {kb_catalog}
 
-【特殊能力】
+【特殊指令】
 1. 资产编排：写剧本输出 `__ANSIBLE_DRAFT__: {{"name": "...", "content": "..."}}`。
 2. 流水线编排：输出 `__PIPELINE_DRAFT__: {{"nodes": [...], "edges": [...]}}`。
 
@@ -277,32 +292,218 @@ class RAGService:
         kd = KnowledgeDocument.objects.create(kb=kb, title=title or f"AI Export {os.urandom(2).hex()}", content=content, source_type="ai_export", metadata=metadata or {})
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
         splits = text_splitter.split_text(content)
-        self.vectorstore.add_texts(texts=splits, metadatas=[{"document_id": kd.id, "kb_id": kb.id} for _ in splits])
+        ids = [f"{kd.id}_{i}" for i in range(len(splits))]
+        self.vectorstore.add_texts(texts=splits, ids=ids, metadatas=[{"document_id": kd.id, "kb_id": kb.id} for _ in splits])
         return True
 
     def ingest_document(self, file_path: str, kb_id: int = None, document_id: int = None):
+        """
+        升级版摄取流程：
+        1. 路由分类 (根据用户选择的模式)
+        2. 专有解析提取 (注入 Prompt)
+        3. 文本清洗与标准化
+        4. 智能切片 (num_ctx 感知)
+        5. 向量化入库
+        """
+        from .models import KnowledgeDocument, KnowledgeBase, KnowledgeChunk
         kb = KnowledgeBase.objects.filter(id=kb_id).first() if kb_id else KnowledgeBase.objects.get_or_create(name="默认知识库")[0]
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext == '.pdf':
-            from langchain_community.document_loaders import PyPDFLoader
-            docs = PyPDFLoader(file_path).load()
+        
+        kd = None
+        if document_id:
+            kd = KnowledgeDocument.objects.get(id=document_id)
+        
+        parser_type = kd.parser_type if kd else "auto"
+        parsing_prompt = kd.parsing_prompt if kd else None
+        
+        logger.info(f"[Ingest] Starting ingestion for {file_path}. Mode: {parser_type}, Prompt: {parsing_prompt[:50] if parsing_prompt else 'None'}")
+        
+        # 1. & 2. 解析提取
+        if kd:
+            kd.status = 'parsing'
+            kd.save(update_fields=['status'])
+            
+        full_content = self._extract_content(file_path, parser_type, parsing_prompt)
+        
+        if not full_content:
+            logger.warning(f"[Ingest] No content extracted from {file_path}")
+            if kd:
+                kd.status = 'error'
+                kd.save(update_fields=['status'])
+            return 0
+
+        # 3. 文本清洗
+        if kd:
+            kd.status = 'cleaning'
+            kd.save(update_fields=['status'])
+        full_content = self._clean_text(full_content)
+
+        # 获取或更新文档记录
+        if not kd:
+            kd, _ = KnowledgeDocument.objects.get_or_create(
+                kb=kb, 
+                title=os.path.basename(file_path), 
+                defaults={"content": full_content, "file_path": file_path, "source_type": "file", "status": "chunking"}
+            )
         else:
-            from langchain_community.document_loaders import TextLoader
-            docs = TextLoader(file_path).load()
-        if not docs: return 0
-        full_content = "\n\n".join([doc.page_content for doc in docs])
-        kd, _ = KnowledgeDocument.objects.get_or_create(kb=kb, title=os.path.basename(file_path), defaults={"content": full_content, "file_path": file_path, "source_type": "file", "status": "processing"})
-        splits = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120).split_documents(docs)
+            kd.content = full_content
+            kd.status = 'chunking'
+            kd.save()
+        
+        # 4. 智能切片 (计算 num_ctx)
+        chunk_size, chunk_overlap = self._get_optimal_chunk_params()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        splits = text_splitter.split_text(full_content)
+        
+        # 5. 向量化入库
+        kd.status = 'indexing'
+        kd.save(update_fields=['status'])
+        
         ids = [f"{kd.id}_{i}" for i in range(len(splits))]
-        for i, split in enumerate(splits): split.metadata.update({'document_id': kd.id, 'kb_id': kb.id})
-        self.vectorstore.add_documents(documents=splits, ids=ids)
-        KnowledgeChunk.objects.bulk_create([KnowledgeChunk(document=kd, content=s.page_content, vector_id=ids[i], index=i, metadata=s.metadata) for i, s in enumerate(splits)])
+        self.vectorstore.add_texts(
+            texts=splits, 
+            ids=ids, 
+            metadatas=[{
+                'document_id': kd.id, 
+                'kb_id': kb.id, 
+                'chunk_index': i,
+                'source': kd.title,
+                'ingest_mode': parser_type,
+                'type': 'human_verified_knowledge' if parser_type != 'auto' else 'raw_knowledge'
+            } for i in range(len(splits))]
+        )
+        
+        chunk_objs = [KnowledgeChunk(
+            document=kd, 
+            content=s, 
+            vector_id=ids[i], 
+            index=i, 
+            metadata={
+                'document_id': kd.id, 
+                'kb_id': kb.id,
+                'source': kd.title
+            }
+        ) for i, s in enumerate(splits)]
+        
+        KnowledgeChunk.objects.filter(document=kd).delete()
+        KnowledgeChunk.objects.bulk_create(chunk_objs)
+        
         kd.status, kd.chunk_count = "ready", len(splits)
         kd.save()
         return len(splits)
 
+    def _extract_content(self, file_path: str, mode: str, prompt: Optional[str] = None) -> str:
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        # 如果是自动模式，根据后缀路由
+        if mode == "auto":
+            if ext in ['.txt', '.md', '.json', '.yaml', '.yml']:
+                mode = "native"
+            elif ext in ['.png', '.jpg', '.jpeg']:
+                mode = "ocr"
+            elif ext in ['.pdf', '.docx']:
+                mode = "hybrid"
+            else:
+                mode = "native"
+
+        logger.info(f"[Extract] Final mode selected: {mode} for extension {ext}")
+
+        if mode == "native":
+            try:
+                if ext in ['.pdf']:
+                    import fitz
+                    doc = fitz.open(file_path)
+                    return "\n".join([page.get_text() for page in doc])
+                from langchain_community.document_loaders import TextLoader
+                loader = TextLoader(file_path, encoding='utf-8')
+                return "\n".join([d.page_content for d in loader.load()])
+            except Exception as e:
+                logger.error(f"[Ingest] Native extraction failed: {e}")
+                return ""
+
+        elif mode == "ocr":
+            # 强制走 OCR 解析
+            return self._ocr_extraction(file_path, ext, prompt)
+
+        elif mode == "hybrid":
+            # 混合模式：优先尝试复杂解析
+            if ext == '.docx':
+                return self._ocr_extraction(file_path, ext, prompt)
+            elif ext == '.pdf':
+                import fitz
+                doc = fitz.open(file_path)
+                text_parts = [page.get_text() for page in doc]
+                full_text = "\n".join(text_parts)
+                # 判据优化：如果文本极少或用户提供了提示词，则尝试 OCR 增强
+                if len(full_text.strip()) < 150 or (prompt and len(prompt.strip()) > 0):
+                    logger.info(f"[Extract] Hybrid PDF triggering OCR (text_len: {len(full_text.strip())}, has_prompt: True)")
+                    return self._ocr_extraction(file_path, ext, prompt)
+                return full_text
+            
+        return ""
+
+    def _clean_text(self, text: str) -> str:
+        """文本清洗与标准化"""
+        import re
+        # 1. 统一换行符
+        text = text.replace('\r\n', '\n')
+        # 2. 合并 OCR 可能产生的断行 (非段落断行)
+        text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+        # 3. 去除重复的空白字符
+        text = re.sub(r' +', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # 4. 去除常见的 OCR 杂质 (如只有 1-2 个字符的行)
+        lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 1]
+        return "\n".join(lines)
+
+    def _get_optimal_chunk_params(self) -> tuple:
+        """根据模型 num_ctx 计算最优切片"""
+        num_ctx = 4096
+        if self.llm_config and 'name' in self.llm_config:
+            # 尝试从模型记录中获取
+            model = AIModel.objects.filter(name=self.llm_config['name']).first()
+            if model:
+                num_ctx = model.num_ctx
+        
+        # 策略：分块大小建议为窗口的 15-20%
+        # 向上取整到 100 的倍数，范围在 400-1200 之间
+        ideal_size = min(max(int(num_ctx * 0.2), 400), 1200)
+        overlap = int(ideal_size * 0.15)
+        return ideal_size, overlap
+
+    def _ocr_extraction(self, file_path: str, ext: str, prompt: Optional[str] = None) -> str:
+        """内部视觉解析流程"""
+        # 优先使用全局配置中指定的视觉模型
+        v_model_id = self.config.default_vision.id if self.config and self.config.default_vision else None
+        v_parser = VisionParser(model_id=v_model_id)
+        all_text = []
+        try:
+            if ext == '.pdf':
+                import fitz
+                doc = fitz.open(file_path)
+                for page in doc:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_bytes = pix.tobytes("png")
+                    page_text = v_parser.parse_image(img_bytes, custom_prompt=prompt)
+                    all_text.append(f"--- Page {page.number + 1} ---\n{page_text}")
+                doc.close()
+            elif ext in ['.png', '.jpg', '.jpeg']:
+                with open(file_path, 'rb') as f:
+                    all_text.append(v_parser.parse_image(f.read(), custom_prompt=prompt))
+            elif ext == '.docx':
+                # Word 目前仍通过 python-docx 提取文本，后续可扩展视觉解析
+                from docx import Document as DocxDocument
+                doc = DocxDocument(file_path)
+                for para in doc.paragraphs:
+                    if para.text.strip(): all_text.append(para.text)
+                for table in doc.tables:
+                    for row in table.rows:
+                        all_text.append(" | ".join([cell.text.strip() for cell in row.cells]))
+        except Exception as e:
+            logger.error(f"[Vision] OCR failed for {file_path}: {e}")
+        return "\n\n".join(all_text)
+
     def generate_dag(self, prompt_text: str, context_data: dict = None):
-        template = "你是一个专业的流水线专家。生成 JSON 格式的 DAG：{prompt_text}"
+        template = "你是一个专业的流水线专家。生成 JSON 格式组织好的 DAG：{prompt_text}"
         prompt = ChatPromptTemplate.from_template(template)
         chain = prompt | self.llm | StrOutputParser()
         return chain.invoke({"prompt_text": prompt_text})
@@ -323,3 +524,89 @@ class RAGService:
         if vids: self.vectorstore.delete(ids=vids)
         chunks.delete()
         return True
+
+    def reindex_all(self, kb_id: int):
+        """
+        全量重建知识库索引：
+        1. 清理向量库
+        2. 重新处理所有文档
+        """
+        from .models import KnowledgeDocument, KnowledgeChunk
+        docs = KnowledgeDocument.objects.filter(kb_id=kb_id)
+        
+        # 1. 批量获取并删除该 KB 的所有向量
+        all_chunks = KnowledgeChunk.objects.filter(document__kb_id=kb_id)
+        vids = list(all_chunks.values_list('vector_id', flat=True))
+        if vids:
+            try:
+                self.vectorstore.delete(ids=vids)
+            except Exception as e:
+                logger.error(f"[Reindex] Failed to clear vectorstore: {e}")
+        
+        # 2. 逐个重新索引文档
+        success_count = 0
+        for doc in docs:
+            try:
+                if doc.source_type == 'file' and doc.file_path:
+                    # 文件类：走完整摄取逻辑
+                    self.ingest_document(doc.file_path, kb_id=kb_id, document_id=doc.id)
+                else:
+                    # 手动或 AI 导出类：直接使用 content 重新切片
+                    doc.status = 'chunking'
+                    doc.save(update_fields=['status'])
+                    
+                    # 使用与 ingest_document 相同的智能切片逻辑
+                    chunk_size, chunk_overlap = self._get_optimal_chunk_params()
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                    splits = text_splitter.split_text(doc.content)
+                    
+                    ids = [f"{doc.id}_{i}" for i in range(len(splits))]
+                    self.vectorstore.add_texts(
+                        texts=splits, 
+                        ids=ids, 
+                        metadatas=[{
+                            'document_id': doc.id, 
+                            'kb_id': kb_id, 
+                            'chunk_index': i,
+                            'source': doc.title
+                        } for i in range(len(splits))]
+                    )
+                    
+                    chunk_objs = [KnowledgeChunk(
+                        document=doc, 
+                        content=s, 
+                        vector_id=ids[i], 
+                        index=i, 
+                        metadata={'document_id': doc.id, 'kb_id': kb_id}
+                    ) for i, s in enumerate(splits)]
+                    
+                    KnowledgeChunk.objects.filter(document=doc).delete()
+                    KnowledgeChunk.objects.bulk_create(chunk_objs)
+                    
+                    doc.status, doc.chunk_count = "ready", len(splits)
+                    doc.save()
+                    
+                success_count += 1
+            except Exception as e:
+                logger.error(f"[Reindex] Failed to process doc {doc.id}: {e}")
+                doc.status = 'error'
+                doc.save(update_fields=['status'])
+                
+        return success_count
+
+    def update_chunk(self, chunk_id: int, content: str):
+        from .models import KnowledgeChunk
+        chunk = KnowledgeChunk.objects.filter(id=chunk_id).first()
+        if chunk:
+            self.vectorstore.add_texts(texts=[content], ids=[chunk.vector_id], metadatas=[chunk.metadata])
+            return True
+        return False
+
+    def delete_chunk(self, chunk_id: int):
+        from .models import KnowledgeChunk
+        chunk = KnowledgeChunk.objects.filter(id=chunk_id).first()
+        if chunk and chunk.vector_id:
+            self.vectorstore.delete(ids=[chunk.vector_id])
+            chunk.delete()
+            return True
+        return False

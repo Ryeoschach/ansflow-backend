@@ -8,6 +8,7 @@ class AIProvider(BaseModel):
         ("deepseek", "DeepSeek"),
         ("anthropic", "Anthropic"),
         ("ollama", "Ollama (Local)"),
+        ("lmstudio", "LM Studio (Local)"),
         ("zhipu", "智谱 AI"),
         ("local", "FastEmbed (Local)"),
         ("other", "Other (OpenAI Compatible)"),
@@ -37,12 +38,23 @@ class AIModel(BaseModel):
         ("llm", "分析模型 (LLM)"),
         ("embedding", "向量模型 (Embedding)"),
         ("rerank", "重排序模型 (Rerank)"),
+        ("vision", "视觉模型 (Vision/OCR)"),
     )
     provider = models.ForeignKey(AIProvider, related_name="models", on_delete=models.CASCADE)
     name = models.CharField(max_length=100, verbose_name="模型标识 (如 gpt-4)")
     display_name = models.CharField(max_length=100, verbose_name="显示名称")
-    model_type = models.CharField(max_length=20, choices=MODEL_TYPES, verbose_name="模型类型")
+    model_type = models.CharField(max_length=20, choices=MODEL_TYPES, verbose_name="模型类型 (自动衍生)", blank=True)
+    capabilities = models.JSONField(default=list, blank=True, verbose_name="模型能力 (多选)")
+    num_ctx = models.IntegerField(default=4096, verbose_name="上下文窗口长度 (tokens)")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
+
+    def save(self, *args, **kwargs):
+        # 自动将第一个能力设置为 model_type，保持兼容性
+        if self.capabilities and isinstance(self.capabilities, list) and len(self.capabilities) > 0:
+            self.model_type = self.capabilities[0]
+        elif self.model_type and not self.capabilities:
+            self.capabilities = [self.model_type]
+        super().save(*args, **kwargs)
 
     class Meta:
         db_table = "ai_model"
@@ -54,6 +66,7 @@ class AIConfig(BaseModel):
     name = models.CharField(max_length=100, default="default", unique=True)
     default_llm = models.ForeignKey(AIModel, related_name="default_as_llm", on_delete=models.SET_NULL, null=True, blank=True)
     default_embedding = models.ForeignKey(AIModel, related_name="default_as_embedding", on_delete=models.SET_NULL, null=True, blank=True)
+    default_vision = models.ForeignKey(AIModel, related_name="default_as_vision", on_delete=models.SET_NULL, null=True, blank=True, verbose_name="默认视觉/OCR模型")
     default_rerank = models.ForeignKey(AIModel, related_name="default_as_rerank", on_delete=models.SET_NULL, null=True, blank=True, verbose_name="默认重排序模型")
     default_kb = models.ForeignKey('KnowledgeBase', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="默认知识库")
     
@@ -98,17 +111,29 @@ class KnowledgeDocument(BaseModel):
         ("ai_export", "AI 导出"),
     )
     STATUS_CHOICES = (
-        ("pending", "待索引"),
-        ("processing", "处理中"),
+        ("pending", "待处理"),
+        ("parsing", "正在解析"),
+        ("cleaning", "清洗中"),
+        ("chunking", "正在切片"),
+        ("indexing", "正在索引"),
         ("ready", "已就绪"),
         ("error", "异常"),
+    )
+    PARSER_TYPES = (
+        ("auto", "自动识别"),
+        ("native", "原生提取 (快速文本)"),
+        ("ocr", "OCR 视觉解析"),
+        ("hybrid", "混合增强 (带图表文档)"),
     )
     kb = models.ForeignKey(KnowledgeBase, related_name="documents", on_delete=models.CASCADE, verbose_name="所属知识库")
     title = models.CharField(max_length=255, verbose_name="标题")
     content = models.TextField(verbose_name="正文内容")
     file_path = models.CharField(max_length=512, blank=True, null=True, verbose_name="文件存储路径")
+    file_type = models.CharField(max_length=100, blank=True, null=True, verbose_name="文件类型")
     source_type = models.CharField(max_length=20, choices=SOURCE_TYPES, default="manual", verbose_name="来源类型")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ready", verbose_name="处理状态")
+    parser_type = models.CharField(max_length=20, choices=PARSER_TYPES, default="auto", verbose_name="解析器类型")
+    parsing_prompt = models.TextField(blank=True, null=True, verbose_name="解析提示词")
     chunk_count = models.IntegerField(default=0, verbose_name="切片数量")
     metadata = models.JSONField(default=dict, blank=True, verbose_name="元数据")
 
