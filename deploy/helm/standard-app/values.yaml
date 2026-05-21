@@ -1,0 +1,99 @@
+# standard-app 通用优化版 values.yaml
+
+# 基础信息
+replicaCount: 1
+
+# 镜像配置 (AnsFlow GitOps 会自动通过 --set image.tag=xxx 更新此处)
+image:
+  repository: nginx
+  pullPolicy: IfNotPresent
+  # tag 留空，默认使用 Chart.yaml 中的 appVersion
+  tag: ""
+
+# 私有仓库抽拉密钥
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# 环境变量 (方便业务配置)
+env: []
+  # - name: DB_HOST
+  #   value: "postgres-svc"
+  # - name: LOG_LEVEL
+  #   value: "info"
+
+# 服务账号
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# 业务标签 (用于 AnsFlow 资源追踪)
+commonLabels:
+  managed-by: ansflow
+  app-type: standard-service
+
+# Pod 安全与元数据
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+# 服务配置
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+# 入口配置
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: app.example.com
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+# 资源限制
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# 健康检查 (注意：请确保你的应用有 /health 接口，或者根据实际情况修改)
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# 自动扩缩容
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+# 存储挂载
+volumes: []
+volumeMounts: []
+
+# 调度策略
+nodeSelector: {}
+tolerations: []
+affinity: {}
