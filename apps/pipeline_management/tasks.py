@@ -439,6 +439,19 @@ def execute_pipeline_node(self, node_run_id):
                 node_run.logs += "\n".join([f"[{l.host}] {l.output}" for l in logs])
                 success = (execution.status == 'success')
                 
+            # 收集结果并回填到 output_data
+            execution.refresh_from_db()
+            logs_qs = TaskLog.objects.filter(execution=execution).exclude(host__in=['SYSTEM', 'SUMMARY']).order_by('create_time')
+            stdout_val = "\n".join([l.output for l in logs_qs])
+            node_run.output_data = {
+                'ansible_execution_id': execution.id,
+                'stdout': stdout_val,
+                'output': stdout_val,
+                'rc': 0 if success else 1,
+                'status': 'success' if success else 'failed'
+            }
+            node_run.save(update_fields=['output_data'])
+                
         elif node_type == 'k8s_deploy':
             cluster_id = node_data.get('k8s_cluster_id')
             release_name = node_data.get('k8s_release_name')
@@ -616,6 +629,20 @@ def execute_pipeline_node(self, node_run_id):
                 success = (result.get('status') == 'success')
             else:
                 success = False
+                
+            # 收集结果并回填到 output_data
+            execution.refresh_from_db()
+            logs_qs = TaskLog.objects.filter(execution=execution).exclude(host__in=['SYSTEM', 'SUMMARY']).order_by('create_time')
+            stdout_val = "\n".join([l.output for l in logs_qs])
+            node_run.output_data = {
+                'ansible_execution_id': execution.id,
+                'temp_task_id': temp_task.id,
+                'stdout': stdout_val,
+                'output': stdout_val,
+                'rc': 0 if success else 1,
+                'status': 'success' if success else 'failed'
+            }
+            node_run.save(update_fields=['output_data'])
             
             # 清理临时任务定义
             temp_task.delete()

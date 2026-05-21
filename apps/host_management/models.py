@@ -217,10 +217,13 @@ class HostBaseline(BaseModel):
     auto_remediate = models.BooleanField(default=False, verbose_name="发现异常自动修复")
     remediate_playbook = models.TextField(blank=True, null=True, verbose_name="修复剧本", help_text="当基线不通过时自动运行的 Playbook")
 
-    is_active = models.BooleanField(default=True, verbose_name="是否启用定期巡检")
-    last_check_time = models.DateTimeField(null=True, blank=True, verbose_name="最近检查时间")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+    last_check_time = models.DateTimeField(null=True, blank=True, verbose_name="最近巡检时间")
+    last_check_status = models.CharField(max_length=20, default='pending', verbose_name="最近巡检状态")
+    last_execution_id = models.IntegerField(null=True, blank=True, verbose_name="最近执行ID")
 
     class Meta:
+
         db_table = 'cmdb_host_baseline'
         verbose_name = "主机基线"
         verbose_name_plural = verbose_name

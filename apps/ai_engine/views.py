@@ -407,7 +407,27 @@ class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 yield chunk
             
             # Save assistant message after stream is done
-            msg = AIChatMessage.objects.create(history=chat_history, role='assistant', content=full_response)
+            # 提取参考文档元数据
+            import re
+            import json
+            referenced_docs = []
+            clean_content = full_response
+            
+            ref_match = re.search(r'__REFERENCES__:(\[.*?\])\n', full_response)
+            if ref_match:
+                try:
+                    referenced_docs = json.loads(ref_match.group(1))
+                    # 从最终存储的内容中去掉元数据标识
+                    clean_content = re.sub(r'__REFERENCES__:\[.*?\]\n', '', full_response).strip()
+                except Exception:
+                    pass
+
+            msg = AIChatMessage.objects.create(
+                history=chat_history, 
+                role='assistant', 
+                content=clean_content,
+                metadata={'referenced_docs': referenced_docs} if referenced_docs else {}
+            )
             yield f"\n__MESSAGE_ID__:{msg.id}"
 
         return StreamingHttpResponse(stream_response(), content_type='text/event-stream')
@@ -683,7 +703,26 @@ class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
             
             # Save assistant response to history
             if chat_history and full_response:
-                msg = AIChatMessage.objects.create(history=chat_history, role='assistant', content=full_response)
+                # 提取参考文档元数据
+                import re
+                import json
+                referenced_docs = []
+                clean_content = full_response
+                
+                ref_match = re.search(r'__REFERENCES__:(\[.*?\])\n', full_response)
+                if ref_match:
+                    try:
+                        referenced_docs = json.loads(ref_match.group(1))
+                        clean_content = re.sub(r'__REFERENCES__:\[.*?\]\n', '', full_response).strip()
+                    except Exception:
+                        pass
+
+                msg = AIChatMessage.objects.create(
+                    history=chat_history, 
+                    role='assistant', 
+                    content=clean_content,
+                    metadata={'referenced_docs': referenced_docs} if referenced_docs else {}
+                )
                 print(f"[AI] Response saved to history, ID: {msg.id}")
                 yield f"\n__MESSAGE_ID__:{msg.id}"
 

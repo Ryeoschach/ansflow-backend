@@ -117,10 +117,17 @@ class RAGService:
         
         self.config = AIConfig.objects.filter(name="default").first()
         self.llm_config = self._get_model_config(llm_id, "llm")
+        if not self.llm_config:
+            self.llm_config = {"name": "gpt-3.5-turbo", "provider_type": "openai", "base_url": None, "api_key": "not-needed"}
         self.emb_config = self._get_model_config(embedding_id, "embedding")
         self.rerank_config = self._get_model_config(None, "rerank")
+        if not self.rerank_config:
+            self.rerank_config = {"name": "none", "provider_type": "none", "base_url": None, "api_key": None}
 
-        emb_key = f"{self.emb_config.get('name', 'default')}_{self.emb_config.get('provider_type', 'local')}"
+        emb_name = self.emb_config.get('name', 'default')
+        if emb_name == 'default':
+            emb_name = 'BAAI/bge-small-en-v1.5'
+        emb_key = f"{emb_name}_{self.emb_config.get('provider_type', 'local')}"
         if emb_key not in self._embeddings_cache:
             self._embeddings_cache[emb_key] = self._init_embeddings()
         self.embeddings = self._embeddings_cache[emb_key]
@@ -147,7 +154,7 @@ class RAGService:
             self._reranker_cache[rerank_key] = new_reranker
         self.reranker = self._reranker_cache[rerank_key]
         
-        safe_model_name = self.emb_config.get('name', 'default').replace("/", "_").replace("-", "_")
+        safe_model_name = emb_name.replace("/", "_").replace("-", "_")
         full_collection_name = f"{collection_name}_{safe_model_name}"
         if full_collection_name not in self._vectorstore_cache:
             self._vectorstore_cache[full_collection_name] = Chroma(collection_name=full_collection_name, embedding_function=self.embeddings, persist_directory=self.persist_directory)
@@ -166,11 +173,46 @@ class RAGService:
                 elif model_type == "rerank": model = global_config.default_rerank
         if model:
             return {"name": model.name, "provider_type": model.provider.provider_type, "base_url": model.provider.base_url, "api_key": model.provider.get_decrypted_key()}
+        
+        # 数据库没有配置，从环境变量获取兜底配置 (.env / .env.example)
+        if model_type == "llm":
+            base_url = os.getenv("LLM_API_BASE", "https://api.deepseek.com")
+            provider_type = "deepseek" if "deepseek" in base_url.lower() else "openai"
+            return {
+                "name": os.getenv("LLM_MODEL_NAME", "deepseek-chat"),
+                "provider_type": provider_type,
+                "base_url": base_url,
+                "api_key": os.getenv("LLM_API_KEY", "not-needed")
+            }
+        elif model_type == "embedding":
+            emb_api_key = os.getenv("EMBEDDING_API_KEY")
+            emb_base = os.getenv("EMBEDDING_API_BASE")
+            name = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5")
+            if not name or name == 'default':
+                name = 'BAAI/bge-small-en-v1.5'
+            provider_type = "openai" if emb_api_key else "local"
+            return {
+                "name": name,
+                "provider_type": provider_type,
+                "base_url": emb_base,
+                "api_key": emb_api_key or "not-needed"
+            }
+        elif model_type == "rerank":
+            rerank_base = os.getenv("RERANK_API_BASE")
+            provider_type = "other" if rerank_base else "local"
+            return {
+                "name": os.getenv("RERANK_MODEL_NAME", "ms-marco-MiniLM-L-12-v2"),
+                "provider_type": provider_type,
+                "base_url": rerank_base,
+                "api_key": os.getenv("RERANK_API_KEY")
+            }
         return {}
 
     def _init_embeddings(self):
         ptype = self.emb_config.get('provider_type', 'local')
         name = self.emb_config.get('name', 'default')
+        if name == 'default':
+            name = 'BAAI/bge-small-en-v1.5'
         if ptype == "local" or "BAAI" in name:
             from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
             return FastEmbedEmbeddings(model_name=name, cache_dir=self.cache_directory)

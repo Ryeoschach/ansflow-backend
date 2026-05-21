@@ -198,6 +198,68 @@ class PipelineEngineTestCase(TestCase):
         self.assertEqual(resolved["constant"], "static-val")
         self.assertEqual(resolved["nested"]["ref"], "v1.2.3")
 
+    def test_ansible_node_execution_variables(self):
+        """测试 Ansible 节点执行完毕后，能够正确填充 stdout, rc 等输出变量以供后续节点引用"""
+        from apps.task_management.models import AnsibleTask, AnsibleExecution, TaskLog
+        from apps.host_management.models import ResourcePool
+        
+        # 1. 创建资源池与 Ansible 任务
+        pool = ResourcePool.objects.create(name="Test Pool", code="test_pool")
+        ansible_task = AnsibleTask.objects.create(
+            name="Test Task",
+            task_type="playbook",
+            resource_pool=pool,
+            content="---",
+            creator=self.user
+        )
+        
+        # 2. 修改图数据，包含一个 ansible 类型的节点
+        self.graph_data = {
+            "nodes": [
+                {"id": "check_port", "type": "ansible", "data": {"label": "Check Port", "ansible_task_id": ansible_task.id}},
+            ],
+            "edges": []
+        }
+        self.pipeline.graph_data = self.graph_data
+        self.pipeline.save()
+        
+        run = PipelineRun.objects.create(pipeline=self.pipeline, trigger_user=self.user, status='running')
+        node_run = PipelineNodeRun.objects.create(
+            run=run, node_id="check_port", node_type="ansible", status="pending"
+        )
+        
+        # 3. 模拟 run_ansible_task 执行，当执行时，我们在数据库中模拟产生 TaskLog 日志
+        def mock_run_ansible_task(execution_id, extra_vars=None):
+            exec_obj = AnsibleExecution.objects.get(id=execution_id)
+            exec_obj.status = 'success'
+            exec_obj.save()
+            # 写入日志
+            TaskLog.objects.create(execution=exec_obj, host="server-01", output="Port 80 is listening")
+            TaskLog.objects.create(execution=exec_obj, host="SYSTEM", output="Ignored system log")
+            return {'status': 'success', 'logs': 'Execution finished successfully'}
+            
+        with patch('apps.task_management.tasks.run_ansible_task', side_effect=mock_run_ansible_task):
+            with patch('apps.pipeline_management.tasks.push_pipeline_status_to_ws'):
+                execute_pipeline_node(node_run.id)
+                
+        node_run.refresh_from_db()
+        self.assertEqual(node_run.status, "success")
+        # 验证 output_data 包含了 stdout / rc / output / status
+        self.assertIn("stdout", node_run.output_data)
+        self.assertEqual(node_run.output_data["stdout"], "Port 80 is listening")
+        self.assertEqual(node_run.output_data["rc"], 0)
+        self.assertEqual(node_run.output_data["status"], "success")
+        
+        # 4. 验证变量解析
+        from .utils import resolve_pipeline_vars
+        raw_data = {
+            "cmd_output": "{{ nodes.check_port.stdout }}",
+            "return_code": "{{ nodes.check_port.rc }}"
+        }
+        resolved = resolve_pipeline_vars(raw_data, run.id)
+        self.assertEqual(resolved["cmd_output"], "Port 80 is listening")
+        self.assertEqual(resolved["return_code"], "0")
+
     def test_dag_deadlock_detection_concept(self):
         """测试循环依赖导致的死锁（验证现状）"""
         circular_graph = {

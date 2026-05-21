@@ -186,6 +186,7 @@ class AIChatMessage(BaseModel):
     history = models.ForeignKey(AIChatHistory, related_name="messages", on_delete=models.CASCADE)
     role = models.CharField(max_length=50, choices=(("user", "User"), ("assistant", "Assistant"), ("system", "System")), verbose_name="角色")
     content = models.TextField(verbose_name="内容")
+    metadata = models.JSONField(default=dict, blank=True, verbose_name="元数据")
     is_exported = models.BooleanField(default=False, verbose_name="是否已导出至知识库")
 
     class Meta:

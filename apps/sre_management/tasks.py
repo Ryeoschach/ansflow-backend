@@ -85,6 +85,235 @@ def analyze_alert_event(self, alert_id):
                     json_str = draft_str[start_idx:end_idx+1]
                     graph_data = json.loads(json_str)
                     
+                    # 自动完善和编排流程图节点和依赖关系
+                    if isinstance(graph_data, dict):
+                        nodes = graph_data.get('nodes', [])
+                        edges = graph_data.get('edges', [])
+                        
+                        # 0. 规范化边关系 (from/to -> source/target)
+                        normalized_edges = []
+                        for edge in edges:
+                            src = edge.get('source') or edge.get('from')
+                            tgt = edge.get('target') or edge.get('to')
+                            if src and tgt:
+                                edge['source'] = src
+                                edge['target'] = tgt
+                                edge.pop('from', None)
+                                edge.pop('to', None)
+                                normalized_edges.append(edge)
+                        edges = normalized_edges
+                        graph_data['edges'] = edges
+
+                        # 0.1 规范化节点类型与初始化数据字典
+                        TYPE_MAPPING = {
+                            'manual': 'approval',
+                            'notification': 'http_webhook',
+                            'git-checkout': 'git_clone',
+                            'git': 'git_clone'
+                        }
+                        for node in nodes:
+                            # 规范化节点类型
+                            node_type = node.get('type')
+                            if node_type in TYPE_MAPPING:
+                                node['type'] = TYPE_MAPPING[node_type]
+                            
+                            # 初始化 data 字典且设回 node 对象，防 Pydantic 校验失败或前端显示为空
+                            node_data = node.setdefault('data', {})
+                            if not isinstance(node_data, dict):
+                                node_data = {}
+                                node['data'] = node_data
+                            
+                            # 将节点的 label 设置为节点 name，以便前端正常显示名称
+                            if 'name' in node and 'label' not in node_data:
+                                node_data['label'] = node['name']
+                        
+                        # 1. 拓扑/层级计算，为 ReactFlow 画布排版（避免重叠）
+                        node_map = {n['id']: n for n in nodes if 'id' in n}
+                        adj = {n_id: [] for n_id in node_map}
+                        in_degree = {n_id: 0 for n_id in node_map}
+                        
+                        for edge in edges:
+                            src = edge.get('source')
+                            tgt = edge.get('target')
+                            if src in node_map and tgt in node_map:
+                                adj[src].append(tgt)
+                                in_degree[tgt] += 1
+                        
+                        queue = [(n_id, 0) for n_id, deg in in_degree.items() if deg == 0]
+                        if not queue and node_map:
+                            queue = [(list(node_map.keys())[0], 0)]
+                            
+                        node_levels = {}
+                        visited = set()
+                        while queue:
+                            u, lvl = queue.pop(0)
+                            if u in visited:
+                                continue
+                            visited.add(u)
+                            node_levels[u] = max(node_levels.get(u, 0), lvl)
+                            for v in adj[u]:
+                                queue.append((v, lvl + 1))
+                                
+                        max_lvl = max(node_levels.values()) if node_levels else 0
+                        for n_id in node_map:
+                            if n_id not in node_levels:
+                                node_levels[n_id] = max_lvl + 1
+                                
+                        from collections import defaultdict
+                        level_groups = defaultdict(list)
+                        for n_id, lvl in node_levels.items():
+                            level_groups[lvl].append(n_id)
+                            
+                        for lvl in sorted(level_groups.keys()):
+                            for idx, n_id in enumerate(level_groups[lvl]):
+                                node_map[n_id]['position'] = {
+                                    "x": lvl * 300 + 100,
+                                    "y": idx * 180 + 150
+                                }
+
+                        # 2. 补全底层执行实体及 fallback 依赖
+                        from apps.task_management.models import AnsibleTask
+                        from apps.host_management.models import ResourcePool
+                        from apps.pipeline_management.models import CIEnvironment
+                        from apps.registry_management.models import ImageRegistry
+                        from apps.k8s_management.models import K8sCluster
+
+                        for node in nodes:
+                            node_type = node.get('type')
+                            node_data = node.get('data', {})
+                                
+                            if node_type == 'ansible':
+                                ansible_task_id = node_data.get('ansible_task_id')
+                                task_exists = False
+                                if ansible_task_id:
+                                    try:
+                                        task_exists = AnsibleTask.objects.filter(id=int(ansible_task_id)).exists()
+                                    except (ValueError, TypeError):
+                                        pass
+                                        
+                                if not task_exists:
+                                    # 提取 AI 输入的指令或剧本
+                                    playbook_content = (
+                                        node_data.get('playbook') or 
+                                        node_data.get('content') or 
+                                        node_data.get('playbook_content') or 
+                                        node_data.get('cmd') or 
+                                        node_data.get('command') or
+                                        node.get('playbook') or
+                                        node.get('content') or
+                                        node.get('playbook_content') or
+                                        node.get('cmd') or
+                                        node.get('command')
+                                    )
+                                    if not playbook_content:
+                                        # 兜底默认运维指令
+                                        playbook_content = (
+                                            "- name: Fallback Diagnostic Task\n"
+                                            "  hosts: all\n"
+                                            "  gather_facts: false\n"
+                                            "  tasks:\n"
+                                            "    - name: Check system uptime\n"
+                                            "      shell: uptime\n"
+                                            "    - name: Check disk usage\n"
+                                            "      shell: df -h\n"
+                                        )
+                                        
+                                    is_playbook = False
+                                    if isinstance(playbook_content, str):
+                                        pc_stripped = playbook_content.strip()
+                                        if pc_stripped.startswith('-') or 'hosts:' in pc_stripped or 'tasks:' in pc_stripped:
+                                            is_playbook = True
+                                    task_type = 'playbook' if is_playbook else 'cmd'
+                                    
+                                    # 自动寻找资源池
+                                    pool_id = node_data.get('resource_pool_id') or node_data.get('pool_id')
+                                    resource_pool = None
+                                    if pool_id:
+                                        try:
+                                            resource_pool = ResourcePool.objects.filter(id=int(pool_id)).first()
+                                        except (ValueError, TypeError):
+                                            pass
+                                    if not resource_pool:
+                                        resource_pool = ResourcePool.objects.first()
+                                        
+                                    task = AnsibleTask.objects.create(
+                                        name=f"AI_Auto_Task_{alert.id}_{node.get('id')}",
+                                        task_type=task_type,
+                                        resource_pool=resource_pool,
+                                        content=playbook_content,
+                                        creator=get_system_bot()
+                                    )
+                                    node_data['ansible_task_id'] = task.id
+                                    logger.info(f"[SRE] Auto-created AnsibleTask {task.id} for alert {alert.id}")
+                                    
+                            elif node_type == 'docker_build':
+                                ci_env_id = node_data.get('ci_env_id')
+                                env_exists = False
+                                if ci_env_id:
+                                    try:
+                                        env_exists = CIEnvironment.objects.filter(id=int(ci_env_id)).exists()
+                                    except (ValueError, TypeError):
+                                        pass
+                                if not env_exists:
+                                    env_obj = CIEnvironment.objects.first()
+                                    if not env_obj:
+                                        env_obj = CIEnvironment.objects.create(
+                                            name="Default Build Sandbox",
+                                            image="alpine:latest",
+                                            type="default",
+                                            description="AI Auto-generated default build sandbox"
+                                        )
+                                    node_data['ci_env_id'] = env_obj.id
+                                    logger.info(f"[SRE] Auto-bound CI environment {env_obj.id} to docker_build node")
+                                    
+                            elif node_type == 'kaniko_build':
+                                registry_id = node_data.get('registry_id')
+                                registry_exists = False
+                                if registry_id:
+                                    try:
+                                        registry_exists = ImageRegistry.objects.filter(id=int(registry_id)).exists()
+                                    except (ValueError, TypeError):
+                                        pass
+                                if not registry_exists:
+                                    registry_obj = ImageRegistry.objects.first()
+                                    if registry_obj:
+                                        node_data['registry_id'] = registry_obj.id
+                                        logger.info(f"[SRE] Auto-bound ImageRegistry {registry_obj.id} to kaniko_build node")
+                                    else:
+                                        logger.warning(f"[SRE] No ImageRegistry found in DB for kaniko_build node")
+                                        
+                            elif node_type == 'k8s_deploy':
+                                cluster_id = node_data.get('k8s_cluster_id')
+                                cluster_exists = False
+                                if cluster_id:
+                                    try:
+                                        cluster_exists = K8sCluster.objects.filter(id=int(cluster_id)).exists()
+                                    except (ValueError, TypeError):
+                                        pass
+                                if not cluster_exists:
+                                    cluster_obj = K8sCluster.objects.first()
+                                    if cluster_obj:
+                                        node_data['k8s_cluster_id'] = cluster_obj.id
+                                        logger.info(f"[SRE] Auto-bound K8sCluster {cluster_obj.id} to k8s_deploy node")
+                                    else:
+                                        logger.warning(f"[SRE] No K8sCluster found in DB for k8s_deploy node")
+                                        
+                            elif node_type == 'host_deploy':
+                                pool_id = node_data.get('resource_pool_id')
+                                pool_exists = False
+                                if pool_id:
+                                    try:
+                                        pool_exists = ResourcePool.objects.filter(id=int(pool_id)).exists()
+                                    except (ValueError, TypeError):
+                                        pass
+                                if not pool_exists:
+                                    pool_obj = ResourcePool.objects.first()
+                                    if pool_obj:
+                                        node_data['resource_pool_id'] = pool_obj.id
+                                        logger.info(f"[SRE] Auto-bound ResourcePool {pool_obj.id} to host_deploy node")
+                                    else:
+                                        logger.warning(f"[SRE] No ResourcePool found in DB for host_deploy node")
+                    
                     dynamic_name = f"AI_Auto_Draft_{alert.id}_{int(time.time())}"
                     pipeline = Pipeline.objects.create(
                         name=dynamic_name,

@@ -203,11 +203,24 @@ def check_host_baseline(baseline_id):
         status='pending',
         from_pipeline=True
     )
+    
+    # 更新基线为巡检中
+    baseline.last_check_status = 'running'
+    baseline.last_execution_id = execution.id
+    baseline.save(update_fields=['last_check_status', 'last_execution_id'])
 
-    # 2. 执行巡检
-    result = run_ansible_task(execution.id)
-    baseline.last_check_time = timezone.now()
-    baseline.save()
+    try:
+        # 2. 执行巡检
+        result = run_ansible_task(execution.id)
+        # 无论成功失败，都记录本次执行的时间
+        baseline.last_check_time = timezone.now()
+        baseline.last_check_status = result.get('status', 'failed') if result else 'failed'
+        baseline.save()
+    except Exception as run_err:
+        logger.error(f"Ansible execution fatal error: {str(run_err)}")
+        baseline.last_check_status = 'failed'
+        baseline.save()
+        return f"Baseline check failed: {str(run_err)}"
 
     if result.get('status') == 'failed':
         # 3. 产生告警

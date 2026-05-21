@@ -43,9 +43,17 @@ class KnowledgeChunkSerializer(serializers.ModelSerializer):
         fields = ["id", "document", "content", "index", "is_active", "metadata", "create_time"]
 
 class AIChatMessageSerializer(serializers.ModelSerializer):
+    referenced_docs = serializers.SerializerMethodField()
+
     class Meta:
         model = AIChatMessage
-        fields = ["id", "role", "content", "is_exported", "create_time"]
+        fields = ["id", "role", "content", "is_exported", "referenced_docs", "create_time"]
+
+    def get_referenced_docs(self, obj):
+        # 从 metadata 中提取参考文档
+        if isinstance(obj.metadata, dict):
+            return obj.metadata.get('referenced_docs', [])
+        return []
 
 class AIChatHistorySerializer(serializers.ModelSerializer):
     class Meta:

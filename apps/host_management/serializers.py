@@ -85,6 +85,7 @@ class HostBaselineSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'resource_pool', 'pool_name', 
             'check_playbook', 'auto_remediate', 'remediate_playbook',
-            'is_active', 'last_check_time', 'create_time', 'update_time'
+            'is_active', 'last_check_time', 'last_check_status', 'last_execution_id',
+            'create_time', 'update_time'
         ]
-        read_only_fields = ['last_check_time', 'create_time', 'update_time']
+        read_only_fields = ['last_check_time', 'last_check_status', 'last_execution_id', 'create_time', 'update_time']
