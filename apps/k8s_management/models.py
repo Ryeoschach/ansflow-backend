@@ -58,6 +58,7 @@ class K8sApplication(BaseModel):
     SYNC_STATUS_CHOICES = [
         ('Synced', '已同步'),
         ('OutOfSync', '失步'),
+        ('Syncing', '同步中'),
         ('Unknown', '未知'),
         ('Error', '同步错误'),
     ]

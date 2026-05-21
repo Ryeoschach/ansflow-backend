@@ -41,7 +41,7 @@ def get_persistent_chart_path(chart_name):
     filename = chart_name if chart_name.endswith('.tgz') else f"{chart_name}.tgz"
     return os.path.join(charts_dir, filename)
 
-def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None, force=False, version=None, repo_url=None, repo_auth=None):
+def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None, force=False, version=None, repo_url=None, repo_auth=None, description=None):
     """
     执行 Helm 升级/部署逻辑 (增强版：支持远程拉取)
     :param repo_auth: {'username': 'xxx', 'password': 'xxx'}
@@ -87,6 +87,9 @@ def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None
 
         # 2. 构造部署命令
         cmd = ['helm', 'upgrade', name, target_chart, '-n', namespace, '--kubeconfig', kubeconfig_path, '--install']
+        
+        if description:
+            cmd.extend(['--description', description])
         
         if values:
             fd, temp_val_path = tempfile.mkstemp(suffix='.yaml')

@@ -22,5 +22,5 @@ class K8sApplicationViewSet(DataScopeMixin, viewsets.ModelViewSet):
         手动触发同步/漂移检测
         """
         app = self.get_object()
-        sync_k8s_application.delay(app.id)
-        return Response({"message": "同步任务已下发"})
+        sync_k8s_application.delay(app.id, force_sync=True)
+        return Response({"message": "手动同步任务已下发"})
