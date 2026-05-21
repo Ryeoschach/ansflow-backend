@@ -1,9 +1,9 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
-from apps.k8s_management.views import K8sClusterViewSet, HelmRepositoryViewSet
+from apps.k8s_management.views import K8sClusterViewSet, HelmRepositoryViewSet, K8sApplicationViewSet
 from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewSet, MenuViewSet, AuditLogViewSet
-from apps.host_management.views import HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet
+from apps.host_management.views import HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet, HostBaselineViewSet
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet, AnsibleScheduleViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, PipelineNodeRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
@@ -27,6 +27,7 @@ router.register(r'hosts', HostViewSet, basename='hosts')
 router.register(r'environments', EnvironmentViewSet, basename='environments')
 router.register(r'platforms', PlatformViewSet, basename='platforms')
 router.register(r'resource_pools', ResourcePoolViewSet, basename='resource_pools')
+router.register(r'host_baselines', HostBaselineViewSet, basename='host_baselines')
 router.register(r'ssh_credentials', SshCredentialViewSet, basename='ssh_credentials')
 router.register(r'system/menus', MenuViewSet, basename='system-menus')
 router.register(r'system/permissions', PermissionViewSet, basename='system-permissions')
@@ -34,6 +35,7 @@ router.register(r'tasks', AnsibleTaskViewSet, basename='ansible_tasks')
 router.register(r'executions', AnsibleExecutionViewSet, basename='ansible_executions')
 router.register(r'schedules', AnsibleScheduleViewSet, basename='ansible_schedules')
 router.register(r'k8s', K8sClusterViewSet, basename='k8s_management')
+router.register(r'k8s_applications', K8sApplicationViewSet, basename='k8s_applications')
 router.register(r'helm_repositories', HelmRepositoryViewSet, basename='helm_repositories')
 router.register(r'pipelines', PipelineViewSet, basename='pipelines')
 router.register(r'pipeline_runs', PipelineRunViewSet, basename='pipeline_runs')

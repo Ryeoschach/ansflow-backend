@@ -114,3 +114,28 @@ def run_helm_upgrade(cluster, name, namespace='default', chart=None, values=None
         if os.path.exists(kubeconfig_path): os.remove(kubeconfig_path)
         if temp_val_path and os.path.exists(temp_val_path): os.remove(temp_val_path)
         shutil.rmtree(helm_home, ignore_errors=True)
+
+def run_helm_template(name, namespace='default', chart_path=None, values=None):
+    """
+    运行 helm template 生成 Manifest (离线/无集群模式)
+    """
+    cmd = ['helm', 'template', name, chart_path, '-n', namespace]
+    temp_val_path = None
+    
+    try:
+        if values:
+            fd, temp_val_path = tempfile.mkstemp(suffix='.yaml')
+            with os.fdopen(fd, 'w') as f:
+                if isinstance(values, dict):
+                    yaml.dump(values, f)
+                else:
+                    f.write(values)
+            cmd.extend(['-f', temp_val_path])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            return False, result.stderr or result.stdout
+        
+        return True, result.stdout
+    finally:
+        if temp_val_path and os.path.exists(temp_val_path): os.remove(temp_val_path)

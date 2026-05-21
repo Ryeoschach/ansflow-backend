@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from apps.host_management.models import Host, Environment, Platform, ResourcePool, SshCredential
+from apps.host_management.models import Host, Environment, Platform, ResourcePool, SshCredential, HostBaseline
 
 
 class SshCredentialSerializer(serializers.ModelSerializer):
@@ -72,3 +72,19 @@ class ResourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ResourcePool
         fields = ['id', 'name', 'code', 'hosts', 'remark', 'create_time', 'update_time', 'host_details']
+
+
+class HostBaselineSerializer(serializers.ModelSerializer):
+    """
+    主机基线序列化器
+    """
+    pool_name = serializers.ReadOnlyField(source='resource_pool.name')
+
+    class Meta:
+        model = HostBaseline
+        fields = [
+            'id', 'name', 'resource_pool', 'pool_name', 
+            'check_playbook', 'auto_remediate', 'remediate_playbook',
+            'is_active', 'last_check_time', 'create_time', 'update_time'
+        ]
+        read_only_fields = ['last_check_time', 'create_time', 'update_time']

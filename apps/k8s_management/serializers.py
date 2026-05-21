@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import K8sCluster, HelmRepository
+from .models import K8sCluster, HelmRepository, K8sApplication
 
 
 class HelmRepositorySerializer(serializers.ModelSerializer):
@@ -56,3 +56,23 @@ class K8sClusterSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"token": "Token 模式必须输入认证 Token"})
 
         return data
+
+
+class K8sApplicationSerializer(serializers.ModelSerializer):
+    """
+    K8s 应用 (GitOps) 序列化器
+    """
+    cluster_name = serializers.ReadOnlyField(source='cluster.name')
+
+    class Meta:
+        model = K8sApplication
+        fields = [
+            'id', 'name', 'cluster', 'cluster_name', 'namespace',
+            'git_repo', 'git_branch', 'path', 'auto_sync',
+            'sync_status', 'last_sync_time', 'last_sync_revision',
+            'diff_details', 'error_message', 'create_time', 'update_time'
+        ]
+        read_only_fields = [
+            'sync_status', 'last_sync_time', 'last_sync_revision',
+            'diff_details', 'error_message', 'create_time', 'update_time'
+        ]

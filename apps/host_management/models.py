@@ -201,3 +201,29 @@ class ResourcePool(BaseModel):
 
     def __str__(self):
         return f"{self.name} (主机数: {self.hosts.count()})"
+
+
+class HostBaseline(BaseModel):
+    """
+    主机基线配置：定义资源池的“期望状态”
+    """
+    name = models.CharField(max_length=100, verbose_name="基线名称")
+    resource_pool = models.ForeignKey(ResourcePool, on_delete=models.CASCADE, related_name='baselines', verbose_name="目标资源池")
+
+    # 期望的 Ansible Playbook (用于检查状态)
+    check_playbook = models.TextField(verbose_name="检查剧本 (Ansible)", help_text="用于巡检主机状态的 Playbook 内容")
+
+    # 自动修复配置
+    auto_remediate = models.BooleanField(default=False, verbose_name="发现异常自动修复")
+    remediate_playbook = models.TextField(blank=True, null=True, verbose_name="修复剧本", help_text="当基线不通过时自动运行的 Playbook")
+
+    is_active = models.BooleanField(default=True, verbose_name="是否启用定期巡检")
+    last_check_time = models.DateTimeField(null=True, blank=True, verbose_name="最近检查时间")
+
+    class Meta:
+        db_table = 'cmdb_host_baseline'
+        verbose_name = "主机基线"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.name} -> {self.resource_pool.name}"

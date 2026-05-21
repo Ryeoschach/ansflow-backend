@@ -171,3 +171,71 @@ def check_host_connectivity():
 
     return f"主机心跳检查完成。共检查 {checked_count} 台，失败 {fail_count} 台。"
 
+@shared_task(name="check_host_baseline")
+def check_host_baseline(baseline_id):
+    """
+    定期巡检物理机基线：
+    1. 使用 Ansible 运行 check_playbook
+    2. 如果失败，创建告警事件
+    3. 如果开启 auto_remediate，尝试运行 remediate_playbook
+    """
+    from .models import HostBaseline
+    from apps.task_management.models import AnsibleTask, AnsibleExecution
+    from apps.task_management.tasks import run_ansible_task
+    from apps.sre_management.models import AlertEvent
+    import yaml
+
+    baseline = HostBaseline.objects.get(id=baseline_id)
+    if not baseline.is_active:
+        return "Baseline inactive"
+
+    # 1. 创建巡检任务
+    check_task = AnsibleTask.objects.create(
+        name=f"BaselineCheck_{baseline.name}_{timezone.now().strftime('%Y%m%d%H%M')}",
+        task_type='playbook',
+        resource_pool=baseline.resource_pool,
+        content=baseline.check_playbook,
+        creator=None # 系统触发
+    )
+
+    execution = AnsibleExecution.objects.create(
+        task=check_task,
+        status='pending',
+        from_pipeline=True
+    )
+
+    # 2. 执行巡检
+    result = run_ansible_task(execution.id)
+    baseline.last_check_time = timezone.now()
+    baseline.save()
+
+    if result.get('status') == 'failed':
+        # 3. 产生告警
+        alert = AlertEvent.objects.create(
+            alert_name=f"基线巡检失败: {baseline.name}",
+            alert_level='critical',
+            service_name=baseline.resource_pool.name,
+            alert_content=f"资源池 {baseline.resource_pool.name} 未通过基线检查 {baseline.name}。\n日志摘要:\n{result.get('logs', '')[:1000]}",
+            status='active'
+        )
+
+        # 4. 自动修复
+        if baseline.auto_remediate and baseline.remediate_playbook:
+            logger.info(f"触发基线自动修复: {baseline.name}")
+            fix_task = AnsibleTask.objects.create(
+                name=f"BaselineRemediate_{baseline.name}_{timezone.now().strftime('%Y%m%d%H%M')}",
+                task_type='playbook',
+                resource_pool=baseline.resource_pool,
+                content=baseline.remediate_playbook,
+                creator=None
+            )
+            fix_exec = AnsibleExecution.objects.create(task=fix_task, status='pending', from_pipeline=True)
+            run_ansible_task.delay(fix_exec.id)
+            # 标记告警为正在处理
+            alert.status = 'acknowledged'
+            alert.save()
+
+    # 清理临时任务
+    check_task.delete()
+    return f"Baseline {baseline.name} check finished with status: {result.get('status')}"
+

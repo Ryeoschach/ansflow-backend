@@ -277,6 +277,32 @@ class RAGService:
         chain = ({"context": lambda x: self.format_docs(referenced_docs), "target_type": lambda x: x["target_type"], "target_name": lambda x: x["target_name"], "error_summary": lambda x: x["error_summary"], "log_content": lambda x: x["log_content"], "prefix": lambda x: self.personality['prefix'], "kb_catalog": lambda x: kb_catalog} | prompt | self.llm | StrOutputParser())
         yield from chain.stream({"log_content": log_content, "target_type": context_info.get("type", "Unknown"), "target_name": context_info.get("name", "Unknown"), "error_summary": context_info.get("summary", "failed")})
 
+    def diagnose_alert(self, query: str):
+        """
+        同步调用 AI 诊断告警
+        """
+        referenced_docs = self.retrieve_with_threshold(query, kb_id=None)
+        template = """{prefix}
+你是一个资深的 SRE 专家。请针对以下告警信息进行深度诊断。
+【参考知识库】
+{context}
+【告警详情】
+{query}
+请给出：
+1. 故障根因分析
+2. 修复建议（包括具体的命令或操作步骤）
+3. 预防措施
+"""
+        prompt = ChatPromptTemplate.from_template(template)
+        # 封装同步执行链
+        chain = (
+            {"context": lambda x: self.format_docs(referenced_docs), "query": RunnablePassthrough(), "prefix": lambda x: self.personality['prefix']}
+            | prompt
+            | self.llm
+            | StrOutputParser()
+        )
+        return chain.invoke(query)
+
     def retrieve_with_threshold(self, query: str, kb_id: int = None):
         retriever = self.get_retriever(kb_id=kb_id)
         docs = retriever.invoke(query)

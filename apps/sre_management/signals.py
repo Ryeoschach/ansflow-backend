@@ -23,3 +23,14 @@ def sync_pipeline_status_to_alert(sender, instance, **kwargs):
 
     # 更新告警状态
     alerts.update(healing_status=new_status)
+
+@receiver(post_save, sender=AlertEvent)
+def trigger_ai_analysis_on_new_alert(sender, instance, created, **kwargs):
+    """
+    当新告警产生时，自动触发 AI 诊断任务
+    """
+    if created and instance.healing_status == 'none':
+        from apps.ai_engine.tasks import analyze_alert_event_task
+        # 延迟触发，确保数据库事务已提交
+        from django.db import transaction
+        transaction.on_commit(lambda: analyze_alert_event_task.delay(instance.id))

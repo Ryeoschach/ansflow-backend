@@ -3,10 +3,10 @@ from rest_framework.response import Response
 import paramiko
 import io
 
-from apps.host_management.models import Host, Environment, ResourcePool, Platform, SshCredential
+from apps.host_management.models import Host, Environment, ResourcePool, Platform, SshCredential, HostBaseline
 
 from apps.host_management.serializers import HostSerializer, EnvironmentSerializer, PlatformSerializer, \
-    ResourceSerializer, SshCredentialSerializer
+    ResourceSerializer, SshCredentialSerializer, HostBaselineSerializer
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from rest_framework.decorators import action
 
@@ -70,7 +70,26 @@ class SshCredentialViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
 
 from apps.host_management.filters import HostFilter, ResourcePoolFilter
-from apps.host_management.tasks import verify_platform_connectivity, sync_platform_assets
+from apps.host_management.tasks import verify_platform_connectivity, sync_platform_assets, check_host_baseline
+
+
+class HostBaselineViewSet(viewsets.ModelViewSet):
+    """
+    主机基线管理
+    """
+    queryset = HostBaseline.objects.all()
+    serializer_class = HostBaselineSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:baselines'
+
+    @action(detail=True, methods=['post'])
+    def check(self, request, pk=None):
+        """
+        手动触发基线巡检
+        """
+        baseline = self.get_object()
+        check_host_baseline.delay(baseline.id)
+        return Response({"message": "基线巡检任务已下发"})
 
 
 

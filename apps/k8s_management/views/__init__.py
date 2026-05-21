@@ -8,6 +8,7 @@ from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .k8s_views import K8sManagementMixin
 from .helm_views import HelmManagementMixin
 from .repo_views import HelmRepositoryViewSet
+from .gitops_views import K8sApplicationViewSet
 
 class K8sClusterViewSet(DataScopeMixin, viewsets.ModelViewSet, K8sManagementMixin, HelmManagementMixin):
     """

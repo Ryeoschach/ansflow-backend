@@ -90,3 +90,40 @@ def reindex_kb_task(kb_id: int):
         kb.reindex_error = str(e)
         kb.save(update_fields=['reindex_status', 'reindex_error'])
         return False
+
+@shared_task(name="apps.ai_engine.tasks.analyze_alert_event_task")
+def analyze_alert_event_task(alert_id: int):
+    """
+    针对告警事件进行 AI 诊断分析：
+    1. 提取告警上下文
+    2. RAG 检索相关经验/文档
+    3. LLM 生成分析建议
+    """
+    from apps.sre_management.models import AlertEvent
+    try:
+        alert = AlertEvent.objects.get(id=alert_id)
+        alert.healing_status = 'analyzing'
+        alert.save(update_fields=['healing_status'])
+
+        rag = RAGService()
+        # 1. 构造查询 Query
+        query = f"告警名称: {alert.alert_name}\n内容: {alert.alert_content}\n标签: {alert.labels}"
+        
+        # 2. 调用 RAG 进行诊断分析
+        # 注意：RAGService 需要实现 diagnose_alert 方法
+        analysis = rag.diagnose_alert(query)
+        
+        # 3. 更新结果
+        alert.ai_analysis = analysis
+        alert.healing_status = 'suggested'
+        alert.save(update_fields=['ai_analysis', 'healing_status'])
+        
+        return f"Alert #{alert_id} analysis completed."
+    except Exception as e:
+        logger.error(f"AI Analysis failed for alert #{alert_id}: {str(e)}")
+        try:
+            alert = AlertEvent.objects.get(id=alert_id)
+            alert.healing_status = 'none' # 失败回滚
+            alert.save(update_fields=['healing_status'])
+        except: pass
+        return False

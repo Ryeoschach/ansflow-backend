@@ -194,6 +194,27 @@ def execute_pipeline_node(self, node_run_id):
             success = run_command_with_streaming_logs(cmd, node_run)
             if success:
                 finish_msg = "\n✨ 代码拉取成功！已放入统一工作区。"
+                
+                # --- 核心：检测并解析 .ansflow-ci.yml ---
+                ci_yaml_path = os.path.join(source_dir, '.ansflow-ci.yml')
+                if os.path.exists(ci_yaml_path):
+                    try:
+                        with open(ci_yaml_path, 'r') as f:
+                            yaml_content = f.read()
+                        
+                        from .yaml_parser import YAMLToGraphParser
+                        parser = YAMLToGraphParser(yaml_content)
+                        new_graph_data = parser.parse()
+                        
+                        # 更新运行快照
+                        node_run.run.graph_data = new_graph_data
+                        node_run.run.yaml_definition = yaml_content
+                        node_run.run.save(update_fields=['graph_data', 'yaml_definition'])
+                        
+                        finish_msg += f"\n[GitOps] 检测到 .ansflow-ci.yml，已成功同步声明式流水线定义。"
+                    except Exception as ye:
+                        finish_msg += f"\n[GitOps] 警告: 解析 .ansflow-ci.yml 失败: {str(ye)}"
+                
                 node_run.logs += finish_msg
                 node_run.save(update_fields=['logs'])
                 push_node_log_to_ws(node_run.run_id, node_run.node_id, finish_msg)
@@ -519,7 +540,86 @@ def execute_pipeline_node(self, node_run_id):
             except Exception as e:
                 node_run.logs += f"请求触发异常: {str(e)}"
                 success = False
+        
+        elif node_type == 'host_deploy':
+            pool_id = node_data.get('resource_pool_id')
+            artifact_rel_path = node_data.get('artifact_path', '') # 相对 source_dir 的路径
+            deploy_path = node_data.get('deploy_path', '/tmp/ansflow_deploy')
+            post_script = node_data.get('post_deploy_script', '')
+
+            if not pool_id:
+                raise ValueError("Host Deploy 节点未配置目标资源池 (resource_pool_id)")
             
+            from apps.host_management.models import ResourcePool
+            from apps.task_management.models import AnsibleTask, AnsibleExecution
+            from apps.task_management.tasks import run_ansible_task
+            import yaml
+            
+            pool = ResourcePool.objects.get(id=pool_id)
+            node_run.logs = f"正在准备分发产物至资源池: {pool.name} (目标路径: {deploy_path})...\n"
+            
+            # 构造绝对路径的产物位置
+            local_artifact_full = os.path.join(source_dir, artifact_rel_path)
+            if not os.path.exists(local_artifact_full):
+                raise ValueError(f"找不到构建产物文件: {local_artifact_full}")
+
+            # 动态构造 Playbook
+            deploy_playbook = [
+                {
+                    "hosts": "all",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": "确保目标目录存在",
+                            "file": {"path": deploy_path, "state": "directory", "mode": "0755"}
+                        },
+                        {
+                            "name": "分发产物文件/目录",
+                            "copy": {"src": local_artifact_full, "dest": deploy_path + "/"}
+                        }
+                    ]
+                }
+            ]
+            
+            if post_script:
+                deploy_playbook[0]["tasks"].append({
+                    "name": "执行部署后脚本",
+                    "shell": post_script,
+                    "args": {"chdir": deploy_path}
+                })
+
+            # 创建一个临时任务定义
+            temp_task = AnsibleTask.objects.create(
+                name=f"PipelineDeploy_{run_id}_{node_run.node_id}",
+                task_type='playbook',
+                resource_pool=pool,
+                content=yaml.dump(deploy_playbook),
+                creator=node_run.run.trigger_user
+            )
+            
+            # 创建执行记录
+            execution = AnsibleExecution.objects.create(
+                task=temp_task,
+                status='pending',
+                executor=node_run.run.trigger_user,
+                from_pipeline=True
+            )
+            
+            node_run.output_data = {'ansible_execution_id': execution.id, 'temp_task_id': temp_task.id}
+            node_run.save(update_fields=['output_data'])
+
+            # 执行 Ansible
+            result = run_ansible_task(execution.id)
+            
+            if isinstance(result, dict):
+                node_run.logs += result.get('logs', '')
+                success = (result.get('status') == 'success')
+            else:
+                success = False
+            
+            # 清理临时任务定义
+            temp_task.delete()
+
         else:
             node_run.logs = f"未知类型的节点: {node_type}，直接跳过或者当做正常处理"
             success = True
@@ -613,8 +713,14 @@ def advance_pipeline_engine(self, run_id):
         if run.status in ['success', 'failed', 'cancelled']:
             return 
         
-        pipeline = run.pipeline
-        graph_data = pipeline.graph_data or {}
+        # 优先使用 Run 级别的图数据（支持 YAML 动态解析后的快照）
+        graph_data = run.graph_data
+        if not graph_data:
+            graph_data = run.pipeline.graph_data or {}
+            # 初始化快照
+            run.graph_data = graph_data
+            run.save(update_fields=['graph_data'])
+
         if not isinstance(graph_data, dict):
             import json
             if isinstance(graph_data, str):

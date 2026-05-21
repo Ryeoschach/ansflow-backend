@@ -7,6 +7,7 @@ class Pipeline(BaseModel):
     name = models.CharField(max_length=100, unique=True, verbose_name="流水线名称")
     desc = models.TextField(blank=True, null=True, verbose_name="描述")
     graph_data = JSONField(default=dict, verbose_name="前端流程图数据") # 保存 ReactFlow 导出的整个 JSON
+    yaml_definition = models.TextField(blank=True, null=True, verbose_name="YAML 声明式定义")
     creator = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, verbose_name="创建人")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     timeout = models.IntegerField(default=3600, verbose_name="流水线全局超时时间(秒)")
@@ -136,6 +137,8 @@ class PipelineRun(BaseModel):
     )
     pipeline = models.ForeignKey(Pipeline, on_delete=models.CASCADE, related_name='runs')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    graph_data = JSONField(default=dict, blank=True, verbose_name="运行时的图数据快照")
+    yaml_definition = models.TextField(blank=True, null=True, verbose_name="运行时的 YAML 定义快照")
     trigger_user = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, blank=True)
     celery_task_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="DAG 任务 ID")
     start_time = models.DateTimeField(null=True, blank=True)

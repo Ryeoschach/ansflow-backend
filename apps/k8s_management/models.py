@@ -49,3 +49,44 @@ class HelmRepository(BaseModel):
     class Meta:
         db_table = 'helm_repositories'
         verbose_name = "Helm 仓库"
+
+
+class K8sApplication(BaseModel):
+    """
+    GitOps 应用模型：绑定 Git 仓库与 K8s 集群
+    """
+    SYNC_STATUS_CHOICES = [
+        ('Synced', '已同步'),
+        ('OutOfSync', '失步'),
+        ('Unknown', '未知'),
+        ('Error', '同步错误'),
+    ]
+
+    name = models.CharField(max_length=100, unique=True, verbose_name="应用名称")
+    cluster = models.ForeignKey(K8sCluster, on_delete=models.CASCADE, related_name='applications', verbose_name="目标集群")
+    namespace = models.CharField(max_length=63, default='default', verbose_name="目标命名空间")
+    
+    # Git 配置
+    git_repo = models.CharField(max_length=512, verbose_name="Git 仓库地址")
+    git_branch = models.CharField(max_length=128, default='main', verbose_name="Git 分支")
+    path = models.CharField(max_length=255, default='.', verbose_name="Helm Chart 路径")
+    
+    # 同步策略
+    auto_sync = models.BooleanField(default=False, verbose_name="是否自动同步")
+    
+    # 状态信息
+    sync_status = models.CharField(max_length=20, choices=SYNC_STATUS_CHOICES, default='Unknown', verbose_name="同步状态")
+    last_sync_time = models.DateTimeField(null=True, blank=True, verbose_name="最近同步时间")
+    last_sync_revision = models.CharField(max_length=128, blank=True, null=True, verbose_name="最近同步的版本(Commit ID)")
+    
+    # 漂移检测
+    diff_details = models.JSONField(default=dict, blank=True, verbose_name="漂移详情")
+    error_message = models.TextField(null=True, blank=True, verbose_name="错误信息")
+
+    class Meta:
+        db_table = 'k8s_applications'
+        verbose_name = "K8s 应用 (GitOps)"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.name} -> {self.cluster.name}/{self.namespace}"
