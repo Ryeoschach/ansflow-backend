@@ -98,6 +98,63 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
             "execution_id": execution.id
         }, status=status.HTTP_201_CREATED)
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        create_type = self.request.query_params.get('create_type')
+        if create_type:
+            qs = qs.filter(create_type=create_type)
+        elif self.action == 'list':
+            qs = qs.filter(create_type='manual')
+        return qs
+
+    @action(detail=True, methods=['post'])
+    def promote(self, request, pk=None):
+        """
+        将 AI 草稿剧本转正为人工模板
+        """
+        task = self.get_object()
+        if task.create_type != 'ai':
+            return Response({'error': '只有 AI 草稿区的任务模板可以被转正'}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = request.data.get('name')
+        
+        from django.db import transaction
+        with transaction.atomic():
+            if name:
+                task.name = name
+            task.create_type = 'manual'
+            task.save()
+            
+        # 转正完成后，将元数据向量化存入 RAG 知识库
+        try:
+            from apps.ai_engine.rag_service import RAGService
+            rag_service = RAGService()
+            
+            task_doc_content = f"""[Ansible 剧本组件]
+ID: {task.id}
+名称: {task.name}
+类型: {task.get_task_type_display()}
+剧本内容或指令:
+{task.content}
+"""
+            rag_service.add_knowledge(
+                content=task_doc_content,
+                title=f"Ansible 剧本 - {task.name}",
+                metadata={'source_type': 'ansible_task', 'id': task.id}
+            )
+        except Exception as e:
+            # 向量化同步失败不应该阻断 API 成功返回，但需要记录日志
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[Promote Task] Failed to sync to RAG: {e}", exc_info=True)
+            
+        return Response({
+            'msg': '任务模板已成功转正为人工模板',
+            'id': task.id,
+            'name': task.name,
+            'create_type': task.create_type
+        })
+
 
 class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """

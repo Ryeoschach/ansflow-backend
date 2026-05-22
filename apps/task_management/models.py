@@ -32,10 +32,34 @@ class AnsibleTask(BaseModel):
     # 创建者
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='created_tasks', verbose_name="创建者")
 
+    # 创建类型与内容指纹
+    create_type = models.CharField(
+        max_length=20, 
+        choices=(('manual', '人工区'), ('ai', 'AI草稿区')), 
+        default='manual', 
+        verbose_name="创建类型",
+        db_index=True
+    )
+    content_hash = models.CharField(
+        max_length=64, 
+        blank=True, 
+        null=True, 
+        verbose_name="内容哈希值",
+        db_index=True
+    )
+
     class Meta:
         db_table = 'task_ansible_template'
         verbose_name = "Ansible 任务定义"
         verbose_name_plural = verbose_name
+
+    def save(self, *args, **kwargs):
+        if self.content:
+            import hashlib
+            self.content_hash = hashlib.sha256(self.content.strip().encode('utf-8')).hexdigest()
+        else:
+            self.content_hash = None
+        super(AnsibleTask, self).save(*args, **kwargs)
 
     def __str__(self):
         return self.name

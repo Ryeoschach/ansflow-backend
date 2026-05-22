@@ -7,7 +7,7 @@ class PipelineSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Pipeline
-        fields = ['id', 'name', 'desc', 'graph_data', 'creator', 'creator_name', 'is_active', 'timeout', 'cron_expression', 'is_cron_enabled', 'celery_periodic_task_id', 'create_time', 'update_time', 'current_version']
+        fields = ['id', 'name', 'desc', 'graph_data', 'creator', 'creator_name', 'is_active', 'timeout', 'cron_expression', 'is_cron_enabled', 'celery_periodic_task_id', 'create_type', 'create_time', 'update_time', 'current_version']
         read_only_fields = ['creator', 'celery_periodic_task_id', 'create_time', 'update_time']
 
     def get_current_version(self, obj) -> int | None:

@@ -255,15 +255,29 @@ def analyze_alert_event(self, alert_id):
                                             playbook_content
                                         )
 
-                                    task = AnsibleTask.objects.create(
-                                        name=f"AI_Auto_Task_{alert.id}_{node.get('id')}",
-                                        task_type=task_type,
-                                        resource_pool=resource_pool,
-                                        content=playbook_content,
-                                        creator=get_system_bot()
-                                    )
-                                    node_data['ansible_task_id'] = task.id
-                                    logger.info(f"[SRE] Auto-created AnsibleTask {task.id} for alert {alert.id}")
+                                    # 智能复用：计算待新建剧本的哈希，在 DB 中匹配是否存在相同剧本
+                                    import hashlib
+                                    p_content = playbook_content.strip() if playbook_content else ""
+                                    p_hash = hashlib.sha256(p_content.encode('utf-8')).hexdigest() if p_content else ""
+                                    
+                                    existing_task = None
+                                    if p_hash:
+                                        existing_task = AnsibleTask.objects.filter(content_hash=p_hash).first()
+                                        
+                                    if existing_task:
+                                        node_data['ansible_task_id'] = existing_task.id
+                                        logger.info(f"[SRE] Reused existing AnsibleTask {existing_task.id} (hash match) for alert {alert.id}")
+                                    else:
+                                        task = AnsibleTask.objects.create(
+                                            name=f"AI_Auto_Task_{alert.id}_{node.get('id')}",
+                                            task_type=task_type,
+                                            resource_pool=resource_pool,
+                                            content=playbook_content,
+                                            creator=get_system_bot(),
+                                            create_type='ai'
+                                        )
+                                        node_data['ansible_task_id'] = task.id
+                                        logger.info(f"[SRE] Auto-created AnsibleTask {task.id} (create_type='ai') for alert {alert.id}")
                                     
                             elif node_type == 'docker_build':
                                 ci_env_id = node_data.get('ci_env_id')
@@ -339,7 +353,8 @@ def analyze_alert_event(self, alert_id):
                         desc=f"由 AI 为告警 {alert.alert_name} 自动生成的诊断修复流水线",
                         graph_data=graph_data,
                         creator=get_system_bot(),
-                        is_active=True
+                        is_active=True,
+                        create_type='ai'
                     )
                     alert.suggested_pipeline = pipeline
                     alert.matched_policy_name = "AI 动态策略 (需确认)"

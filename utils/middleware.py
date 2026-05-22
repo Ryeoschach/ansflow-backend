@@ -67,7 +67,11 @@ class AuditLogMiddleware(MiddlewareMixin):
         
         # 提取数据（启动新线程保存，避免阻塞主流程）
         try:
-            threading.Thread(target=self.save_log, args=(request, response, end_time)).start()
+            import sys
+            if 'test' in sys.argv:
+                self.save_log(request, response, end_time)
+            else:
+                threading.Thread(target=self.save_log, args=(request, response, end_time)).start()
         except Exception:
             pass  # 防止生产环境因为日志记录失败导致业务中断
         return response

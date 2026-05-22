@@ -15,6 +15,7 @@ RBAC_ACTION_MAP = {
     'patch': 'edit',
     'destroy': 'delete',
     'delete': 'delete',
+    'promote': 'edit',
 }
 
 class SmartRBACPermission(permissions.BasePermission):
@@ -137,7 +138,7 @@ class SmartRBACPermission(permissions.BasePermission):
             
         # 根据请求动作判断所需的数据权限类型
         action = getattr(view, 'action', None) or request.method.lower()
-        needed_type = 'manage' if action in ['update', 'partial_update', 'destroy', 'delete'] else 'use'
+        needed_type = 'manage' if action in ['update', 'partial_update', 'destroy', 'delete', 'promote'] else 'use'
         
         allowed_ids = get_user_data_scope(request.user, resource_type, action_type=needed_type)
         if "*" in allowed_ids:

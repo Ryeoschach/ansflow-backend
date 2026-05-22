@@ -11,6 +11,13 @@ class Pipeline(BaseModel):
     creator = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, verbose_name="创建人")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     timeout = models.IntegerField(default=3600, verbose_name="流水线全局超时时间(秒)")
+    create_type = models.CharField(
+        max_length=20, 
+        choices=(('manual', '人工区'), ('ai', 'AI草稿区')), 
+        default='manual', 
+        verbose_name="创建类型",
+        db_index=True
+    )
 
     # Cron 调度相关字段
     cron_expression = models.CharField(max_length=100, blank=True, null=True, verbose_name="Cron调度表达式", help_text="例如: 0 2 * * *")
