@@ -335,6 +335,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'task_pulse.maintenance',
         'schedule': 60.0,
     },
+    'cleanup-expired-ai-drafts-daily': {
+        'task': 'apps.pipeline_management.tasks.cleanup_expired_ai_drafts',
+        'schedule': 86400.0,  # 每天执行一次 (24小时)
+    },
 }
 # 允许携带 Cookie
 CORS_ALLOW_CREDENTIALS = True

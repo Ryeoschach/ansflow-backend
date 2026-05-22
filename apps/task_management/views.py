@@ -117,11 +117,14 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
             return Response({'error': '只有 AI 草稿区的任务模板可以被转正'}, status=status.HTTP_400_BAD_REQUEST)
 
         name = request.data.get('name')
+        content = request.data.get('content')
         
         from django.db import transaction
         with transaction.atomic():
             if name:
                 task.name = name
+            if content is not None:
+                task.content = content
             task.create_type = 'manual'
             task.save()
             

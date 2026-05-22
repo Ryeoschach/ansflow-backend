@@ -942,3 +942,28 @@ def cleanup_old_workspaces(days=1):
                 logger.error(f"[Cleanup] Failed to delete {dir_path}: {str(e)}")
                 
     return f"Cleaned up {cleaned_count} workspaces."
+
+
+@shared_task(name='apps.pipeline_management.tasks.cleanup_expired_ai_drafts')
+def cleanup_expired_ai_drafts():
+    """
+    定期清理过期的 AI 暂存区资产 (超过 7 天且未转正的草稿)。
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+    from apps.pipeline_management.models import Pipeline
+    from apps.task_management.models import AnsibleTask
+
+    threshold = timezone.now() - timedelta(days=7)
+
+    # 清理流水线草稿
+    expired_pipelines = Pipeline.objects.filter(create_type='ai', create_time__lt=threshold)
+    pipelines_count, _ = expired_pipelines.delete()
+
+    # 清理 Ansible 剧本草稿
+    expired_tasks = AnsibleTask.objects.filter(create_type='ai', create_time__lt=threshold)
+    tasks_count, _ = expired_tasks.delete()
+
+    logger.info(f"[Cleanup] Deleted {pipelines_count} expired AI pipeline drafts and {tasks_count} expired AI task drafts created before {threshold}.")
+    return f"Deleted {pipelines_count} pipelines and {tasks_count} tasks."
+
