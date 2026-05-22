@@ -90,86 +90,10 @@ def analyze_alert_event(self, alert_id):
                         nodes = graph_data.get('nodes', [])
                         edges = graph_data.get('edges', [])
                         
-                        # 0. 规范化边关系 (from/to -> source/target)
-                        normalized_edges = []
-                        for edge in edges:
-                            src = edge.get('source') or edge.get('from')
-                            tgt = edge.get('target') or edge.get('to')
-                            if src and tgt:
-                                edge['source'] = src
-                                edge['target'] = tgt
-                                edge.pop('from', None)
-                                edge.pop('to', None)
-                                normalized_edges.append(edge)
-                        edges = normalized_edges
-                        graph_data['edges'] = edges
-
-                        # 0.1 规范化节点类型与初始化数据字典
-                        TYPE_MAPPING = {
-                            'manual': 'approval',
-                            'notification': 'http_webhook',
-                            'git-checkout': 'git_clone',
-                            'git': 'git_clone'
-                        }
-                        for node in nodes:
-                            # 规范化节点类型
-                            node_type = node.get('type')
-                            if node_type in TYPE_MAPPING:
-                                node['type'] = TYPE_MAPPING[node_type]
-                            
-                            # 初始化 data 字典且设回 node 对象，防 Pydantic 校验失败或前端显示为空
-                            node_data = node.setdefault('data', {})
-                            if not isinstance(node_data, dict):
-                                node_data = {}
-                                node['data'] = node_data
-                            
-                            # 将节点的 label 设置为节点 name，以便前端正常显示名称
-                            if 'name' in node and 'label' not in node_data:
-                                node_data['label'] = node['name']
-                        
-                        # 1. 拓扑/层级计算，为 ReactFlow 画布排版（避免重叠）
-                        node_map = {n['id']: n for n in nodes if 'id' in n}
-                        adj = {n_id: [] for n_id in node_map}
-                        in_degree = {n_id: 0 for n_id in node_map}
-                        
-                        for edge in edges:
-                            src = edge.get('source')
-                            tgt = edge.get('target')
-                            if src in node_map and tgt in node_map:
-                                adj[src].append(tgt)
-                                in_degree[tgt] += 1
-                        
-                        queue = [(n_id, 0) for n_id, deg in in_degree.items() if deg == 0]
-                        if not queue and node_map:
-                            queue = [(list(node_map.keys())[0], 0)]
-                            
-                        node_levels = {}
-                        visited = set()
-                        while queue:
-                            u, lvl = queue.pop(0)
-                            if u in visited:
-                                continue
-                            visited.add(u)
-                            node_levels[u] = max(node_levels.get(u, 0), lvl)
-                            for v in adj[u]:
-                                queue.append((v, lvl + 1))
-                                
-                        max_lvl = max(node_levels.values()) if node_levels else 0
-                        for n_id in node_map:
-                            if n_id not in node_levels:
-                                node_levels[n_id] = max_lvl + 1
-                                
-                        from collections import defaultdict
-                        level_groups = defaultdict(list)
-                        for n_id, lvl in node_levels.items():
-                            level_groups[lvl].append(n_id)
-                            
-                        for lvl in sorted(level_groups.keys()):
-                            for idx, n_id in enumerate(level_groups[lvl]):
-                                node_map[n_id]['position'] = {
-                                    "x": lvl * 300 + 100,
-                                    "y": idx * 180 + 150
-                                }
+                        from apps.pipeline_management.utils import normalize_and_filter_ai_dag
+                        graph_data = normalize_and_filter_ai_dag(graph_data)
+                        nodes = graph_data.get('nodes', [])
+                        edges = graph_data.get('edges', [])
 
                         # 2. 补全底层执行实体及 fallback 依赖
                         from apps.task_management.models import AnsibleTask
@@ -195,16 +119,102 @@ def analyze_alert_event(self, alert_id):
                                     # 提取 AI 输入的指令或剧本
                                     playbook_content = (
                                         node_data.get('playbook') or 
+                                        node_data.get('ansible_playbook') or
                                         node_data.get('content') or 
                                         node_data.get('playbook_content') or 
                                         node_data.get('cmd') or 
+                                        node_data.get('exec') or
                                         node_data.get('command') or
+                                        node_data.get('script') or
                                         node.get('playbook') or
+                                        node.get('ansible_playbook') or
                                         node.get('content') or
                                         node.get('playbook_content') or
                                         node.get('cmd') or
-                                        node.get('command')
+                                        node.get('exec') or
+                                        node.get('command') or
+                                        node.get('script')
                                     )
+                                    
+                                    # 智能文件名-to-playbook转换逻辑
+                                    if playbook_content and isinstance(playbook_content, str):
+                                        content_str = playbook_content.strip()
+                                        if '\n' not in content_str and (content_str.endswith('.yml') or content_str.endswith('.yaml')):
+                                            import re
+                                            filename = content_str
+                                            check_match = re.match(r'check_port_(\d+)\.ya?ml', filename, re.IGNORECASE)
+                                            fix_match = re.match(r'fix_port_(\d+)\.ya?ml', filename, re.IGNORECASE)
+                                            
+                                            if check_match:
+                                                port = check_match.group(1)
+                                                playbook_content = (
+                                                    f"- name: Check Port {port} Status\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    f"    - name: Wait for port {port} to be open\n"
+                                                    "      wait_for:\n"
+                                                    f"        port: {port}\n"
+                                                    "        state: started\n"
+                                                    "        timeout: 5\n"
+                                                )
+                                            elif fix_match:
+                                                port = fix_match.group(1)
+                                                playbook_content = (
+                                                    f"- name: Fix Port {port} Conflict\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    f"    - name: Kill processes using port {port}\n"
+                                                    f"      shell: lsof -t -i:{port} | xargs -r kill -9\n"
+                                                    "      failed_when: false\n"
+                                                )
+                                            elif 'disk' in filename.lower():
+                                                playbook_content = (
+                                                    "- name: Check Disk Usage\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    "    - name: Check disk partitions\n"
+                                                    "      shell: df -h\n"
+                                                )
+                                            elif 'cpu' in filename.lower() or 'load' in filename.lower():
+                                                playbook_content = (
+                                                    "- name: Check CPU Load\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    "    - name: Get top cpu usage\n"
+                                                    "      shell: ps -eo pcpu,pmem,args --sort=-pcpu | head -n 10\n"
+                                                )
+                                            elif 'mem' in filename.lower():
+                                                playbook_content = (
+                                                    "- name: Check Memory Usage\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    "    - name: Free memory stats\n"
+                                                    "      shell: free -m\n"
+                                                )
+                                            elif 'service' in filename.lower() or 'restart' in filename.lower():
+                                                playbook_content = (
+                                                    "- name: Restart Service\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    "    - name: Try restart dummy service\n"
+                                                    "      shell: echo 'Restarting dummy service'\n"
+                                                )
+                                            else:
+                                                playbook_content = (
+                                                    f"- name: AI Auto playbook fallback for {filename}\n"
+                                                    "  hosts: all\n"
+                                                    "  gather_facts: false\n"
+                                                    "  tasks:\n"
+                                                    f"    - name: Check status of {filename}\n"
+                                                    f"      shell: echo 'Running diag for {filename}'\n"
+                                                )
+                                                
                                     if not playbook_content:
                                         # 兜底默认运维指令
                                         playbook_content = (
@@ -236,6 +246,15 @@ def analyze_alert_event(self, alert_id):
                                     if not resource_pool:
                                         resource_pool = ResourcePool.objects.first()
                                         
+                                    # 规范化 hosts 占位符 (例如 hosts: '{{ instance }}') 为 hosts: all
+                                    if playbook_content and isinstance(playbook_content, str):
+                                        import re
+                                        playbook_content = re.sub(
+                                            r'hosts:\s*[\'"]?\{\{\s*(?:instance|host|target|target_host)\s*\}\}[\'"]?',
+                                            'hosts: all',
+                                            playbook_content
+                                        )
+
                                     task = AnsibleTask.objects.create(
                                         name=f"AI_Auto_Task_{alert.id}_{node.get('id')}",
                                         task_type=task_type,

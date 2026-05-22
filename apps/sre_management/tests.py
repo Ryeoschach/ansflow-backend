@@ -171,7 +171,15 @@ class SREOptimizationTestCase(TestCase):
             "      \"id\": \"check_port\",\n"
             "      \"name\": \"检查端口占用\",\n"
             "      \"type\": \"ansible\",\n"
-            "      \"content\": \"ansible.builtin.shell: cmd='ss -tlnp | grep :80'\"\n"
+            "      \"content\": \"- name: check port\\n  hosts: '{{ instance }}'\\n  tasks:\\n    - name: check\\n      shell: ss -tlnp | grep :80\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"id\": \"clone_code\",\n"
+            "      \"name\": \"拉取最新代码\",\n"
+            "      \"type\": \"git\",\n"
+            "      \"data\": {\n"
+            "        \"git_repo\": \"https://github.com/foo/bar.git\"\n"
+            "      }\n"
             "    },\n"
             "    {\n"
             "      \"id\": \"confirm_nginx\",\n"
@@ -182,16 +190,29 @@ class SREOptimizationTestCase(TestCase):
             "      \"id\": \"notification\",\n"
             "      \"name\": \"通知团队\",\n"
             "      \"type\": \"notification\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"id\": \"approval_by_name\",\n"
+            "      \"name\": \"人工审批修复\",\n"
+            "      \"type\": \"ansible\"\n"
             "    }\n"
             "  ],\n"
             "  \"edges\": [\n"
             "    {\n"
             "      \"from\": \"check_port\",\n"
+            "      \"to\": \"clone_code\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"from\": \"clone_code\",\n"
             "      \"to\": \"confirm_nginx\"\n"
             "    },\n"
             "    {\n"
             "      \"from\": \"confirm_nginx\",\n"
             "      \"to\": \"notification\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"from\": \"notification\",\n"
+            "      \"to\": \"approval_by_name\"\n"
             "    }\n"
             "  ]\n"
             "}"
@@ -212,29 +233,172 @@ class SREOptimizationTestCase(TestCase):
         nodes = graph.get('nodes', [])
         edges = graph.get('edges', [])
 
-        # 1. 验证边的 from/to 已被自动规范化为 source/target
+        # 1. 验证边 from/to 规范化，且由于过滤节点，边已旁路缝合
+        # 过滤了 confirm_nginx (type: manual -> approval) 和 approval_by_name (name: 人工审批修复)
+        # check_port -> clone_code (保留)
+        # clone_code -> confirm_nginx -> notification 缝合为 clone_code -> notification
+        # notification -> approval_by_name (approval_by_name无流出，直接被裁剪)
+        # 因此，最终剩下的边是: check_port -> clone_code, clone_code -> notification (共2条)
         self.assertEqual(len(edges), 2)
-        self.assertEqual(edges[0]['source'], 'check_port')
-        self.assertEqual(edges[0]['target'], 'confirm_nginx')
-        self.assertNotIn('from', edges[0])
-        self.assertNotIn('to', edges[0])
+        edge_1 = next(e for e in edges if e['source'] == 'check_port')
+        self.assertEqual(edge_1['target'], 'clone_code')
+        self.assertNotIn('from', edge_1)
+        self.assertNotIn('to', edge_1)
 
-        # 2. 验证节点类型映射：manual -> approval, notification -> http_webhook
-        node_confirm = next(n for n in nodes if n['id'] == 'confirm_nginx')
+        edge_2 = next(e for e in edges if e['source'] == 'clone_code')
+        self.assertEqual(edge_2['target'], 'notification')
+
+        # 2. 验证非动作节点已被过滤 (confirm_nginx 被过滤，approval_by_name 因名称被过滤)
+        self.assertFalse(any(n['id'] == 'confirm_nginx' for n in nodes))
+        self.assertFalse(any(n['id'] == 'approval_by_name' for n in nodes))
+
+        # 3. 验证节点类型映射：git -> git_clone, notification -> http_webhook
+        node_clone = next(n for n in nodes if n['id'] == 'clone_code')
         node_notify = next(n for n in nodes if n['id'] == 'notification')
-        self.assertEqual(node_confirm['type'], 'approval')
+        self.assertEqual(node_clone['type'], 'git_clone')
         self.assertEqual(node_notify['type'], 'http_webhook')
 
-        # 3. 验证节点的 label 被成功赋值为 name，且 data 字典不是空的
+        # 4. 验证节点的 label 被成功赋值为 name，且 data 字典不是空的
         for node in nodes:
             self.assertIn('data', node)
             self.assertIsInstance(node['data'], dict)
             self.assertEqual(node['data']['label'], node['name'])
 
-        # 4. 验证 Ansible 模板创建与内容正确提取（即使 content 在 node 根级）
+        # 5. 验证 Ansible 模板创建与内容正确提取（即使 content 在 node 根级）
         node_check = next(n for n in nodes if n['id'] == 'check_port')
         ansible_task_id = node_check['data'].get('ansible_task_id')
         self.assertIsNotNone(ansible_task_id)
         from apps.task_management.models import AnsibleTask
         task = AnsibleTask.objects.get(id=ansible_task_id)
-        self.assertEqual(task.content, "ansible.builtin.shell: cmd='ss -tlnp | grep :80'")
+        self.assertIn("hosts: all", task.content)
+        self.assertNotIn("hosts: '{{ instance }}'", task.content)
+
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_analyze_alert_event_nonstandard_nodes_and_filename_translation(self, mock_get_chain):
+        """测试 AI 诊断产生的非标准节点映射、各字段提取、非标准节点过滤旁路及文件名智能转换"""
+        mock_chain = MagicMock()
+        draft_json = (
+            "{\n"
+            "  \"nodes\": [\n"
+            "    {\n"
+            "      \"id\": \"start_node\",\n"
+            "      \"name\": \"告警触发\",\n"
+            "      \"type\": \"trigger\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"id\": \"check_port\",\n"
+            "      \"name\": \"检查端口占用\",\n"
+            "      \"type\": \"task\",\n"
+            "      \"data\": {\n"
+            "        \"ansible_playbook\": \"check_port_80.yml\"\n"
+            "      }\n"
+            "    },\n"
+            "    {\n"
+            "      \"id\": \"approval_node\",\n"
+            "      \"name\": \"人工确认\",\n"
+            "      \"type\": \"manual\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"id\": \"fix_port\",\n"
+            "      \"name\": \"自愈解决占用\",\n"
+            "      \"type\": \"execute\",\n"
+            "      \"exec\": \"fix_port_80.yml\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"id\": \"disk_diag\",\n"
+            "      \"name\": \"磁盘占用诊断\",\n"
+            "      \"type\": \"shell\",\n"
+            "      \"data\": {\n"
+            "        \"script\": \"check_disk.yml\"\n"
+            "      }\n"
+            "    }\n"
+            "  ],\n"
+            "  \"edges\": [\n"
+            "    {\"source\": \"start_node\", \"target\": \"check_port\"},\n"
+            "    {\"source\": \"check_port\", \"target\": \"approval_node\"},\n"
+            "    {\"source\": \"approval_node\", \"target\": \"fix_port\"},\n"
+            "    {\"source\": \"fix_port\", \"target\": \"disk_diag\"}\n"
+            "  ]\n"
+            "}"
+        )
+        mock_chain.invoke.return_value = f"AI Diagnosis result.\n__PIPELINE_DRAFT__:\n{draft_json}"
+        mock_get_chain.return_value = mock_chain
+
+        from apps.host_management.models import ResourcePool
+        pool = ResourcePool.objects.create(name="Default Test Pool 2", code="default_test_pool_2")
+
+        analyze_alert_event(self.alert.id)
+
+        self.alert.refresh_from_db()
+        self.assertIsNotNone(self.alert.suggested_pipeline)
+        
+        pipeline = self.alert.suggested_pipeline
+        graph = pipeline.graph_data
+        nodes = graph.get('nodes', [])
+        edges = graph.get('edges', [])
+
+        # 1. 验证非标准节点（trigger和manual）已被完全过滤剔除
+        self.assertFalse(any(n['id'] == 'start_node' for n in nodes))
+        self.assertFalse(any(n['id'] == 'approval_node' for n in nodes))
+        
+        # 验证仅留下三个动作节点
+        self.assertEqual(len(nodes), 3)
+        node_check = next(n for n in nodes if n['id'] == 'check_port')
+        node_fix = next(n for n in nodes if n['id'] == 'fix_port')
+        node_disk = next(n for n in nodes if n['id'] == 'disk_diag')
+
+        self.assertEqual(node_check['type'], 'ansible')
+        self.assertEqual(node_fix['type'], 'ansible')
+        self.assertEqual(node_disk['type'], 'ansible')
+
+        # 验证边关系已正确旁路缝合：
+        # start_node 被裁掉，因此 check_port 成为起点
+        # approval_node 在 check_port 和 fix_port 之间被裁掉并旁路，因此应该产生 check_port -> fix_port 边
+        self.assertEqual(len(edges), 2)
+        edge_1 = next(e for e in edges if e['source'] == 'check_port')
+        self.assertEqual(edge_1['target'], 'fix_port')
+        edge_2 = next(e for e in edges if e['source'] == 'fix_port')
+        self.assertEqual(edge_2['target'], 'disk_diag')
+
+        # 2. 验证 check_port_80.yml 翻译为实际的检测 wait_for playbook，且类型为 playbook
+        ansible_task_id = node_check['data'].get('ansible_task_id')
+        self.assertIsNotNone(ansible_task_id)
+        from apps.task_management.models import AnsibleTask
+        task = AnsibleTask.objects.get(id=ansible_task_id)
+        self.assertEqual(task.task_type, "playbook")
+        self.assertIn("Wait for port 80 to be open", task.content)
+        self.assertIn("wait_for", task.content)
+
+        # 3. 验证 fix_port_80.yml (从根级的 exec 提取) 被翻译为 kill 进程的 playbook，且类型为 playbook
+        ansible_task_id_fix = node_fix['data'].get('ansible_task_id')
+        self.assertIsNotNone(ansible_task_id_fix)
+        task_fix = AnsibleTask.objects.get(id=ansible_task_id_fix)
+        self.assertEqual(task_fix.task_type, "playbook")
+        self.assertIn("Kill processes using port 80", task_fix.content)
+        self.assertIn("shell: lsof -t -i:80 | xargs -r kill -9", task_fix.content)
+
+        # 4. 验证 check_disk.yml 被翻译为 df -h 的 playbook
+        ansible_task_id_disk = node_disk['data'].get('ansible_task_id')
+        self.assertIsNotNone(ansible_task_id_disk)
+        task_disk = AnsibleTask.objects.get(id=ansible_task_id_disk)
+        self.assertEqual(task_disk.task_type, "playbook")
+        self.assertIn("Check Disk Usage", task_disk.content)
+        self.assertIn("shell: df -h", task_disk.content)
+
+    @patch('apps.ai_engine.rag_service.ChatOpenAI.invoke')
+    def test_rag_service_refine_dag(self, mock_invoke):
+        """测试 RAGService.refine_dag 方法能正确构造执行链并调用 LLM"""
+        from langchain_core.messages import AIMessage
+        mock_invoke.return_value = AIMessage(content="refined response")
+
+        from apps.ai_engine.rag_service import RAGService
+        rag = RAGService()
+
+        nodes = [{"id": "n1", "type": "ansible", "name": "test"}]
+        edges = []
+        result = rag.refine_dag(prompt_text="add a git clone step", nodes=nodes, edges=edges)
+        
+        self.assertEqual(result, "refined response")
+        self.assertTrue(mock_invoke.called)
+
+

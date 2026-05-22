@@ -456,6 +456,8 @@ class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
             
             import json
             suggested_data = json.loads(clean_json.strip())
+            from apps.pipeline_management.utils import normalize_and_filter_ai_dag
+            suggested_data = normalize_and_filter_ai_dag(suggested_data)
             return Response(suggested_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": f"Failed to generate pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -486,6 +488,8 @@ class AIChatHistoryViewSet(DataScopeMixin, viewsets.ModelViewSet):
             
             import json
             suggested_data = json.loads(clean_json.strip())
+            from apps.pipeline_management.utils import normalize_and_filter_ai_dag
+            suggested_data = normalize_and_filter_ai_dag(suggested_data)
             return Response(suggested_data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": f"Failed to refine pipeline: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

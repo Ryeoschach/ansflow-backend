@@ -261,7 +261,7 @@ class PipelineEngineTestCase(TestCase):
         self.assertEqual(resolved["return_code"], "0")
 
     def test_dag_deadlock_detection_concept(self):
-        """测试循环依赖导致的死锁（验证现状）"""
+        """测试循环依赖导致的死锁（验证现状：不再挂起在 running，而是以 failed 退出）"""
         circular_graph = {
             "nodes": [
                 {"id": "node1", "type": "docker_build", "data": {"label": "B1"}},
@@ -282,7 +282,7 @@ class PipelineEngineTestCase(TestCase):
             advance_pipeline_engine(run.id)
         
         run.refresh_from_db()
-        self.assertEqual(run.status, 'running')
+        self.assertEqual(run.status, 'failed')
         self.assertEqual(run.nodes.filter(status='pending').count(), 2)
 
     def test_workspace_cleanup(self):
@@ -311,3 +311,43 @@ class PipelineEngineTestCase(TestCase):
         
         # 清理测试现场
         shutil.rmtree(new_dir, ignore_errors=True)
+
+    def test_event_node_execution(self):
+        """测试 event 节点类型能成功作为起点执行"""
+        run = PipelineRun.objects.create(pipeline=self.pipeline, trigger_user=self.user, status='running')
+        node_run = PipelineNodeRun.objects.create(
+            run=run, node_id="event_start", node_type="event", status="pending"
+        )
+        with patch('apps.pipeline_management.tasks.push_pipeline_status_to_ws'):
+            execute_pipeline_node(node_run.id)
+        
+        node_run.refresh_from_db()
+        self.assertEqual(node_run.status, "success")
+        self.assertIn("起点触发完成", node_run.logs)
+
+    def test_pipeline_engine_failed_termination(self):
+        """测试流水线中某一节点执行失败时，流转引擎能正确将运行标记为 failed 并结束"""
+        # 修改流水线图，有两个节点，node1 -> node2
+        self.pipeline.graph_data = {
+            "nodes": [
+                {"id": "node1", "type": "input"},
+                {"id": "node2", "type": "ansible"}
+            ],
+            "edges": [
+                {"source": "node1", "target": "node2"}
+            ]
+        }
+        self.pipeline.save()
+
+        # 启动一个 PipelineRun，让 node1 成功，而 node2 失败
+        run = PipelineRun.objects.create(pipeline=self.pipeline, trigger_user=self.user, status='running')
+        n1 = PipelineNodeRun.objects.create(run=run, node_id="node1", node_type="input", status="success")
+        n2 = PipelineNodeRun.objects.create(run=run, node_id="node2", node_type="ansible", status="failed")
+
+        with patch('apps.pipeline_management.tasks.push_pipeline_status_to_ws'):
+            advance_pipeline_engine(run.id)
+
+        run.refresh_from_db()
+        # 引擎应该发现没有 active 节点在执行，并且没有可继续触发的 ready 节点，且有失败节点，因此将整个 run 标记为 failed
+        self.assertEqual(run.status, "failed")
+

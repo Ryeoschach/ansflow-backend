@@ -170,7 +170,7 @@ def execute_pipeline_node(self, node_run_id):
         # ---- 根据 node_type 进行不同业务分流 ----
         node_type = node_run.node_type
         
-        if node_type == 'input':
+        if node_type in ('input', 'event'):
             node_run.logs = "起点触发完成。"
             success = True
             
@@ -818,13 +818,10 @@ def advance_pipeline_engine(self, run_id):
         # ... (后续逻辑不变，但放入 try 中)
         # 寻找就绪节点
         ready_nodes = []
-        has_running_or_pending = False
+        has_active = any(nr.status in ('running', 'waiting') for nr in node_runs)
 
         for nr in node_runs:
-            if nr.status == 'running':
-                has_running_or_pending = True
-            elif nr.status == 'pending':
-                has_running_or_pending = True
+            if nr.status == 'pending':
                 incoming_edges = [e for e in edges_config if e.get('target') == nr.node_id]
                 
                 if not incoming_edges:
@@ -855,11 +852,16 @@ def advance_pipeline_engine(self, run_id):
                     execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
             push_pipeline_status_to_ws(run)
                 
-        elif not has_running_or_pending:
-            # 检查是否有节点失败
+        elif not has_active:
+            # Determine final status of the pipeline run
             has_failed = any(nr.status == 'failed' for nr in node_runs)
-            if has_failed:
+            has_cancelled = any(nr.status == 'cancelled' for nr in node_runs)
+            has_pending = any(nr.status == 'pending' for nr in node_runs)
+            
+            if has_failed or (has_pending and not has_cancelled):
                 run.status = 'failed'
+            elif has_cancelled:
+                run.status = 'cancelled'
             else:
                 run.status = 'success'
                 # --- AI 知识闭环：自动摘要 ---

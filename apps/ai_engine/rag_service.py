@@ -276,6 +276,17 @@ class RAGService:
 【特殊指令】
 1. 资产编排：写剧本输出 `__ANSIBLE_DRAFT__: {{"name": "...", "content": "..."}}`。
 2. 流水线编排：输出 `__PIPELINE_DRAFT__: {{"nodes": [...], "edges": [...]}}`。
+   注意：
+   - 每一个节点必须是以下系统组件列表中支持的标准执行节点之一：
+     - `ansible`: 运维节点，用来执行 ansible 剧本或临时指令。其 data 字典中必须定义 `playbook`（Ansible 剧本内容字符串）或 `exec`（待执行命令，如 shell 指令）。例如：`{{"id": "node_check", "type": "ansible", "name": "诊断服务", "data": {{"playbook": "--- ...", "ansible_task_id": null}}}}`。
+     - `git_clone`: 代码仓库拉取节点。
+     - `docker_build` / `kaniko_build`: 镜像构建节点。
+     - `k8s_deploy`: K8s 部署节点。
+     - `host_deploy`: 主机部署节点。
+     - `http_webhook`: Webhook 发送节点。
+   - 严禁输出 `trigger`、`start`、`event`、`input` 等触发/事件节点类型（告警接收作为隐式触发源，不需要体现在流水线节点中）。
+   - 严禁输出 `manual`、`approval` 等人工审批节点类型（系统有专用的外部审批拦截流程，流水线内部无需添加任何审批节点）。
+   - 严禁输出任何名为 “接收告警”、“告警接收”、“人工审批”、“人工审批修复”、“人工确认” 或具有类似逻辑功能的节点。
 
 参考内容：
 {context}
@@ -575,6 +586,34 @@ class RAGService:
         prompt = ChatPromptTemplate.from_template(template)
         chain = prompt | self.llm | StrOutputParser()
         return chain.invoke({"prompt_text": prompt_text})
+
+    def refine_dag(self, prompt_text: str, nodes: list, edges: list, auth_context: dict = None):
+        """
+        基于当前流水线结构与用户的修改指示进行细化/调整，生成新的 DAG JSON 字符串
+        """
+        current_pipeline = json.dumps({"nodes": nodes, "edges": edges}, ensure_ascii=False, indent=2)
+        template = (
+            "你是一个资深的 AnsFlow SRE 流水线编排专家。\n"
+            "当前流水线的节点和边关系如下：\n"
+            "{current_pipeline}\n\n"
+            "用户提出了以下修改/细化要求：\n"
+            "{prompt_text}\n\n"
+            "请遵循以下约束调整流水线：\n"
+            "1. 每一个节点必须是以下系统组件列表中支持的标准执行节点之一：\n"
+            "   - `ansible`: 运维节点，用来执行 ansible 剧本或临时指令。其 data 字典中必须定义 `playbook`（Ansible 剧本内容字符串）或 `exec`（待执行命令，如 shell 指令）。例如：{{\"id\": \"node_check\", \"type\": \"ansible\", \"name\": \"诊断服务\", \"data\": {{\"playbook\": \"--- ...\", \"ansible_task_id\": null}}}}\n"
+            "   - `git_clone`: 代码仓库拉取节点。\n"
+            "   - `docker_build` / `kaniko_build`: 镜像构建节点。\n"
+            "   - `k8s_deploy`: K8s 部署节点。\n"
+            "   - `host_deploy`: 主机部署节点。\n"
+            "   - `http_webhook`: Webhook 发送节点。\n"
+            "2. 严禁输出 `trigger`、`start`、`event`、`input` 等触发/事件节点类型（告警接收作为隐式触发源，不需要体现在流水线节点中）。\n"
+            "3. 严禁输出 `manual`、`approval` 等人工审批节点类型（系统有专用的外部审批拦截流程，流水线内部无需添加任何审批节点）。\n"
+            "4. 严禁输出任何名为 “接收告警”、“告警接收”、“人工审批”、“人工审批修复”、“人工确认” 或具有类似逻辑功能的节点。\n"
+            "5. 请生成完整的、调整后的 JSON 格式的 DAG 流水线数据，结构为：{{\"nodes\": [...], \"edges\": [...]}}，不要包含任何多余解释，只返回该 JSON 代码块（可用 ```json 包裹）。"
+        )
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = prompt | self.llm | StrOutputParser()
+        return chain.invoke({"current_pipeline": current_pipeline, "prompt_text": prompt_text})
 
     def explain_pipeline(self, nodes: list, edges: list):
         template = "解释以下流水线逻辑：{pipeline}"
