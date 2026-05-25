@@ -83,6 +83,11 @@ backend/
 ### 4. AIGC Intent Orchestration (Pipeline Gen)
 - **Natural Language Orchestration**: Users input requirements in plain text, and AI generates a DAG JSON structure compliant with ReactFlow for the frontend canvas.
 
+### 5. Config Center & Compliance (Security & System)
+- **Custom AI Prompt Templates**: Dynamic prompt configuration for 7 LLM scenarios (RAG Q&A, diagnosis, alert analysis, DAG gen/refine, pipeline explain, OCR). Includes required variable placeholder verification and failsafe code defaults.
+- **Multi-channel Notifications**: central configuration of Feishu/DingTalk bot Webhooks, notification level filtering, and a refined event whitelist (`pipeline_start`, `pipeline_result`, `approval_requested`, `approval_result`, `task_result`) with env variable fallback.
+- **Security compliance & MLPS 2.0**: Out-of-the-box support for host compliance checks, tracking security drifts, and automated remediation aligned with National Cyber Protection Level 3 standards.
+
 ---
 
 ## Quick Start
