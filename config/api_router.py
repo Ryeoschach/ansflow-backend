@@ -3,7 +3,10 @@ from rest_framework.routers import DefaultRouter
 
 from apps.k8s_management.views import K8sClusterViewSet, HelmRepositoryViewSet, K8sApplicationViewSet
 from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewSet, MenuViewSet, AuditLogViewSet
-from apps.host_management.views import HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet, HostBaselineViewSet
+from apps.host_management.views import (
+    HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet, HostBaselineViewSet,
+    ComplianceFrameworkViewSet, ComplianceClauseViewSet, ComplianceBaselineMappingViewSet
+)
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet, AnsibleScheduleViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, PipelineNodeRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
@@ -28,6 +31,9 @@ router.register(r'environments', EnvironmentViewSet, basename='environments')
 router.register(r'platforms', PlatformViewSet, basename='platforms')
 router.register(r'resource_pools', ResourcePoolViewSet, basename='resource_pools')
 router.register(r'host_baselines', HostBaselineViewSet, basename='host_baselines')
+router.register(r'compliance/frameworks', ComplianceFrameworkViewSet, basename='compliance_frameworks')
+router.register(r'compliance/clauses', ComplianceClauseViewSet, basename='compliance_clauses')
+router.register(r'compliance/mappings', ComplianceBaselineMappingViewSet, basename='compliance_mappings')
 router.register(r'ssh_credentials', SshCredentialViewSet, basename='ssh_credentials')
 router.register(r'system/menus', MenuViewSet, basename='system-menus')
 router.register(r'system/permissions', PermissionViewSet, basename='system-permissions')

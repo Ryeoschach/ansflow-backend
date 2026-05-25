@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from apps.host_management.models import Host, Environment, Platform, ResourcePool, SshCredential, HostBaseline
+from apps.host_management.models import (
+    Host, Environment, Platform, ResourcePool, SshCredential, HostBaseline,
+    ComplianceFramework, ComplianceClause, ComplianceBaselineMapping
+)
 
 
 class SshCredentialSerializer(serializers.ModelSerializer):
@@ -89,3 +92,56 @@ class HostBaselineSerializer(serializers.ModelSerializer):
             'create_time', 'update_time'
         ]
         read_only_fields = ['last_check_time', 'last_check_status', 'last_execution_id', 'create_time', 'update_time']
+
+
+class ComplianceFrameworkSerializer(serializers.ModelSerializer):
+    clause_count = serializers.IntegerField(source='clauses.count', read_only=True)
+    
+    class Meta:
+        model = ComplianceFramework
+        fields = ['id', 'name', 'code', 'version', 'description', 'clause_count', 'create_time', 'update_time']
+        read_only_fields = ['create_time', 'update_time']
+
+
+class ComplianceClauseSerializer(serializers.ModelSerializer):
+    compliance_status = serializers.ReadOnlyField()
+    baseline_count = serializers.IntegerField(source='baseline_mappings.count', read_only=True)
+    baseline_details = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ComplianceClause
+        fields = [
+            'id', 'framework', 'parent', 'code', 'name', 'description', 
+            'sort_order', 'compliance_status', 'baseline_count', 'baseline_details',
+            'create_time', 'update_time'
+        ]
+        read_only_fields = ['create_time', 'update_time']
+
+    def get_baseline_details(self, obj):
+        mappings = obj.baseline_mappings.select_related('baseline', 'baseline__resource_pool')
+        return [
+            {
+                "mapping_id": m.id,
+                "baseline_id": m.baseline.id,
+                "baseline_name": m.baseline.name,
+                "pool_name": m.baseline.resource_pool.name if m.baseline.resource_pool else None,
+                "last_check_status": m.baseline.last_check_status,
+                "last_check_time": m.baseline.last_check_time.isoformat() if m.baseline.last_check_time else None
+            } for m in mappings
+        ]
+
+
+class ComplianceBaselineMappingSerializer(serializers.ModelSerializer):
+    baseline_name = serializers.ReadOnlyField(source='baseline.name')
+    pool_name = serializers.ReadOnlyField(source='baseline.resource_pool.name')
+    clause_code = serializers.ReadOnlyField(source='clause.code')
+    clause_name = serializers.ReadOnlyField(source='clause.name')
+
+    class Meta:
+        model = ComplianceBaselineMapping
+        fields = [
+            'id', 'clause', 'clause_code', 'clause_name', 
+            'baseline', 'baseline_name', 'pool_name', 
+            'create_time', 'update_time'
+        ]
+        read_only_fields = ['create_time', 'update_time']

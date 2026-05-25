@@ -23,6 +23,13 @@ def refresh_user_cache_chunk(user_ids):
         menus = calculate_user_menu_tree(user)
         cache.set(f"rbac:menus:user_{user.id}", menus, 3600)
 
+        # 清除资源隔离数据范围缓存，防止权限更新滞后
+        resource_types = ['pipeline', 'ansible_task', 'k8s_cluster', 'resource_pool', 'registry', 'credential']
+        action_types = ['manage', 'use']
+        for rtype in resource_types:
+            for atype in action_types:
+                cache.delete(f"rbac:data_scope:user_{user.id}:{rtype}:{atype}")
+
 
 @shared_task(name="rbac.refresh_bulk_cache_task")
 def refresh_bulk_cache_task(user_ids):

@@ -3,10 +3,16 @@ from rest_framework.response import Response
 import paramiko
 import io
 
-from apps.host_management.models import Host, Environment, ResourcePool, Platform, SshCredential, HostBaseline
+from apps.host_management.models import (
+    Host, Environment, ResourcePool, Platform, SshCredential, HostBaseline,
+    ComplianceFramework, ComplianceClause, ComplianceBaselineMapping
+)
 
-from apps.host_management.serializers import HostSerializer, EnvironmentSerializer, PlatformSerializer, \
-    ResourceSerializer, SshCredentialSerializer, HostBaselineSerializer
+from apps.host_management.serializers import (
+    HostSerializer, EnvironmentSerializer, PlatformSerializer,
+    ResourceSerializer, SshCredentialSerializer, HostBaselineSerializer,
+    ComplianceFrameworkSerializer, ComplianceClauseSerializer, ComplianceBaselineMappingSerializer
+)
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from rest_framework.decorators import action
 
@@ -179,3 +185,51 @@ class PlatformViewSet(viewsets.ModelViewSet):
         platform.refresh_from_db()
         serializer = self.get_serializer(platform)
         return Response(serializer.data)
+
+
+class ComplianceFrameworkViewSet(viewsets.ModelViewSet):
+    """
+    合规框架管理
+    """
+    queryset = ComplianceFramework.objects.all()
+    serializer_class = ComplianceFrameworkSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:compliance'
+
+
+class ComplianceClauseViewSet(viewsets.ModelViewSet):
+    """
+    合规条款管理
+    """
+    queryset = ComplianceClause.objects.all().order_by('sort_order', 'id')
+    serializer_class = ComplianceClauseSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:compliance'
+
+    @action(detail=True, methods=['post'])
+    def trigger_check(self, request, pk=None):
+        """
+        手动触发该条款关联的所有基线巡检
+        """
+        clause = self.get_object()
+        mappings = clause.baseline_mappings.all()
+        if not mappings.exists():
+            return Response({"error": "该条款尚未关联任何主机基线"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        triggered_count = 0
+        from apps.host_management.tasks import check_host_baseline
+        for m in mappings:
+            check_host_baseline.delay(m.baseline.id)
+            triggered_count += 1
+            
+        return Response({"message": f"成功下发 {triggered_count} 个基线巡检任务"})
+
+
+class ComplianceBaselineMappingViewSet(viewsets.ModelViewSet):
+    """
+    条款基线映射关系管理
+    """
+    queryset = ComplianceBaselineMapping.objects.all()
+    serializer_class = ComplianceBaselineMappingSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:compliance'

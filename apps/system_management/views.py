@@ -225,6 +225,49 @@ class BackupViewSet(viewsets.ViewSet):
         os.makedirs(backup_dir, exist_ok=True)
         return backup_dir
 
+    def _get_selected_modules(self, data):
+        """
+        从 request.data 或 request.query_params 中解析并规范化模块列表
+        """
+        if not data:
+            return None
+        
+        raw_val = None
+        # 如果是 QueryDict，尝试 getlist
+        if hasattr(data, 'getlist'):
+            val_list = data.getlist('modules')
+            if val_list:
+                if len(val_list) > 1:
+                    raw_val = val_list
+                else:
+                    raw_val = val_list[0]
+                    
+        if raw_val is None:
+            raw_val = data.get('modules')
+
+        if not raw_val:
+            return None
+
+        if isinstance(raw_val, list):
+            return raw_val
+
+        if isinstance(raw_val, str):
+            raw_val = raw_val.strip()
+            if not raw_val:
+                return None
+            # 兼容 JSON 数组格式，例如 '["rbac", "host"]'
+            if raw_val.startswith('[') and raw_val.endswith(']'):
+                try:
+                    parsed = json.loads(raw_val)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+            # 兼容逗号分隔格式，例如 "rbac,host"
+            return [m.strip() for m in raw_val.split(',') if m.strip()]
+
+        return None
+
     @action(detail=False, methods=['get'])
     def modules(self, request):
         """
@@ -242,16 +285,21 @@ class BackupViewSet(viewsets.ViewSet):
         """
         from .backup import BackupExporter
 
-        # 获取请求中的模块过滤列表
+        # 获取请求中的模块过滤列表和密码
         selected_modules = None
+        passphrase = None
         if request.method == 'POST':
-            selected_modules = request.data.get('modules')
+            selected_modules = self._get_selected_modules(request.data)
+            passphrase = request.data.get('passphrase')
         else:
-            # 兼容 GET query params: ?modules=rbac&modules=host
-            selected_modules = request.query_params.getlist('modules')
+            selected_modules = self._get_selected_modules(request.query_params)
+            passphrase = request.query_params.get('passphrase')
+
+        if not passphrase:
+            passphrase = None
 
         try:
-            exporter = BackupExporter()
+            exporter = BackupExporter(passphrase=passphrase)
             backup_data = exporter.export(selected_modules=selected_modules)
 
             # 生成文件名
@@ -267,13 +315,16 @@ class BackupViewSet(viewsets.ViewSet):
             # 返回文件路径（相对路径）
             file_url = f'/media/backups/{filename}'
 
+            dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
+            timestamp_display = dt.isoformat()
+
             return Response({
                 'success': True,
                 'filename': filename,
                 'url': file_url,
                 'size': os.path.getsize(file_path),
                 'record_count': {k: len(v) for k, v in backup_data['data'].items()},
-                'created_at': timestamp,
+                'created_at': timestamp_display,
             })
 
         except Exception as e:
@@ -294,13 +345,20 @@ class BackupViewSet(viewsets.ViewSet):
             if filename.endswith('.json.gz'):
                 file_path = os.path.join(backup_dir, filename)
                 stat = os.stat(file_path)
-                # 从文件名提取时间戳
-                timestamp = filename.replace('ansflow_backup_', '').replace('.json.gz', '')
-                try:
-                    dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
-                    timestamp_display = dt.strftime('%Y-%m-%d %H:%M:%S')
-                except Exception:
-                    timestamp_display = timestamp
+                # 尝试从文件名匹配时间戳 YYYYMMDD_HHMMSS
+                import re
+                match = re.search(r'(\d{8}_\d{6})', filename)
+                if match:
+                    timestamp = match.group(1)
+                    try:
+                        dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
+                        timestamp_display = dt.isoformat()
+                    except Exception:
+                        dt = datetime.datetime.fromtimestamp(stat.st_mtime)
+                        timestamp_display = dt.isoformat()
+                else:
+                    dt = datetime.datetime.fromtimestamp(stat.st_mtime)
+                    timestamp_display = dt.isoformat()
 
                 backups.append({
                     'filename': filename,
@@ -347,7 +405,10 @@ class BackupViewSet(viewsets.ViewSet):
         from .backup import BackupImporter
 
         filename = request.data.get('filename')
-        selected_modules = request.data.get('modules') # 获取选中的模块
+        selected_modules = self._get_selected_modules(request.data)
+        passphrase = request.data.get('passphrase')
+        if not passphrase:
+            passphrase = None
         
         if not filename:
             return Response({'error': '缺少 filename 参数'}, status=status.HTTP_400_BAD_REQUEST)
@@ -357,7 +418,7 @@ class BackupViewSet(viewsets.ViewSet):
             return Response({'error': '备份文件不存在'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            importer = BackupImporter({})
+            importer = BackupImporter({}, passphrase=passphrase)
             result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             return Response({
@@ -380,7 +441,10 @@ class BackupViewSet(viewsets.ViewSet):
         from .backup import BackupImporter
 
         file = request.FILES.get('file')
-        selected_modules = request.data.get('modules') # 获取选中的模块
+        selected_modules = self._get_selected_modules(request.data)
+        passphrase = request.data.get('passphrase')
+        if not passphrase:
+            passphrase = None
         
         if not file:
             return Response({'error': '缺少备份文件'}, status=status.HTTP_400_BAD_REQUEST)
@@ -399,7 +463,7 @@ class BackupViewSet(viewsets.ViewSet):
                     f.write(chunk)
 
             # 执行恢复
-            importer = BackupImporter({})
+            importer = BackupImporter({}, passphrase=passphrase)
             result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             # 删除临时上传文件

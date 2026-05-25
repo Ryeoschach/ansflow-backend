@@ -31,6 +31,10 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
     queryset = AnsibleTask.objects.all().order_by('-create_time')
     serializer_class = AnsibleTaskSerializer
+
+    def get_queryset(self):
+        # 排除系统级临时任务，防止污染前端任务模板列表
+        return super().get_queryset().exclude(create_type='system').order_by('-create_time')
     permission_classes = [SmartRBACPermission]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     filterset_class = AnsibleTaskFilter
@@ -69,6 +73,23 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
         触发该模板运行，生成执行记录实例
         """
         task = self.get_object()
+
+        # --- 🛡️ 目标资源池权限校验 (防提权越权) ---
+        if task.resource_pool_id and not request.user.is_superuser:
+            from utils.rbac_permission import get_user_data_scope
+            allowed_pools = get_user_data_scope(request.user, 'resource_pool', action_type='use')
+            
+            # 检查用户是不是该主机资源池的创建者以豁免
+            is_pool_owner = False
+            pool_creator = getattr(task.resource_pool, 'creator', None)
+            if pool_creator:
+                is_pool_owner = (pool_creator == request.user or getattr(pool_creator, 'id', None) == request.user.id)
+            
+            # 校验 ID
+            has_pool_access = "*" in allowed_pools or is_pool_owner or any(str(pid) == str(task.resource_pool_id) for pid in allowed_pools)
+            if not has_pool_access:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(f"权限不足：您无权对目标主机资源池 [{task.resource_pool.name}] 执行任何任务")
 
         # --- 🚀 审批拦截逻辑集成 ---
         from apps.approval_center.engine import ProxyApprovalEngine
@@ -165,6 +186,31 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
     queryset = AnsibleExecution.objects.all().order_by('-create_time')
     serializer_class = AnsibleExecutionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return AnsibleExecution.objects.none()
+        if user.is_superuser:
+            return AnsibleExecution.objects.all().order_by('-create_time')
+
+        # 1. 获取 DataScopeMixin 过滤出来的常规执行历史（基于 task 的 use 权限或 executor 本人）
+        base_qs = super().get_queryset()
+
+        # 2. 对于系统/临时任务，只要用户拥有该任务对应资源池的 'view' 权限，也允许查看执行历史
+        from django.db.models import Q
+        from utils.rbac_permission import get_user_data_scope
+        allowed_pools = get_user_data_scope(user, 'resource_pool', action_type='view')
+
+        if "*" in allowed_pools:
+            system_q = Q(task__create_type='system')
+        else:
+            system_q = Q(task__create_type='system', task__resource_pool_id__in=allowed_pools)
+
+        system_qs = AnsibleExecution.objects.filter(system_q).distinct()
+
+        # 合并去重并排序
+        return (base_qs | system_qs).distinct().order_by('-create_time')
     permission_classes = [SmartRBACPermission]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_class = AnsibleExecutionFilter

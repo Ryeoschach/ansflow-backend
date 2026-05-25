@@ -160,6 +160,8 @@ class Command(BaseCommand):
                 {"title": "环境管理", "title_en": "Envs Management", "key": "envs", "path": "v1/system/envs", "icon": "fluent-mdl2:server-enviroment", "order": 1},
                 {"title": "资源池", "title_en": "Resource Pool", "key": "resourcepool", "path": "v1/system/resourcepool", "icon": "clarity:resource-pool-outline-alerted", "order": 2},
                 {"title": "主机管理", "title_en": "Host Management", "key": "hosts", "path": "v1/system/hosts", "icon": "material-symbols-light:host-outline", "order": 3},
+                {"title": "主机基线", "title_en": "Host Baselines", "key": "host-baselines", "path": "v1/system/host-baselines", "icon": "SafetyCertificateOutlined", "order": 4},
+                {"title": "等保2.0参考", "title_en": "MLPS 2.0 Reference", "key": "compliance", "path": "v1/system/compliance", "icon": "material-symbols:shield-check-outline", "order": 5},
                 {"title": "SSH 凭据", "title_en": "Credentials Management", "key": "credentials", "path": "v1/system/credentials", "icon": "KeyOutlined", "order": 50},
             ]},
             {"title": "配置中心", "title_en": "Config Center", "key": "config center", "path": "v1/system/config", "icon": "carbon:document-configuration", "order": 889},

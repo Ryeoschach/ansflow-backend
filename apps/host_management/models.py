@@ -230,3 +230,88 @@ class HostBaseline(BaseModel):
 
     def __str__(self):
         return f"{self.name} -> {self.resource_pool.name}"
+
+
+class ComplianceFramework(BaseModel):
+    """
+    合规框架模型：如“网络安全等级保护 2.0 (等保2.0)”
+    """
+    name = models.CharField(max_length=100, verbose_name="框架名称")
+    code = models.CharField(max_length=50, unique=True, verbose_name="框架标识")
+    version = models.CharField(max_length=50, blank=True, null=True, verbose_name="版本号")
+    description = models.TextField(blank=True, null=True, verbose_name="框架描述")
+
+    class Meta:
+        db_table = 'cmdb_compliance_framework'
+        verbose_name = "合规框架"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.name} ({self.version or 'v1.0'})"
+
+
+class ComplianceClause(BaseModel):
+    """
+    合规条款模型：树状层级结构，如“身份鉴别 -> 密码复杂度要求”
+    """
+    framework = models.ForeignKey(ComplianceFramework, on_delete=models.CASCADE, related_name='clauses', verbose_name="所属框架")
+    parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='children', verbose_name="上级条款")
+    code = models.CharField(max_length=50, verbose_name="条款编号")
+    name = models.CharField(max_length=100, verbose_name="条款名称")
+    description = models.TextField(blank=True, null=True, verbose_name="条款描述")
+    sort_order = models.IntegerField(default=0, verbose_name="排序序号")
+
+    class Meta:
+        db_table = 'cmdb_compliance_clause'
+        ordering = ['sort_order', 'id']
+        verbose_name = "合规条款"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"[{self.code}] {self.name}"
+
+    @property
+    def compliance_status(self):
+        """
+        动态计算条款的合规状态：
+        - 如果有子条款，返回所有子条款的逻辑状态（只要有一个 failed 则为 failed，全部 success 为 success，其余为 pending）
+        - 如果为叶子条款，根据关联的主机基线状态返回（只要有一个 failed 则为 failed，全部 success 为 success，正在运行为 running，其余为 pending）
+        """
+        children = self.children.all()
+        if children.exists():
+            statuses = [c.compliance_status for c in children]
+            if 'failed' in statuses:
+                return 'failed'
+            if all(s == 'success' for s in statuses):
+                return 'success'
+            return 'pending'
+
+        mappings = self.baseline_mappings.all()
+        if not mappings.exists():
+            return 'pending'
+
+        statuses = [m.baseline.last_check_status for m in mappings]
+        if 'failed' in statuses:
+            return 'failed'
+        if 'running' in statuses:
+            return 'running'
+        if all(s == 'success' for s in statuses):
+            return 'success'
+        return 'pending'
+
+
+class ComplianceBaselineMapping(BaseModel):
+    """
+    合规条款与主机基线的映射关系表 (ManyToMany)
+    """
+    clause = models.ForeignKey(ComplianceClause, on_delete=models.CASCADE, related_name='baseline_mappings', verbose_name="合规条款")
+    baseline = models.ForeignKey(HostBaseline, on_delete=models.CASCADE, related_name='compliance_mappings', verbose_name="主机基线")
+
+    class Meta:
+        db_table = 'cmdb_compliance_baseline_mapping'
+        unique_together = ('clause', 'baseline')
+        verbose_name = "条款基线映射"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.clause.code} <-> {self.baseline.name}"

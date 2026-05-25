@@ -195,7 +195,8 @@ def check_host_baseline(baseline_id):
         task_type='playbook',
         resource_pool=baseline.resource_pool,
         content=baseline.check_playbook,
-        creator=None # 系统触发
+        creator=None, # 系统触发
+        create_type='system'
     )
 
     execution = AnsibleExecution.objects.create(
@@ -240,7 +241,8 @@ def check_host_baseline(baseline_id):
                 task_type='playbook',
                 resource_pool=baseline.resource_pool,
                 content=baseline.remediate_playbook,
-                creator=None
+                creator=None,
+                create_type='system'
             )
             fix_exec = AnsibleExecution.objects.create(task=fix_task, status='pending', from_pipeline=True)
             run_ansible_task.delay(fix_exec.id)
@@ -248,7 +250,5 @@ def check_host_baseline(baseline_id):
             alert.status = 'acknowledged'
             alert.save()
 
-    # 清理临时任务
-    check_task.delete()
     return f"Baseline {baseline.name} check finished with status: {result.get('status')}"
 
