@@ -142,7 +142,7 @@ MODULE_DEFINITIONS = {
     },
     'ai': {
         'label': 'AI 引擎与知识库 (AI)',
-        'models': ['KnowledgeBase', 'AIProvider', 'AIModel', 'AIConfig', 'KnowledgeDocument', 'KnowledgeChunk']
+        'models': ['KnowledgeBase', 'AIProvider', 'AIModel', 'AIConfig', 'KnowledgeDocument', 'KnowledgeChunk', 'AIPromptTemplate']
     },
     'sre': {
         'label': '自愈与自驱运维 (SRE)',
@@ -445,6 +445,12 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         exclude_fields=['remark'],
         unique_fields=['name'],
         export_order=26,
+    ),
+    'AIPromptTemplate': ModelInfo(
+        app_label='ai_engine', model_name='AIPromptTemplate', table_name='ai_prompt_template',
+        exclude_fields=['remark'],
+        unique_fields=['code'],
+        export_order=27,
     ),
     'HelmRepository': ModelInfo(
         app_label='k8s_management', model_name='HelmRepository', table_name='helm_repositories',
