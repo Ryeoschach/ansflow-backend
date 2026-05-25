@@ -166,11 +166,11 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
                 if not isinstance(value, bool):
                     raise ValueError()
             elif value_type == 'json':
-                if not isinstance(value, dict):
+                if not isinstance(value, (dict, list)):
                     raise ValueError()
             return Response({'valid': True})
         except (ValueError, TypeError):
-            return Response({'valid': False, 'error': f'值必须是 {value_type} 类型'})
+            return Response({'valid': False, 'error': f'值必须是 {value_type} 类型（对象或数组）'})
 
     @action(detail=True, methods=['post'])
     def rollback(self, request, pk=None):

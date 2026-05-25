@@ -27,6 +27,16 @@ class GetNotificationConfigTest(TestCase):
 
     @patch('apps.system_management.notifiers.ConfigCache')
     @patch('os.getenv')
+    def test_fallback_to_env_var_when_db_empty_string(self, mock_getenv, mock_cache):
+        """ConfigCache 为空字符串时回退到环境变量"""
+        mock_cache.get.return_value = ""
+        mock_getenv.return_value = 'https://env.feishu.cn/webhook'
+        from apps.system_management.notifiers import get_notification_config
+        result = get_notification_config('feishu.webhook_url')
+        self.assertEqual(result, 'https://env.feishu.cn/webhook')
+
+    @patch('apps.system_management.notifiers.ConfigCache')
+    @patch('os.getenv')
     def test_return_default_when_both_empty(self, mock_getenv, mock_cache):
         """ConfigCache 和环境变量都为空时返回 default"""
         mock_cache.get.return_value = None
@@ -84,6 +94,11 @@ class IsNotificationEnabledTest(TestCase):
         """notify_on 白名单过滤"""
         self.assertTrue(self._call('pipeline_start', {'notify_on': ['pipeline_start']}))
         self.assertFalse(self._call('pipeline_result', {'notify_on': ['pipeline_start']}))
+
+    def test_notify_on_empty_list_disables_all(self):
+        """当 notify_on 为空列表时，禁用所有类型通知"""
+        self.assertFalse(self._call('pipeline_start', {'notify_on': []}))
+        self.assertFalse(self._call('pipeline_result', {'notify_on': []}))
 
     def test_combined_rules(self):
         """组合：总开关开 + error_only + 白名单"""

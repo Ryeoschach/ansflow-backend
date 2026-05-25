@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 def get_notification_config(key: str, default=None):
     """
     从配置中心读取通知配置，优先读取配置中心，
-    回退到环境变量（兼容未迁移前的部署）。
+    若配置值为空字符串或未配置，则回退到环境变量（兼容环境配置与未迁移前的部署）。
     """
     value = ConfigCache.get('notification', key)
-    if value is not None:
+    if value is not None and value != "":
         return value
     # 环境变量回退
     env_map = {
@@ -30,7 +30,7 @@ def get_notification_config(key: str, default=None):
     env_key = env_map.get(key)
     if env_key:
         env_val = os.getenv(env_key)
-        if env_val is not None:
+        if env_val is not None and env_val != "":
             return env_val
     return default
 
@@ -54,15 +54,16 @@ def is_notification_enabled(event_type: str) -> bool:
 
     # 事件类型白名单
     notify_on = get_notification_config('notify_on', None)
-    if notify_on:
+    if notify_on is not None:
         # notify_on 可能是 JSON 字符串（如 '["pipeline_result"]'）或已解析的列表
         if isinstance(notify_on, str):
             try:
                 notify_on = json.loads(notify_on)
             except json.JSONDecodeError:
                 notify_on = None
-        if notify_on and event_type not in notify_on:
-            return False
+        if isinstance(notify_on, list):
+            if event_type not in notify_on:
+                return False
 
     return True
 

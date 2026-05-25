@@ -39,8 +39,8 @@ class ConfigItemSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({'value': '值必须是浮点数'})
             elif value_type == 'bool' and not isinstance(value, bool):
                 raise serializers.ValidationError({'value': '值必须是布尔值'})
-            elif value_type == 'json' and not isinstance(value, dict):
-                raise serializers.ValidationError({'value': '值必须是 JSON 对象'})
+            elif value_type == 'json' and not isinstance(value, (dict, list)):
+                raise serializers.ValidationError({'value': '值必须是 JSON 对象或数组'})
 
         return attrs
 
