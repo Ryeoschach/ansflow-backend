@@ -193,3 +193,15 @@ class AIChatMessage(BaseModel):
         db_table = "ai_chat_message"
         verbose_name = "AI 对话消息"
         verbose_name_plural = verbose_name
+
+class AIPromptTemplate(BaseModel):
+    name = models.CharField(max_length=100, verbose_name="模板名称")
+    code = models.CharField(max_length=100, unique=True, verbose_name="模板代码")
+    template = models.TextField(verbose_name="模板内容")
+    description = models.TextField(blank=True, null=True, verbose_name="模板描述")
+    is_system = models.BooleanField(default=True, verbose_name="是否系统内置")
+
+    class Meta:
+        db_table = "ai_prompt_template"
+        verbose_name = "AI 提示词模板"
+        verbose_name_plural = verbose_name

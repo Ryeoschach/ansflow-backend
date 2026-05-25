@@ -6,12 +6,12 @@ from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import (
     KnowledgeBase, AIChatHistory, AIChatMessage, 
-    AIProvider, AIModel, AIConfig, KnowledgeDocument, KnowledgeChunk
+    AIProvider, AIModel, AIConfig, KnowledgeDocument, KnowledgeChunk, AIPromptTemplate
 )
 from .serializers import (
     KnowledgeBaseSerializer, AIChatHistorySerializer, 
     AIProviderSerializer, AIModelSerializer, AIConfigSerializer,
-    KnowledgeDocumentSerializer, KnowledgeChunkSerializer
+    KnowledgeDocumentSerializer, KnowledgeChunkSerializer, AIPromptTemplateSerializer
 )
 import os
 from django.core.files.storage import default_storage
@@ -185,6 +185,40 @@ class AIConfigViewSet(viewsets.ModelViewSet):
         config, _ = AIConfig.objects.get_or_create(name="default")
         serializer = self.get_serializer(config)
         return Response(serializer.data)
+
+@extend_schema(tags=["AI 提示词模板"])
+class AIPromptTemplateViewSet(viewsets.ModelViewSet):
+    queryset = AIPromptTemplate.objects.all().order_by('id')
+    serializer_class = AIPromptTemplateSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "ai:prompt"
+    resource_type = "ai"
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_system:
+            return Response(
+                {"error": "系统内置的提示词模板不能删除。"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def restore_default(self, request, pk=None):
+        instance = self.get_object()
+        from .prompt_defaults import DEFAULT_PROMPTS
+        if instance.code in DEFAULT_PROMPTS:
+            default_info = DEFAULT_PROMPTS[instance.code]
+            instance.template = default_info["template"]
+            instance.name = default_info["name"]
+            instance.description = default_info["description"]
+            instance.save()
+            serializer = self.get_serializer(instance)
+            return Response(serializer.data)
+        return Response(
+            {"error": "未找到该提示词模板对应的系统默认值。"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
 @extend_schema(tags=["AI 知识库"])
 class KnowledgeBaseViewSet(viewsets.ModelViewSet):

@@ -17,7 +17,7 @@ from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, C
 from apps.ai_engine.views import (
     KnowledgeBaseViewSet, AIChatHistoryViewSet, 
     AIProviderViewSet, AIModelViewSet, AIConfigViewSet,
-    KnowledgeDocumentViewSet, KnowledgeChunkViewSet
+    KnowledgeDocumentViewSet, KnowledgeChunkViewSet, AIPromptTemplateViewSet
 )
 from apps.sre_management.views import AlertEventViewSet, SelfHealingPolicyViewSet
 from apps.task_pulse.views import TaskPulseViewSet, WorkerNodeViewSet
@@ -72,6 +72,7 @@ router.register(r'ai/chat-histories', AIChatHistoryViewSet, basename='ai-chat-hi
 router.register(r'ai/providers', AIProviderViewSet, basename='ai-providers')
 router.register(r'ai/models', AIModelViewSet, basename='ai-models')
 router.register(r'ai/configs', AIConfigViewSet, basename='ai-configs')
+router.register(r'ai/prompts', AIPromptTemplateViewSet, basename='ai-prompts')
 
 # SRE Management
 router.register(r'sre/alerts', AlertEventViewSet, basename='sre-alerts')

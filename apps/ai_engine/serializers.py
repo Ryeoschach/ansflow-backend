@@ -1,7 +1,8 @@
+import re
 from rest_framework import serializers
 from .models import (
     KnowledgeBase, AIChatHistory, AIChatMessage, 
-    AIProvider, AIModel, AIConfig, KnowledgeDocument, KnowledgeChunk
+    AIProvider, AIModel, AIConfig, KnowledgeDocument, KnowledgeChunk, AIPromptTemplate
 )
 
 class AIProviderSerializer(serializers.ModelSerializer):
@@ -59,3 +60,25 @@ class AIChatHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = AIChatHistory
         fields = "__all__"
+
+class AIPromptTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AIPromptTemplate
+        fields = ["id", "name", "code", "template", "description", "is_system", "create_time", "update_time"]
+        read_only_fields = ["code", "is_system", "create_time", "update_time"]
+
+    def validate(self, attrs):
+        template = attrs.get('template')
+        if template is not None:
+            code = getattr(self.instance, 'code', None) or attrs.get('code')
+            from .prompt_defaults import DEFAULT_PROMPTS
+            if code and code in DEFAULT_PROMPTS:
+                required = DEFAULT_PROMPTS[code].get("required_variables", [])
+                pattern = r'(?<!{){([a-zA-Z_][a-zA-Z0-9_]*?)}(?!})'
+                variables = set(re.findall(pattern, template))
+                missing = [v for v in required if v not in variables]
+                if missing:
+                    raise serializers.ValidationError(
+                        {"template": f"该提示词模板缺少必需的变量占位符：{', '.join(['{' + m + '}' for m in missing])}。请不要删除这些占位符。"}
+                    )
+        return attrs

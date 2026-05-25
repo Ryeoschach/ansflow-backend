@@ -2,7 +2,7 @@ import base64
 import requests
 import logging
 from typing import Optional
-from .models import AIConfig, AIModel
+from .models import AIConfig, AIModel, AIPromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +47,28 @@ class VisionParser:
             "api_key": "not-needed"
         }
 
+    def _get_prompt(self, code: str) -> str:
+        from .prompt_defaults import DEFAULT_PROMPTS
+        try:
+            prompt = AIPromptTemplate.objects.filter(code=code).first()
+            if prompt and prompt.template:
+                return prompt.template
+        except Exception as e:
+            logger.warning(f"[Vision] Failed to load prompt '{code}' from database: {e}. Falling back to default.")
+        
+        default_info = DEFAULT_PROMPTS.get(code)
+        if default_info:
+            return default_info["template"]
+        return "Describe all text and tables in this image in detail. Output only the content."
+
     def parse_image(self, image_bytes: bytes, custom_prompt: Optional[str] = None) -> str:
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         ptype = self.config["provider_type"]
 
         logger.info(f"[Vision] Requesting OCR via {ptype} at {self.config['base_url']}")
         
-        # 更加严谨的判定：只有在真正为 None 或 全空格时才使用默认值
-        prompt = custom_prompt if (custom_prompt and custom_prompt.strip()) else "Describe all text and tables in this image in detail. Output only the content."
+        # 更加严谨的判定：优先使用 custom_prompt，如果为空则动态加载数据库配置或系统默认模板
+        prompt = custom_prompt if (custom_prompt and custom_prompt.strip()) else self._get_prompt("vision_ocr")
         
         logger.info(f"[Vision] Using prompt: {prompt[:50]}...")
         
