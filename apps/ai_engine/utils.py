@@ -6,9 +6,9 @@ from apps.registry_management.models import ImageRegistry
 from apps.credentials_management.models import Credential
 from utils.rbac_permission import get_user_data_scope
 
-def get_authorized_resources(user):
+def get_authorized_resources(user, project_id=None):
     """
-    获取用户有权访问的所有资源清单，用于注入 AI 上下文
+    获取用户有权访问的所有资源清单，用于注入 AI 上下文（支持项目隔离）
     """
     if not user or not user.is_authenticated:
         return {}
@@ -31,18 +31,28 @@ def get_authorized_resources(user):
         query = info['model'].objects.all()
         if "*" not in allowed_ids:
             query = query.filter(id__in=allowed_ids)
+            
+        # 如果指定了项目过滤，且模型中包含 project 字段
+        if project_id:
+            # 动态检查模型是否有 project_id 字段
+            opts = info['model']._meta
+            field_names = [f.name for f in opts.fields]
+            if 'project' in field_names:
+                query = query.filter(project_id=project_id)
         
         # 只提取 ID 和名称，减小 Token 消耗
-        # 注意：不同模型的名称字段可能不同，这里假设大部分是 'name'
         name_field = 'name'
         if r_type == 'pipeline':
             name_field = 'name'
         
-        items = list(query.values('id', name_field))
-        if items:
-            auth_context[r_type] = {
-                'label': info['label'],
-                'items': items
-            }
+        try:
+            items = list(query.values('id', name_field))
+            if items:
+                auth_context[r_type] = {
+                    'label': info['label'],
+                    'items': items
+                }
+        except Exception:
+            pass
 
     return auth_context

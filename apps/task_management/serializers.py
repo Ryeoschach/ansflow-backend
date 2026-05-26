@@ -33,8 +33,8 @@ class AnsibleTaskSerializer(serializers.ModelSerializer):
         model = AnsibleTask
         fields = [
             'id', 'name', 'task_type', 'resource_pool', 'resource_pool_name',
-            'content', 'extra_vars', 'forks', 'timeout', 'creator', 'creator_name', 
-            'create_type', 'create_time', 'update_time', 'last_execution_status'
+            'content', 'extra_vars', 'forks', 'timeout', 'creator', 'creator_name',
+            'project', 'create_type', 'create_time', 'update_time', 'last_execution_status'
         ]
         read_only_fields = ['creator', 'create_time', 'update_time']
 

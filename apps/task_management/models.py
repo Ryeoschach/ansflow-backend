@@ -14,6 +14,7 @@ class AnsibleTask(BaseModel):
     )
 
     name = models.CharField(max_length=128, verbose_name="任务名称")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='ansible_tasks', verbose_name="所属项目")
     task_type = models.CharField(max_length=20, choices=TASK_TYPE_CHOICES, default='cmd', verbose_name="任务类型")
     
     # 关联资源池

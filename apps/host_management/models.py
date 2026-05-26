@@ -20,6 +20,7 @@ class SshCredential(BaseModel):
     password = EncryptedCharField(max_length=512, blank=True, null=True, verbose_name="密码")
     private_key = EncryptedTextField(blank=True, null=True, verbose_name="私钥内容")
     passphrase = EncryptedCharField(max_length=512, blank=True, null=True, verbose_name="私钥密码")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='ssh_credentials', verbose_name="所属项目")
     description = models.TextField(blank=True, null=True, verbose_name="描述备注")
 
     class Meta:
@@ -153,6 +154,7 @@ class Host(BaseModel):
         related_name='hosts',
         verbose_name="SSH 登录凭据"
     )
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='hosts', verbose_name="所属项目")
 
     class Meta:
         db_table = 'cmdb_host'
@@ -191,6 +193,7 @@ class ResourcePool(BaseModel):
         related_name='pools',
         verbose_name="包含的主机"
     )
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='resource_pools', verbose_name="所属项目")
 
     # Todo: 可以添加一个 owner 字段指向 User，表示这个池子的负责人
 

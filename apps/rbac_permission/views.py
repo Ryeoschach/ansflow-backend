@@ -275,3 +275,96 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     
     # Ordering
     ordering_fields = ['create_time', 'duration', 'response_status']
+
+
+class ProjectViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        from apps.rbac_permission.serializers import ProjectSerializer
+        return ProjectSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        from apps.rbac_permission.models import Project
+        if user.is_superuser:
+            return Project.objects.all().order_by('-create_time')
+        
+        from django.db.models import Q
+        return Project.objects.filter(
+            Q(owner=user) | Q(members__user=user)
+        ).distinct().order_by('-create_time')
+
+
+class ProjectAssetShareViewSet(viewsets.ModelViewSet):
+    """
+    跨项目资产授权管理。
+
+    - shared_in  : 列出「当前项目」被其他项目授权访问的资产
+    - shared_out : 列出「当前项目」已授权给其他项目的资产
+    - 创建 (POST) : 将当前项目的某资产授权给目标项目
+    - 删除 (DELETE): 撤销某条授权记录
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    def get_serializer_class(self):
+        from apps.rbac_permission.serializers import ProjectAssetShareSerializer
+        return ProjectAssetShareSerializer
+
+    def get_queryset(self):
+        from apps.rbac_permission.models import ProjectAssetShare
+        project = getattr(self.request, 'project', None)
+        if not project:
+            return ProjectAssetShare.objects.none()
+        from django.db.models import Q
+        return ProjectAssetShare.objects.filter(
+            Q(from_project=project) | Q(to_project=project)
+        ).select_related('from_project', 'to_project', 'shared_by').order_by('-create_time')
+
+    def perform_create(self, serializer):
+        serializer.save(shared_by=self.request.user)
+
+    # ── 额外动作 ─────────────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='shared_in')
+    def shared_in(self, request):
+        """列出当前项目从其他项目获得的授权资产"""
+        from apps.rbac_permission.models import ProjectAssetShare
+        project = getattr(request, 'project', None)
+        if not project:
+            return Response([])
+        qs = ProjectAssetShare.objects.filter(to_project=project).select_related(
+            'from_project', 'to_project', 'shared_by'
+        )
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='shared_out')
+    def shared_out(self, request):
+        """列出当前项目已授权给其他项目的资产"""
+        from apps.rbac_permission.models import ProjectAssetShare
+        project = getattr(request, 'project', None)
+        if not project:
+            return Response([])
+        qs = ProjectAssetShare.objects.filter(from_project=project).select_related(
+            'from_project', 'to_project', 'shared_by'
+        )
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='revoke')
+    def revoke(self, request):
+        """
+        批量撤销授权。
+        请求体: { "ids": [1, 2, 3] }
+        """
+        from apps.rbac_permission.models import ProjectAssetShare
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'error': '请提供要撤销的授权 ID 列表'}, status=400)
+        project = getattr(request, 'project', None)
+        deleted, _ = ProjectAssetShare.objects.filter(
+            id__in=ids, from_project=project
+        ).delete()
+        return Response({'message': f'已撤销 {deleted} 条授权'})

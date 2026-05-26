@@ -18,6 +18,7 @@ class K8sClusterViewSet(DataScopeMixin, viewsets.ModelViewSet, K8sManagementMixi
     serializer_class = K8sClusterSerializer
     permission_classes = [SmartRBACPermission]
     resource_type = 'k8s_cluster'
+    asset_share_type = 'k8s_cluster'
 
     # 声明权限标识列表，供权限同步脚本 (sync_perms) 使用
     resource_codes = ['k8s:cluster', 'helm:chart']
@@ -46,3 +47,6 @@ class K8sClusterViewSet(DataScopeMixin, viewsets.ModelViewSet, K8sManagementMixi
         cluster.refresh_from_db()
         serializer = self.get_serializer(cluster)
         return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))

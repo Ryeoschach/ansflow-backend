@@ -24,6 +24,10 @@ class SshCredentialViewSet(DataScopeMixin, viewsets.ModelViewSet):
     resource_type = 'credential'
 
     resource_code = 'credential:ssh_credentials'
+    asset_share_type = 'ssh_credential'
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
 
     @action(detail=True, methods=['post'])
     def verify(self, request, pk=None):
@@ -100,13 +104,14 @@ class HostBaselineViewSet(viewsets.ModelViewSet):
 
 
 
-class HostViewSet(viewsets.ModelViewSet):
+class HostViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = Host.objects.all()
     serializer_class = HostSerializer
     permission_classes = [SmartRBACPermission]
     filterset_class = HostFilter
 
     resource_code = 'resource:hosts'
+    asset_share_type = 'host'
 
     @action(detail=False, methods=['post'])
     def bulk_import(self, request):
@@ -137,6 +142,9 @@ class HostViewSet(viewsets.ModelViewSet):
             "errors": errors
         })
 
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
+
 class EnvironmentViewSet(viewsets.ModelViewSet):
     queryset = Environment.objects.all()
     serializer_class = EnvironmentSerializer
@@ -151,8 +159,11 @@ class ResourcePoolViewSet(DataScopeMixin, viewsets.ModelViewSet):
     permission_classes = [SmartRBACPermission]
     filterset_class = ResourcePoolFilter
     resource_type = 'resource_pool'
-
     resource_code = 'resource:resource_pools'
+    asset_share_type = 'resource_pool'
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
 
 
 class PlatformViewSet(viewsets.ModelViewSet):

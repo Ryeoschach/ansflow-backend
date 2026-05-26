@@ -9,6 +9,7 @@ class Pipeline(BaseModel):
     graph_data = JSONField(default=dict, verbose_name="前端流程图数据") # 保存 ReactFlow 导出的整个 JSON
     yaml_definition = models.TextField(blank=True, null=True, verbose_name="YAML 声明式定义")
     creator = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, verbose_name="创建人")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='pipelines', verbose_name="所属项目")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     timeout = models.IntegerField(default=3600, verbose_name="流水线全局超时时间(秒)")
     create_type = models.CharField(

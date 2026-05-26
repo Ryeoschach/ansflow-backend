@@ -28,6 +28,14 @@ class SmartRBACPermission(permissions.BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
+        # --- 项目/工作区隔离权限校验 ---
+        project = getattr(request, 'project', None)
+        if project and not request.user.is_superuser:
+            from apps.rbac_permission.models import ProjectMember
+            has_membership = ProjectMember.objects.filter(project=project, user=request.user).exists()
+            if not has_membership:
+                raise permissions.exceptions.PermissionDenied(f"您没有当前项目 {project.name} 的访问权限。")
+
         # 获取资源标识
         # 如果 View 中没有定义 resource_code，说明该接口不参与 RBAC 审计，生产环境直接禁用
         resource = getattr(view, 'resource_code', None)
@@ -171,8 +179,10 @@ def get_user_data_scope(user, resource_type, action_type='use'):
     all_ids = set()
     # 只要满足条件的 DataPolicy 都在采纳范围内
     target_action_types = ['manage']
-    if action_type == 'use':
+    if action_type in ['use', 'view']:
         target_action_types.append('use')
+    if action_type == 'view':
+        target_action_types.append('view')
         
     for role in user.roles.all():
         # 获取角色继承链条上的所有策略元数据
@@ -226,6 +236,34 @@ class DataScopeMixin:
         if not user or not user.is_authenticated:
             return queryset.none()
             
+        # --- 项目/工作区物理隔离过滤 + 跨项目授权合并 ---
+        project = getattr(self.request, 'project', None)
+        if project:
+            model = queryset.model
+            has_project_field = any(field.name == 'project' for field in model._meta.get_fields())
+            if has_project_field:
+                from django.db.models import Q
+                # 本项目自有资产
+                own_q = Q(project=project)
+
+                # 被授权的跨项目资产（当前项目是 to_project）
+                asset_share_type = getattr(self, 'asset_share_type', None)
+                if asset_share_type:
+                    try:
+                        from apps.rbac_permission.models import ProjectAssetShare
+                        shared_ids = list(
+                            ProjectAssetShare.objects.filter(
+                                to_project=project,
+                                asset_type=asset_share_type,
+                            ).values_list('asset_id', flat=True)
+                        )
+                        queryset = queryset.filter(own_q | Q(id__in=shared_ids))
+                    except Exception:
+                        queryset = queryset.filter(own_q)
+                else:
+                    queryset = queryset.filter(own_q)
+
+
         if user.is_superuser:
             return queryset
             

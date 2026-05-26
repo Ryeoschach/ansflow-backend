@@ -401,6 +401,51 @@ class SREOptimizationTestCase(TestCase):
         self.assertEqual(result, "refined response")
         self.assertTrue(mock_invoke.called)
 
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    @patch('apps.sre_management.tasks.trigger_self_healing.delay')
+    def test_self_healing_circuit_breaker(self, mock_trigger, mock_get_chain):
+        """测试自愈动态熔断机制"""
+        # 1. 模拟 LLM 决策链
+        mock_chain = MagicMock()
+        mock_chain.invoke.return_value = "AI Analysis recommendation."
+        mock_get_chain.return_value = mock_chain
+
+        # 2. 创建自愈策略，设置为自动执行 (is_auto_execute=True)
+        policy = SelfHealingPolicy.objects.create(
+            name="CPU High Autopilot",
+            alert_match_rule={"host": "server-01"},
+            pipeline=self.pipeline,
+            is_auto_execute=True,
+            is_active=True
+        )
+
+        # 3. 模拟此前 1 小时内已发生了 3 次同指纹的自动自愈记录
+        for i in range(3):
+            AlertEvent.objects.create(
+                alert_name="High CPU Usage",
+                severity="critical",
+                status="firing",
+                fingerprint="abc-123",
+                labels={"host": "server-01"},
+                trigger_type="auto",
+                healing_status="success",
+                suggested_pipeline=self.pipeline
+            )
+
+        # 4. 再次触发同一指纹的告警分析 (即第 4 次触发)
+        analyze_alert_event(self.alert.id)
+
+        # 验证结果
+        self.alert.refresh_from_db()
+        # 4.1 验证状态是否被强制设置为待审批 awaiting_approval
+        self.assertEqual(self.alert.healing_status, "awaiting_approval")
+        # 4.2 验证触发方式已从自动 auto 降级为手动 manual
+        self.assertEqual(self.alert.trigger_type, "manual")
+        # 4.3 验证 AI 结论中是否包含熔断警告字样
+        self.assertIn("熔断保护已触发", self.alert.ai_analysis)
+        # 4.4 验证没有再次调用 trigger_self_healing.delay() 触发执行 (被拦截)
+        self.assertFalse(mock_trigger.called)
+
 
 from django.urls import reverse
 from rest_framework import status

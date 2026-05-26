@@ -43,6 +43,7 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     resource_type = 'ansible_task'
     resource_owner_field = 'creator'
     resource_code = 'tasks:ansible_tasks'
+    asset_share_type = 'ansible_task'
     permission_labels = {
         'view':   {'name': '查看任务模板列表', 'danger': 'safe'},
         'add':    {'name': '新建任务模板',     'danger': 'warn'},
@@ -52,8 +53,11 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     }
 
     def perform_create(self, serializer):
-        # 保存时自动关联创建者
-        task = serializer.save(creator=self.request.user)
+        # 保存时自动关联创建者和项目
+        task = serializer.save(
+            creator=self.request.user,
+            project=getattr(self.request, 'project', None),
+        )
 
         # 如果请求中带有 run_now，则立即触发一次执行
         if self.request.data.get('run_now'):
@@ -208,6 +212,7 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
             system_q = Q(task__create_type='system', task__resource_pool_id__in=allowed_pools)
 
         system_qs = AnsibleExecution.objects.filter(system_q).distinct()
+        base_qs = base_qs.distinct()
 
         # 合并去重并排序
         return (base_qs | system_qs).distinct().order_by('-create_time')

@@ -368,7 +368,71 @@ def analyze_alert_event(self, alert_id):
 
         # 5. 如果是自动执行策略，直接触发
         if matched_policy and matched_policy.is_auto_execute and alert.status == 'firing':
-            trigger_self_healing.delay(alert.id)
+            # 5.1 [熔断保护] 统计过去 1 小时内相同告警指纹且为自动触发的自愈记录
+            recent_auto_runs = AlertEvent.objects.filter(
+                fingerprint=alert.fingerprint,
+                trigger_type='auto',
+                create_time__gte=timezone.now() - timezone.timedelta(hours=1)
+            ).count()
+
+            if recent_auto_runs >= 3:
+                # 触发熔断
+                alert.healing_status = 'awaiting_approval'
+                alert.trigger_type = 'manual'
+                
+                # 自动为该熔断创建审批工单
+                from apps.approval_center.engine import ProxyApprovalEngine
+                
+                class MockRequestForBreaker:
+                    def __init__(self, user, data, path):
+                        self.user = user
+                        self.data = data
+                        self.path = path
+                        self.method = 'POST'
+                    def get_full_path(self):
+                        return self.path
+
+                bot = get_system_bot()
+                mock_request = MockRequestForBreaker(
+                    user=bot,
+                    data={
+                        "alert_id": alert.id,
+                        "pipeline_id": alert.suggested_pipeline.id,
+                        "alert_name": alert.alert_name,
+                        "reason": "AI Self-healing Breaker Tripped - Manual Confirmation Required",
+                        "ai_verified": False
+                    },
+                    path=f"/api/v1/pipelines/{alert.suggested_pipeline.id}/execute/"
+                )
+                
+                # 强制阻断并提交审批工单
+                environment = alert.labels.get('env') or alert.labels.get('environment')
+                try:
+                    is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
+                        mock_request,
+                        resource_type='pipeline:run',
+                        action_title=f"自愈熔断审批: {alert.alert_name} -> 触发流水线 #{alert.suggested_pipeline.id}",
+                        target_id=str(alert.suggested_pipeline.id),
+                        environment=environment,
+                        extra_context={"alert_id": alert.id, "trigger_source": "auto_self_healing_breaker"}
+                    )
+                    
+                    if is_blocked:
+                        ticket_id = approval_res.data.get('ticket_id')
+                        alert.latest_ticket_id = ticket_id
+                except Exception as e_app:
+                    logger.error(f"[SRE] Failed to intercept for circuit breaker: {e_app}")
+                    
+                breaker_msg = (
+                    f"\n\n### 🚨 [熔断保护已触发] 自愈执行限制\n"
+                    f"检测到该告警指纹在过去 1 小时内已自动触发过 {recent_auto_runs} 次自愈。"
+                    f"为防止自愈死循环或故障扩大，自愈决策已自动执行熔断。“自动触发”已强制降级为“人工审批确认”，本次自愈需要管理员手动审批。"
+                )
+                alert.ai_analysis = (alert.ai_analysis or "") + breaker_msg
+                alert.save()
+                logger.warning(f"[SRE] Circuit breaker tripped for alert {alert.id} (fingerprint: {alert.fingerprint}). Auto execution blocked.")
+            else:
+                trigger_self_healing.delay(alert.id)
 
     except Exception as e:
         logger.error(f"AI analysis failed for alert {alert_id}: {str(e)}")

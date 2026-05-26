@@ -43,6 +43,7 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
     resource_code = 'pipeline:template'
     resource_type = 'pipeline'
     resource_owner_field = 'creator'
+    asset_share_type = 'pipeline'
     permission_labels = {
         'view':    {'name': '查看流水线列表/详情', 'danger': 'safe'},
         'add':     {'name': '新建流水线模板',     'danger': 'warn'},
@@ -66,7 +67,10 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(creator=self.request.user)
+        serializer.save(
+            creator=self.request.user,
+            project=getattr(self.request, 'project', None),
+        )
 
     @action(detail=True, methods=['post'])
     @require_approval(resource_type='pipeline:run', action_title_prefix='申请运行流水线模板')

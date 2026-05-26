@@ -26,7 +26,7 @@ class K8sClusterSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'auth_type', 'kubeconfig_content',
             'api_server', 'token', 'status', 'version',
-            'remark', 'create_time', 'update_time'
+            'project', 'remark', 'create_time', 'update_time'
         ]
 
         # 这些字段由系统自动生成或通过 /verify/ 接口更新，前端不可手动修改

@@ -56,6 +56,8 @@ class SelfHealingPolicy(BaseModel):
     name = models.CharField(max_length=100, verbose_name="策略名称")
     alert_match_rule = JSONField(verbose_name="告警匹配规则", help_text="例如: {'alertname': 'CPUUsageTooHigh'}")
     pipeline = models.ForeignKey('pipeline_management.Pipeline', on_delete=models.CASCADE, verbose_name="关联自愈流水线")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='self_healing_policies', verbose_name="所属项目")
+    is_global = models.BooleanField(default=False, verbose_name="是否为全局兜底策略")
     is_auto_execute = models.BooleanField(default=False, verbose_name="是否自动执行", help_text="开启后无需审批自动触发流水线")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
 

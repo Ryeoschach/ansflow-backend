@@ -65,6 +65,7 @@ backend/
 - **Semantic Cache**: Millisecond-level response for recurring issues using high-confidence vector similarity search.
 - **Categorized History**: Automatically distinguishes between "Diagnosis" and "General Chat" with support for title-based search.
 - **Typing Animation**: Sophisticated three-dot jumping animation for a more interactive and lively AI thinking process.
+- **WebSocket Streaming**: Django Channels integrated for real-time typewriter-effect streaming output, enhancing chat interaction responsive speed.
 
 ### 2. Task Pulse Monitoring (SRE Center)
 - **Real-time Status**: High-frequency monitoring of asynchronous task health and execution trends.
@@ -74,20 +75,26 @@ backend/
 - **Execution Memory**: Node trace view automatically displays historical diagnosis results to prevent redundant analysis.
 - **Root Cause Analysis**: AI automatically captures Error Logs and provides professional "three-stage" diagnostic reports.
 
-### 3. SRE Alert Self-healing (SRE Center)
+### 4. SRE Alert Self-healing (SRE Center)
 - **Real-time Tracking**: Integrated progress bars and live status updates for self-healing pipelines within the Alert Center.
 - **Full Traceability**: Accurate identification of "Auto-Triggered" vs. "Manual" healing sources with visual feedback.
 - **Strong Consistency**: Signal-based status synchronization between pipeline execution and alert event records.
 - **Knowledge Export**: Seamlessly export alert diagnosis conclusions to the system's operational knowledge base.
 - **Webhook Token Authentication**: Secure the Prometheus Alertmanager Webhook endpoint `/api/v1/sre/alerts/receive/` using a configurable token (`webhook_token` in Config Center). Supports `Bearer <token>` HTTP header and `?token=<token>` URL query param. Backward compatible (auto-allows requests if token configuration is left empty).
+- **Self-Healing Circuit Breaker**: Prevent infinite execution loops under faulty environments by setting frequency rules on alert fingerprints. Auto-transitions healing pipeline to an approval state (`awaiting_approval`) and files a ticket when threshold is breached.
 
-### 4. AIGC Intent Orchestration (Pipeline Gen)
+### 5. AIGC Intent Orchestration (Pipeline Gen)
 - **Natural Language Orchestration**: Users input requirements in plain text, and AI generates a DAG JSON structure compliant with ReactFlow for the frontend canvas.
 
-### 5. Config Center & Compliance (Security & System)
+### 6. Config Center & Compliance (Security & System)
 - **Custom AI Prompt Templates**: Dynamic prompt configuration for 7 LLM scenarios (RAG Q&A, diagnosis, alert analysis, DAG gen/refine, pipeline explain, OCR). Includes required variable placeholder verification and failsafe code defaults.
 - **Multi-channel Notifications**: central configuration of Feishu/DingTalk bot Webhooks, notification level filtering, and a refined event whitelist (`pipeline_start`, `pipeline_result`, `approval_requested`, `approval_result`, `task_result`) with env variable fallback.
 - **Security compliance & MLPS 2.0**: Out-of-the-box support for host compliance checks, tracking security drifts, and automated remediation aligned with National Cyber Protection Level 3 standards.
+
+### 7. Project Multi-Tenancy & Asset Sharing
+- **Workspace Isolation**: Multi-workspace/project paradigm (`Project` and `ProjectMember`) with tenant workspace resolution via `X-Project-ID` request headers.
+- **Row-level Tenancy Protection**: Hard isolation on Hosts, Credentials, Pipelines, K8s Clusters, Ansible Tasks, and SRE Policies using database-level project checks via `SmartRBACPermission` and `DataScopeMixin`.
+- **Cross-Project Asset Sharing (ProjectAssetShare)**：Support controlled resource sharing with targeted permissions: `read` (read-only), `use` (executable/referenceable in pipelines without revealing secrets), and `full` (complete control), coupled with auditing and origin-restricted revocation.
 
 ---
 

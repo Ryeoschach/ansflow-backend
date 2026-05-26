@@ -21,6 +21,7 @@ class Credential(BaseModel):
     # 虽然是 EncryptedCharField，但底层我们还会根据配置进行打码处理
     secret_value = EncryptedCharField(max_length=4096, verbose_name="加密原始值", help_text="SSH密钥、密码、Token等")
     
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='credentials', verbose_name="所属项目")
     description = models.TextField(blank=True, null=True, verbose_name="用途备注")
     
     class Meta:

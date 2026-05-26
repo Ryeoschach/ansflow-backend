@@ -10,6 +10,7 @@ class K8sCluster(BaseModel):
     ]
 
     name = models.CharField(max_length=100, unique=True, verbose_name="集群名称")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='k8s_clusters', verbose_name="所属项目")
     auth_type = models.CharField(max_length=20, choices=AUTH_CHOICES, default='kubeconfig')
 
     # Kubeconfig 模式

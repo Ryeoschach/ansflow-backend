@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from django.core.cache import cache
 from drf_spectacular.utils import extend_schema
-from utils.rbac_permission import SmartRBACPermission
+from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import AlertEvent, SelfHealingPolicy
 from .serializers import AlertEventSerializer, SelfHealingPolicySerializer
 from .permissions import AlertWebhookPermission
@@ -223,12 +223,13 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(tags=["SRE 自愈策略"])
-class SelfHealingPolicyViewSet(viewsets.ModelViewSet):
+class SelfHealingPolicyViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = SelfHealingPolicy.objects.all().order_by('-create_time')
     serializer_class = SelfHealingPolicySerializer
     permission_classes = [SmartRBACPermission]
     resource_code = "sre:policy"
     resource_type = "sre"
+    asset_share_type = 'self_healing_policy'
     filterset_fields = {
         'name': ['icontains'],
         'is_active': ['exact'],
@@ -246,3 +247,6 @@ class SelfHealingPolicyViewSet(viewsets.ModelViewSet):
         
         count = self.queryset.filter(id__in=ids).delete()[0]
         return Response({"message": f"Successfully deleted {count} policies"}, status=status.HTTP_200_OK)
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))

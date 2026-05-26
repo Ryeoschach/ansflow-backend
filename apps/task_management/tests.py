@@ -73,6 +73,7 @@ class TaskApiTest(APITestCase):
         cache.clear()
         User = get_user_model()
         self.user = User.objects.create_user(username='testuser', password='password')
+        self.other_user = User.objects.create_user(username='otheruser', password='password')
         self.role = Role.objects.create(name="Tester", code="tester")
         
         # 创建并分配功能权限以通过 SmartRBAC 校验
@@ -111,7 +112,7 @@ class TaskApiTest(APITestCase):
         self.normal_exec = AnsibleExecution.objects.create(
             task=self.normal_task,
             status='success',
-            executor=self.user
+            executor=self.other_user
         )
         self.system_exec = AnsibleExecution.objects.create(
             task=self.system_task,
@@ -153,7 +154,7 @@ class TaskApiTest(APITestCase):
             role=self.role,
             resource_type="ansible_task",
             action_type="use",
-            authorized_ids=["*"]
+            authorized_ids=[self.normal_task.id]
         )
         from django.core.cache import cache
         cache.clear()
