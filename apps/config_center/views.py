@@ -46,6 +46,12 @@ class ConfigCategoryViewSet(viewsets.ModelViewSet):
             return [permissions.IsAuthenticated()]
         return super().get_permissions()
 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.name in ['notification', 'system']:
+            return Response({'detail': f'系统保留分类 [{instance.label}] 不允许被删除'}, status=400)
+        return super().destroy(request, *args, **kwargs)
+
 
 class ConfigItemViewSet(viewsets.ModelViewSet):
     """
