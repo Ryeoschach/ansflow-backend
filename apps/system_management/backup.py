@@ -110,11 +110,19 @@ def get_decrypted_field_value(obj, field_name: str) -> Optional[str]:
 MODULE_DEFINITIONS = {
     'rbac': {
         'label': '权限与用户 (RBAC)',
-        'models': ['Permission', 'Menu', 'Credential', 'Role', 'DataPolicy', 'User']
+        'models': ['Permission', 'Credential', 'Role', 'DataPolicy', 'User']
+    },
+    'menu': {
+        'label': '系统菜单配置 (Menus)',
+        'models': ['Menu']
     },
     'host': {
         'label': '主机与资源池 (Hosts)',
-        'models': ['SshCredential', 'Environment', 'Platform', 'Host', 'ResourcePool', 'HostBaseline', 'ComplianceFramework', 'ComplianceClause', 'ComplianceBaselineMapping']
+        'models': ['SshCredential', 'Environment', 'Platform', 'Host', 'ResourcePool', 'HostBaseline']
+    },
+    'compliance': {
+        'label': '等保合规控制台 (Compliance)',
+        'models': ['ComplianceFramework', 'ComplianceClause', 'ComplianceBaselineMapping']
     },
     'k8s': {
         'label': 'Kubernetes 管理 (K8s)',

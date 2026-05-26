@@ -31,7 +31,9 @@ class BackupModularTest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         keys = [m['key'] for m in response.data]
         self.assertIn('rbac', keys)
+        self.assertIn('menu', keys)
         self.assertIn('host', keys)
+        self.assertIn('compliance', keys)
         self.assertIn('pipeline', keys)
 
     def test_modular_export(self):
@@ -424,7 +426,7 @@ class BackupModularTest(APITestCase):
         
         # 2. 导出全量备份
         exporter = BackupExporter()
-        backup_data = exporter.export(selected_modules=['rbac'])
+        backup_data = exporter.export(selected_modules=['rbac', 'menu'])
         
         # 验证导出了 Menu 与 Role
         self.assertIn('Menu', backup_data['data'])
@@ -436,7 +438,7 @@ class BackupModularTest(APITestCase):
         
         # 4. 执行还原
         importer = BackupImporter(backup_data)
-        result = importer.import_all(selected_modules=['rbac'])
+        result = importer.import_all(selected_modules=['rbac', 'menu'])
         self.assertTrue(result['success'], f"Menu restore failed: {result['errors']}")
         
         # 5. 验证还原结果
@@ -490,7 +492,7 @@ class BackupModularTest(APITestCase):
         
         # 2. 导出备份
         exporter = BackupExporter()
-        backup_data = exporter.export(selected_modules=['host'])
+        backup_data = exporter.export(selected_modules=['host', 'compliance'])
         
         # 验证包含合规模型数据
         self.assertIn('ComplianceFramework', backup_data['data'])
@@ -506,7 +508,7 @@ class BackupModularTest(APITestCase):
         
         # 4. 执行还原
         importer = BackupImporter(backup_data)
-        result = importer.import_all(selected_modules=['host'])
+        result = importer.import_all(selected_modules=['host', 'compliance'])
         self.assertTrue(result['success'], f"Compliance restore failed: {result['errors']}")
         
         # 5. 验证是否还原成功
