@@ -397,3 +397,129 @@ class BackupModularTest(APITestCase):
         self.assertEqual(restored_enc.is_encrypted, True)
         self.assertEqual(restored_enc.get_value(), "my-secret-token-value")
 
+    def test_menu_backup_and_restore(self):
+        """测试菜单数据的导出与三阶段还原（含自关联 parent 及角色菜单关联）"""
+        from apps.rbac_permission.models import Menu, Role
+        
+        # 1. 创建测试菜单数据
+        parent_menu = Menu.objects.create(
+            title="Parent Menu",
+            title_en="Parent Menu EN",
+            key="parent_key",
+            path="/parent",
+            order=1
+        )
+        child_menu = Menu.objects.create(
+            title="Child Menu",
+            title_en="Child Menu EN",
+            key="child_key",
+            path="/parent/child",
+            parent=parent_menu,
+            order=2
+        )
+        
+        # 关联菜单到测试角色
+        role = Role.objects.create(name="Test Menu Role", code="test_menu_role")
+        role.menus.add(parent_menu, child_menu)
+        
+        # 2. 导出全量备份
+        exporter = BackupExporter()
+        backup_data = exporter.export(selected_modules=['rbac'])
+        
+        # 验证导出了 Menu 与 Role
+        self.assertIn('Menu', backup_data['data'])
+        self.assertIn('Role', backup_data['data'])
+        
+        # 3. 清空数据库 (由于 CASCADE 级联删除，先删角色)
+        Role.objects.all().delete()
+        Menu.objects.all().delete()
+        
+        # 4. 执行还原
+        importer = BackupImporter(backup_data)
+        result = importer.import_all(selected_modules=['rbac'])
+        self.assertTrue(result['success'], f"Menu restore failed: {result['errors']}")
+        
+        # 5. 验证还原结果
+        self.assertTrue(Menu.objects.filter(key="parent_key").exists())
+        self.assertTrue(Menu.objects.filter(key="child_key").exists())
+        
+        # 验证自关联回填是否正确
+        db_parent = Menu.objects.get(key="parent_key")
+        db_child = Menu.objects.get(key="child_key")
+        self.assertEqual(db_child.parent_id, db_parent.id)
+        
+        # 验证角色菜单 M2M 回填是否正确
+        db_role = Role.objects.get(code="test_menu_role")
+        role_menu_keys = [m.key for m in db_role.menus.all()]
+        self.assertIn("parent_key", role_menu_keys)
+        self.assertIn("child_key", role_menu_keys)
+
+    def test_compliance_backup_and_restore(self):
+        """测试等保合规数据（Framework, Clause, Mapping）的导出与三阶段还原（含自关联 parent 及外键映射）"""
+        from apps.host_management.models import ComplianceFramework, ComplianceClause, ComplianceBaselineMapping, HostBaseline, ResourcePool
+        
+        # 1. 创建测试数据
+        pool = ResourcePool.objects.create(name="Compliance Pool")
+        baseline = HostBaseline.objects.create(name="Compliance Host Baseline", resource_pool=pool)
+        
+        framework = ComplianceFramework.objects.create(
+            name="测试等保框架",
+            code="test_mlps_2.0",
+            version="v2.0",
+            description="网络安全等级保护2.0测试"
+        )
+        
+        parent_clause = ComplianceClause.objects.create(
+            framework=framework,
+            code="S3",
+            name="安全物理环境",
+            sort_order=1
+        )
+        child_clause = ComplianceClause.objects.create(
+            framework=framework,
+            parent=parent_clause,
+            code="S3.1",
+            name="物理访问控制",
+            sort_order=2
+        )
+        
+        mapping = ComplianceBaselineMapping.objects.create(
+            clause=child_clause,
+            baseline=baseline
+        )
+        
+        # 2. 导出备份
+        exporter = BackupExporter()
+        backup_data = exporter.export(selected_modules=['host'])
+        
+        # 验证包含合规模型数据
+        self.assertIn('ComplianceFramework', backup_data['data'])
+        self.assertIn('ComplianceClause', backup_data['data'])
+        self.assertIn('ComplianceBaselineMapping', backup_data['data'])
+        
+        # 3. 清理数据库
+        ComplianceBaselineMapping.objects.all().delete()
+        ComplianceClause.objects.all().delete()
+        ComplianceFramework.objects.all().delete()
+        HostBaseline.objects.all().delete()
+        ResourcePool.objects.all().delete()
+        
+        # 4. 执行还原
+        importer = BackupImporter(backup_data)
+        result = importer.import_all(selected_modules=['host'])
+        self.assertTrue(result['success'], f"Compliance restore failed: {result['errors']}")
+        
+        # 5. 验证是否还原成功
+        self.assertTrue(ComplianceFramework.objects.filter(code="test_mlps_2.0").exists())
+        self.assertTrue(ComplianceClause.objects.filter(code="S3.1").exists())
+        
+        # 验证自关联关系
+        db_parent_clause = ComplianceClause.objects.get(code="S3")
+        db_child_clause = ComplianceClause.objects.get(code="S3.1")
+        self.assertEqual(db_child_clause.parent_id, db_parent_clause.id)
+        self.assertEqual(db_child_clause.framework_id, db_parent_clause.framework_id)
+        
+        # 验证条款与基线的 ManyToMany 映射关联
+        db_baseline = HostBaseline.objects.get(name="Compliance Host Baseline")
+        self.assertTrue(ComplianceBaselineMapping.objects.filter(clause=db_child_clause, baseline=db_baseline).exists())
+

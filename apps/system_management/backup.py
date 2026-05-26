@@ -114,7 +114,7 @@ MODULE_DEFINITIONS = {
     },
     'host': {
         'label': '主机与资源池 (Hosts)',
-        'models': ['SshCredential', 'Environment', 'Platform', 'Host', 'ResourcePool', 'HostBaseline']
+        'models': ['SshCredential', 'Environment', 'Platform', 'Host', 'ResourcePool', 'HostBaseline', 'ComplianceFramework', 'ComplianceClause', 'ComplianceBaselineMapping']
     },
     'k8s': {
         'label': 'Kubernetes 管理 (K8s)',
@@ -469,6 +469,21 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         app_label='host_management', model_name='HostBaseline', table_name='cmdb_host_baseline',
         fk_fields={'resource_pool': ('ResourcePool', 'id')},
         export_order=18.5,
+    ),
+    'ComplianceFramework': ModelInfo(
+        app_label='host_management', model_name='ComplianceFramework', table_name='cmdb_compliance_framework',
+        unique_fields=['code'],
+        export_order=19,
+    ),
+    'ComplianceClause': ModelInfo(
+        app_label='host_management', model_name='ComplianceClause', table_name='cmdb_compliance_clause',
+        fk_fields={'framework': ('ComplianceFramework', 'id'), 'parent': ('ComplianceClause', 'id')},
+        export_order=20,
+    ),
+    'ComplianceBaselineMapping': ModelInfo(
+        app_label='host_management', model_name='ComplianceBaselineMapping', table_name='cmdb_compliance_baseline_mapping',
+        fk_fields={'clause': ('ComplianceClause', 'id'), 'baseline': ('HostBaseline', 'id')},
+        export_order=21,
     ),
     'SelfHealingPolicy': ModelInfo(
         app_label='sre_management', model_name='SelfHealingPolicy', table_name='sre_healing_policy',
