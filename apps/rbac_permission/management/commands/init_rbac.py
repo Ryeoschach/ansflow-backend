@@ -31,29 +31,30 @@ class Command(BaseCommand):
         provider_name = "DeepSeek" if "deepseek" in base_url.lower() else "Default Provider"
         provider_type = "deepseek" if "deepseek" in base_url.lower() else "other"
         
-        provider, created = AIProvider.objects.get_or_create(
-            provider_type=provider_type,
-            defaults={
-                "name": provider_name,
-                "base_url": base_url,
-                "api_key": api_key,
-                "is_active": True
-            }
-        )
-        if created:
+        provider = AIProvider.objects.filter(provider_type=provider_type).first()
+        created = False
+        if not provider:
+            provider = AIProvider.objects.create(
+                provider_type=provider_type,
+                name=provider_name,
+                base_url=base_url,
+                api_key=api_key,
+                is_active=True
+            )
+            created = True
             self.stdout.write(self.style.SUCCESS(f"创建默认 LLM 供应商: {provider_name}"))
         elif not provider.api_key:
              provider.api_key = api_key
              provider.save()
 
         # 2. 创建/获取本地供应商 (用于 Embedding 和 Rerank)
-        local_provider, _ = AIProvider.objects.get_or_create(
-            provider_type="local",
-            defaults={
-                "name": "Local Model Service",
-                "is_active": True
-            }
-        )
+        local_provider = AIProvider.objects.filter(provider_type="local").first()
+        if not local_provider:
+            local_provider = AIProvider.objects.create(
+                provider_type="local",
+                name="Local Model Service",
+                is_active=True
+            )
 
         # 3. 创建分析模型 (LLM)
         llm_model_name = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
@@ -143,10 +144,12 @@ class Command(BaseCommand):
             ]},
             {"title": "容器配置", "title_en": "Container Center", "key": "ContainerCenter", "path": "ContainerCenter", "icon": "carbon:web-services-container", "order": 4, "children": [
                 {"title": "构建镜像", "title_en": "Builder Container", "key": "CIEnvironments", "path": "v1/ci-envs", "icon": "streamline-logos:docker-logo", "order": 0},
+                {"title": "制品库", "title_en": "registries", "key": "registries", "path": "v1/pipeline/registries", "icon": "mdi:locker-multiple", "order": 1},
             ]},
             {"title": "K8S中心", "title_en": "K8S Center", "key": "k8s", "path": "k8smanagement", "icon": "ant-design:kubernetes-outlined", "order": 5, "children": [
                 {"title": "k8s集群管理", "title_en": "k8s Management", "key": "cluster", "path": "v1/k8s/management", "icon": "carbon:kubernetes-worker-node", "order": 0},
                 {"title": "helm管理", "title_en": "helm Management", "key": "helm", "path": "v1/k8s/helm", "icon": "simple-icons:helm", "order": 1},
+                {"title": "GitOps 应用", "title_en": "GitOps", "key": "GitOps", "path": "v1/k8s/gitops", "icon": "arcticons:gitnex", "order": 2},
             ]},
             {"title": "操作审计", "title_en": "Audit Center", "key": "AuditLog", "path": "v1/system/audit-logs", "icon": "hugeicons:audit-01", "order": 6},
             {"title": "审批表", "title_en": "Approvals", "key": "approvals", "path": "v1/system/approvals", "icon": "fluent:approvals-app-48-filled", "order": 7},
@@ -155,13 +158,13 @@ class Command(BaseCommand):
                 {"title": "任务脉搏", "title_en": "Task Pulse", "key": "sre-pulse", "path": "v1/sre/pulse", "icon": "carbon:activity", "order": 1},
             ]},
             {"title": "AI与RAG配置", "title_en": "Config AI&RAG", "key": "configAI", "path": "v1/ai-rag/config", "icon": "arcticons:ai-chat-open-assistant-chatbot", "order": 9},
+            {"title": "等保2.0", "title_en": "compliance2.0", "key": "compliance", "path": "v1/system/compliance", "icon": "carbon:ibm-cloud-security-compliance-center", "order": 10},
             {"title": "资源管理", "title_en": "Resources Management", "key": "resources", "path": "resources", "icon": "grommet-icons:resources", "order": 888, "children": [
                 {"title": "平台管理", "title_en": "Platform Management", "key": "platform", "path": "v1/system/platforms", "icon": "tdesign:control-platform", "order": 0},
                 {"title": "环境管理", "title_en": "Envs Management", "key": "envs", "path": "v1/system/envs", "icon": "fluent-mdl2:server-enviroment", "order": 1},
                 {"title": "资源池", "title_en": "Resource Pool", "key": "resourcepool", "path": "v1/system/resourcepool", "icon": "clarity:resource-pool-outline-alerted", "order": 2},
                 {"title": "主机管理", "title_en": "Host Management", "key": "hosts", "path": "v1/system/hosts", "icon": "material-symbols-light:host-outline", "order": 3},
-                {"title": "主机基线", "title_en": "Host Baselines", "key": "host-baselines", "path": "v1/system/host-baselines", "icon": "SafetyCertificateOutlined", "order": 4},
-                {"title": "等保2.0参考", "title_en": "MLPS 2.0 Reference", "key": "compliance", "path": "v1/system/compliance", "icon": "material-symbols:shield-check-outline", "order": 5},
+                {"title": "主机基线", "title_en": "host baselines", "key": "hostBaselines", "path": "v1/system/host-baselines", "icon": "arcticons:hostelworld", "order": 4},
                 {"title": "SSH 凭据", "title_en": "Credentials Management", "key": "credentials", "path": "v1/system/credentials", "icon": "KeyOutlined", "order": 50},
             ]},
             {"title": "配置中心", "title_en": "Config Center", "key": "config center", "path": "v1/system/config", "icon": "carbon:document-configuration", "order": 889},
@@ -170,7 +173,7 @@ class Command(BaseCommand):
                 {"title": "用户管理", "title_en": "User Management", "key": "users", "path": "v1/system/users", "icon": "UserOutlined", "order": 1},
                 {"title": "权限管理", "title_en": "Permission Management", "key": "permissions", "path": "v1/system/permissions", "icon": "SafetyCertificateOutlined", "order": 2},
                 {"title": "角色管理", "title_en": "Roles Management", "key": "roles", "path": "v1/system/roles", "icon": "TeamOutlined", "order": 3},
-                {"title": "系统备份/还原", "title_en": "System Backup", "key": "backup", "path": "/v1/system/backup", "icon": "iconoir:database-backup", "order": 4},
+                {"title": "系统备份/还原", "title_en": "System Backup", "key": "backup", "path": "/v1/system/backups", "icon": "iconoir:database-backup", "order": 4},
                 {"title": "定时任务", "title_en": "Scheduled Tasks", "key": "periodic-tasks", "path": "/v1/system/periodic-tasks", "icon": "ant-design:schedule-outlined", "order": 5},
             ]},
         ]
