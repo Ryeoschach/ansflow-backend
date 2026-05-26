@@ -7,6 +7,8 @@ from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission
 from .models import AlertEvent, SelfHealingPolicy
 from .serializers import AlertEventSerializer, SelfHealingPolicySerializer
+from .permissions import AlertWebhookPermission
+
 
 @extend_schema(tags=["SRE 告警管理"])
 class AlertEventViewSet(viewsets.ModelViewSet):
@@ -128,7 +130,7 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(responses={200: dict}, description="接收 Prometheus 告警 Webhook")
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny]) # 告警网关设为 AllowAny，但建议后续增加 Token 校验
+    @action(detail=False, methods=['post'], permission_classes=[AlertWebhookPermission], authentication_classes=[])
     def receive(self, request):
         data = request.data
         alerts = data.get('alerts', [])

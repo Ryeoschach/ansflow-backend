@@ -402,3 +402,88 @@ class SREOptimizationTestCase(TestCase):
         self.assertTrue(mock_invoke.called)
 
 
+from django.urls import reverse
+from rest_framework import status
+from apps.config_center.models import ConfigItem, ConfigCategory
+
+class AlertWebhookAuthTestCase(TestCase):
+    def setUp(self):
+        self.category, _ = ConfigCategory.objects.get_or_create(
+            name='notification',
+            defaults={'label': 'Notification', 'description': 'desc'}
+        )
+        self.webhook_url = reverse('sre-alerts-receive')
+        
+    def tearDown(self):
+        ConfigItem.objects.filter(category=self.category, key='webhook_token').delete()
+        from utils.config_manager import ConfigCache
+        ConfigCache.invalidate('notification', 'webhook_token')
+
+    def _set_token(self, value):
+        ConfigItem.objects.update_or_create(
+            category=self.category,
+            key='webhook_token',
+            defaults={'value': value, 'value_type': 'string'}
+        )
+        from utils.config_manager import ConfigCache
+        ConfigCache.invalidate('notification', 'webhook_token')
+
+    def test_no_token_configured_allows_all(self):
+        """当未配置 Token 时（或配置为空），接口允许任意访问"""
+        self._set_token('')
+        
+        payload = {"alerts": []}
+        response = self.client.post(self.webhook_url, payload, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_configured_token_without_token_rejected(self):
+        """当配置了 Token 但请求没有携带任何 Token，接口返回 403"""
+        self._set_token('secret-token-123')
+        
+        payload = {"alerts": []}
+        response = self.client.post(self.webhook_url, payload, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_configured_token_with_wrong_token_rejected(self):
+        """当提供了错误的 Token，接口返回 403"""
+        self._set_token('secret-token-123')
+        
+        payload = {"alerts": []}
+        # Bearer Token 错误
+        response = self.client.post(
+            self.webhook_url, 
+            payload, 
+            content_type='application/json',
+            HTTP_AUTHORIZATION='Bearer wrong-token'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        
+        # URL token 错误
+        url_with_wrong_token = f"{self.webhook_url}?token=wrong-token"
+        response = self.client.post(url_with_wrong_token, payload, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_configured_token_with_correct_bearer_token_allowed(self):
+        """当提供了正确的 Bearer Token，接口返回 200"""
+        self._set_token('secret-token-123')
+        
+        payload = {"alerts": []}
+        response = self.client.post(
+            self.webhook_url, 
+            payload, 
+            content_type='application/json',
+            HTTP_AUTHORIZATION='Bearer secret-token-123'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_configured_token_with_correct_url_token_allowed(self):
+        """当提供了正确的 URL Query token，接口返回 200"""
+        self._set_token('secret-token-123')
+        
+        payload = {"alerts": []}
+        url_with_correct_token = f"{self.webhook_url}?token=secret-token-123"
+        response = self.client.post(url_with_correct_token, payload, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+
