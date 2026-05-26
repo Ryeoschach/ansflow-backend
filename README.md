@@ -79,6 +79,7 @@ backend/
 - **Full Traceability**: Accurate identification of "Auto-Triggered" vs. "Manual" healing sources with visual feedback.
 - **Strong Consistency**: Signal-based status synchronization between pipeline execution and alert event records.
 - **Knowledge Export**: Seamlessly export alert diagnosis conclusions to the system's operational knowledge base.
+- **Webhook Token Authentication**: Secure the Prometheus Alertmanager Webhook endpoint `/api/v1/sre/alerts/receive/` using a configurable token (`webhook_token` in Config Center). Supports `Bearer <token>` HTTP header and `?token=<token>` URL query param. Backward compatible (auto-allows requests if token configuration is left empty).
 
 ### 4. AIGC Intent Orchestration (Pipeline Gen)
 - **Natural Language Orchestration**: Users input requirements in plain text, and AI generates a DAG JSON structure compliant with ReactFlow for the frontend canvas.

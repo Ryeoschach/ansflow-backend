@@ -5,11 +5,12 @@ from .models import ConfigCategory, ConfigItem, ConfigChangeLog
 class ConfigItemSerializer(serializers.ModelSerializer):
     """配置项序列化器"""
     value_display = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source='category.name', read_only=True)
 
     class Meta:
         model = ConfigItem
         fields = [
-            'id', 'category', 'key', 'value', 'value_type',
+            'id', 'category', 'category_name', 'key', 'value', 'value_type',
             'is_encrypted', 'is_active', 'description',
             'create_time', 'update_time', 'value_display'
         ]

@@ -74,6 +74,23 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(category__name=category_name)
         return queryset
 
+    def create(self, request, *args, **kwargs):
+        category_id = request.data.get('category')
+        if category_id:
+            try:
+                category = ConfigCategory.objects.get(id=category_id)
+                if category.name in ['notification', 'system']:
+                    return Response({'detail': f'系统保留分类 [{category.label}] 不允许添加新的配置项'}, status=400)
+            except ConfigCategory.DoesNotExist:
+                pass
+        return super().create(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.category.name in ['notification', 'system']:
+            return Response({'detail': f'系统保留配置项 [{instance.key}] 不允许被删除'}, status=400)
+        return super().destroy(request, *args, **kwargs)
+
     def _create_change_log(self, item, action, old_value=None, new_value=None, request=None, reason=''):
         """创建变更日志"""
         operator = request.user if request and hasattr(request, 'user') and request.user.is_authenticated else None
