@@ -598,6 +598,7 @@ class UserNotificationViewSet(viewsets.ModelViewSet):
     """
     serializer_class = UserNotificationSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = None
 
     def get_queryset(self):
         return UserNotification.objects.filter(user=self.request.user).order_by('-create_time')
