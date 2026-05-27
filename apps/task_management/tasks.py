@@ -75,19 +75,68 @@ def run_ansible_task(self, execution_id, extra_vars=None):
             }
         }
         
+        # 1. 从配置中心加载全局变量，用于注入到 Ansible 的 extra_vars
+        from utils.config_manager import ConfigCache
+        global_extra_vars = {}
+        try:
+            configs = ConfigCache.get_all_configs()
+            for category, items in configs.items():
+                for key, val in items.items():
+                    # 转换值：对于非简单类型，保留原样；支持裸 key、下划线拼接、点号拼接形式
+                    global_extra_vars[key] = val
+                    global_extra_vars[f"{category}_{key}"] = val
+                    global_extra_vars[f"{category}.{key}"] = val
+        except Exception as e:
+            logger.error(f"加载配置中心全局变量失败: {e}")
+
+        # 2. 合并传入的外部变量与配置中心变量
+        combined_extra_vars = {}
+        combined_extra_vars.update(global_extra_vars)
         if extra_vars:
-            runner_kwargs['extravars'] = extra_vars
+            combined_extra_vars.update(extra_vars)
+
+        if combined_extra_vars:
+            runner_kwargs['extravars'] = combined_extra_vars
         
         # 组名增加前缀避免与主机名冲突
         group_key = f"pool_{pool.code}"
         runner_kwargs['host_pattern'] = group_key
 
+        # 3. 替换内容中的 ${var} 占位符
+        # 并在 ad-hoc (cmd) 模式下，也替换 {{ var }} 占位符，因为 ad-hoc 无法被 ansible 原生渲染
+        resolved_content = task.content or ""
+        if resolved_content:
+            flat_str_vars = {}
+            for k, v in combined_extra_vars.items():
+                # 只有非字典和非列表的标量，才转为字符串用于文本正则替换
+                if not isinstance(v, (dict, list)):
+                    flat_str_vars[k] = str(v)
+            
+            import re
+            def _replace(match):
+                var_name = match.group(1).strip()
+                var_name_clean = var_name.replace('.', '_')
+                if var_name in flat_str_vars:
+                    return flat_str_vars[var_name]
+                elif var_name_clean in flat_str_vars:
+                    return flat_str_vars[var_name_clean]
+                return match.group(0)
+
+            # 替换 ${key}
+            pattern_dollar = r"\$\{\s*([\w\.\-_]+)\s*\}"
+            resolved_content = re.sub(pattern_dollar, _replace, resolved_content)
+
+            # 如果是 ad-hoc cmd 类型，也替换 {{ key }}
+            if task.task_type == 'cmd':
+                pattern_jinja = r"\{\{\s*([\w\.\-_]+)\s*\}\}"
+                resolved_content = re.sub(pattern_jinja, _replace, resolved_content)
+
         if task.task_type == 'cmd':
             runner_kwargs['module'] = 'shell'
-            runner_kwargs['module_args'] = task.content
+            runner_kwargs['module_args'] = resolved_content
         else:
             # 将 playbook 中的 `- hosts: localhost` 替换为实际的资源池组名
-            playbook_content = task.content
+            playbook_content = resolved_content
             if '- hosts: localhost' in playbook_content:
                 playbook_content = playbook_content.replace('- hosts: localhost', f'- hosts: {group_key}')
             elif '- hosts: all' in playbook_content:

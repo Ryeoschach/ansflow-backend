@@ -531,4 +531,97 @@ class AlertWebhookAuthTestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
+class AlertWebhookNotificationTestCase(TestCase):
+    def setUp(self):
+        self.webhook_url = reverse('sre-alerts-receive')
+        
+    @patch('apps.system_management.notifiers.notify_alert_firing')
+    @patch('apps.system_management.notifiers.notify_alert_resolved')
+    def test_alert_notification_on_transition(self, mock_resolved, mock_firing):
+        """测试告警状态改变时是否正确触发了通知"""
+        # 1. 首次收到 firing 告警 -> 触发 notify_alert_firing
+        payload_firing = {
+            "alerts": [
+                {
+                    "fingerprint": "alert-test-999",
+                    "status": "firing",
+                    "labels": {"alertname": "TestNotifyAlert", "severity": "warning"},
+                    "annotations": {"description": "test notification"}
+                }
+            ]
+        }
+        response = self.client.post(self.webhook_url, payload_firing, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_firing.assert_called_once()
+        mock_resolved.assert_not_called()
+        
+        mock_firing.reset_mock()
+        mock_resolved.reset_mock()
+        
+        # 2. 再次收到同一 firing 告警 -> 不触发 notify_alert_firing
+        response = self.client.post(self.webhook_url, payload_firing, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_firing.assert_not_called()
+        mock_resolved.assert_not_called()
+        
+        # 3. 收到 resolved 告警 -> 触发 notify_alert_resolved
+        payload_resolved = {
+            "alerts": [
+                {
+                    "fingerprint": "alert-test-999",
+                    "status": "resolved",
+                    "labels": {"alertname": "TestNotifyAlert", "severity": "warning"},
+                    "annotations": {"description": "test notification"}
+                }
+            ]
+        }
+        response = self.client.post(self.webhook_url, payload_resolved, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_firing.assert_not_called()
+        mock_resolved.assert_called_once()
+
+    @patch('apps.sre_management.tasks.analyze_alert_event.delay')
+    def test_alert_ignored_by_config(self, mock_delay):
+        """测试如果告警名称被配置在忽略列表中，是否跳过了 AI 分析并设置为 ignored 状态"""
+        # 1. 设置忽略的告警名称
+        from apps.config_center.models import ConfigCategory, ConfigItem
+        from utils.config_manager import ConfigCache
+        
+        category, _ = ConfigCategory.objects.get_or_create(
+            name='sre',
+            defaults={'label': 'SRE Config', 'description': 'desc'}
+        )
+        ConfigItem.objects.update_or_create(
+            category=category,
+            key='sre.ignored_alert_names',
+            defaults={'value': 'IgnoredCPUAlert,AnotherAlert', 'value_type': 'string'}
+        )
+        ConfigCache.invalidate('sre', 'sre.ignored_alert_names')
+        
+        # 2. 发送一个被忽略名称的告警
+        payload = {
+            "alerts": [
+                {
+                    "fingerprint": "alert-test-888",
+                    "status": "firing",
+                    "labels": {"alertname": "IgnoredCPUAlert", "severity": "warning"},
+                    "annotations": {"description": "test notification"}
+                }
+            ]
+        }
+        response = self.client.post(self.webhook_url, payload, content_type='application/json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        # 3. 验证没有触发 AI 诊断分析
+        mock_delay.assert_not_called()
+        
+        # 4. 验证在数据库中的自愈状态为 'ignored'
+        alert_obj = AlertEvent.objects.get(fingerprint="alert-test-888")
+        self.assertEqual(alert_obj.healing_status, 'ignored')
+        
+        # 5. 清理
+        ConfigItem.objects.filter(category=category, key='sre.ignored_alert_names').delete()
+        ConfigCache.invalidate('sre', 'sre.ignored_alert_names')
+
+
 

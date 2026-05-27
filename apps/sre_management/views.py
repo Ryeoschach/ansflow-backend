@@ -8,6 +8,9 @@ from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import AlertEvent, SelfHealingPolicy
 from .serializers import AlertEventSerializer, SelfHealingPolicySerializer
 from .permissions import AlertWebhookPermission
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @extend_schema(tags=["SRE 告警管理"])
@@ -22,7 +25,9 @@ class AlertEventViewSet(viewsets.ModelViewSet):
         'alert_name': ['icontains'],
         'status': ['exact'],
         'severity': ['exact'],
+        'create_time': ['gte', 'lte'],
     }
+    ordering_fields = ['create_time', 'alert_name', 'severity', 'status']
 
     permission_labels = {
         'bind_healing_pipeline': {'name': '绑定自愈流水线', 'danger': 'warn'},
@@ -146,11 +151,20 @@ class AlertEventViewSet(viewsets.ModelViewSet):
 
             # 存入数据库
             old_obj = AlertEvent.objects.filter(fingerprint=fingerprint).first()
+            old_status = old_obj.status if old_obj else None
             should_analyze = False
             
             if alert_status == 'firing':
                 if not old_obj or old_obj.status != 'firing' or old_obj.healing_status in ['none', 'failed']:
                     should_analyze = True
+
+            # 过滤不需要分析的告警名称
+            from utils.config_manager import ConfigCache
+            ignored_names_str = ConfigCache.get('sre', 'sre.ignored_alert_names', '')
+            ignored_names = [name.strip() for name in ignored_names_str.split(',') if name.strip()]
+            is_ignored = alert_name in ignored_names
+            if is_ignored:
+                should_analyze = False
 
             obj, created = AlertEvent.objects.update_or_create(
                 fingerprint=fingerprint,
@@ -162,7 +176,25 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                     'annotations': annotations,
                 }
             )
+
+            if is_ignored and obj.healing_status != 'ignored':
+                obj.healing_status = 'ignored'
+                obj.save(update_fields=['healing_status'])
             
+            # 发送警告和恢复通知
+            if old_status != 'firing' and alert_status == 'firing':
+                try:
+                    from apps.system_management.notifiers import notify_alert_firing
+                    notify_alert_firing(obj)
+                except Exception as ne:
+                    logger.error(f"[SRE] Failed to send alert firing notification: {str(ne)}")
+            elif old_status == 'firing' and alert_status == 'resolved':
+                try:
+                    from apps.system_management.notifiers import notify_alert_resolved
+                    notify_alert_resolved(obj)
+                except Exception as ne:
+                    logger.error(f"[SRE] Failed to send alert resolved notification: {str(ne)}")
+
             # 触发 AI 分析 Celery 任务 (引入 Redis 防抖)
             if should_analyze:
                 lock_key = f"alert_analysis_lock_{fingerprint}"

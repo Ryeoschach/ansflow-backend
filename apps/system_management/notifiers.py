@@ -38,7 +38,7 @@ def get_notification_config(key: str, default=None):
 def is_notification_enabled(event_type: str) -> bool:
     """
     检查通知是否启用。
-    event_type: pipeline_start / pipeline_result / approval_requested / approval_result / task_result
+    event_type: pipeline_start / pipeline_result / approval_requested / approval_result / task_result / alert_firing / alert_resolved
     """
     # 总开关
     enabled = get_notification_config('enabled', True)
@@ -49,7 +49,7 @@ def is_notification_enabled(event_type: str) -> bool:
     level = get_notification_config('level', 'all')
     if level == 'none':
         return False
-    if level == 'error_only' and event_type not in ('pipeline_result', 'approval_result', 'task_result'):
+    if level == 'error_only' and event_type not in ('pipeline_result', 'approval_result', 'task_result', 'alert_firing', 'alert_resolved'):
         return False
 
     # 事件类型白名单
@@ -274,3 +274,55 @@ def notify_task_result(execution_obj):
     detail_url = f"{_get_frontend_url()}/v1/task/executions?id={execution_obj.id}"
 
     _send_notification('task_result', title, content, detail_url)
+
+
+def notify_alert_firing(alert_obj):
+    """
+    告警触发通知
+    """
+    logger.info(f"[Notify] 正在尝试发送告警触发通知: Alert #{alert_obj.id}, Name: {alert_obj.alert_name}")
+    title = f"🚨 告警触发: {alert_obj.alert_name}"
+    
+    labels_str = ""
+    if alert_obj.labels:
+        labels_str = "\n".join([f"- **{k}**: {v}" for k, v in alert_obj.labels.items()])
+    
+    annotations_str = ""
+    if alert_obj.annotations:
+        annotations_str = "\n".join([f"- **{k}**: {v}" for k, v in alert_obj.annotations.items()])
+
+    content = (
+        f"**告警名称**: {alert_obj.alert_name}\n"
+        f"**严重程度**: {alert_obj.severity.upper()}\n"
+        f"**触发时间**: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if labels_str:
+        content += f"\n**告警标签**:\n{labels_str}\n"
+    if annotations_str:
+        content += f"\n**告警注释**:\n{annotations_str}\n"
+        
+    detail_url = f"{_get_frontend_url()}/v1/sre/alerts"
+    _send_notification('alert_firing', title, content, detail_url)
+
+
+def notify_alert_resolved(alert_obj):
+    """
+    告警恢复通知
+    """
+    logger.info(f"[Notify] 正在尝试发送告警恢复通知: Alert #{alert_obj.id}, Name: {alert_obj.alert_name}")
+    title = f"✅ 告警恢复: {alert_obj.alert_name}"
+    
+    labels_str = ""
+    if alert_obj.labels:
+        labels_str = "\n".join([f"- **{k}**: {v}" for k, v in alert_obj.labels.items()])
+
+    content = (
+        f"**恢复告警**: {alert_obj.alert_name}\n"
+        f"**严重程度**: {alert_obj.severity.upper()}\n"
+        f"**恢复时间**: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if labels_str:
+        content += f"\n**告警标签**:\n{labels_str}\n"
+        
+    detail_url = f"{_get_frontend_url()}/v1/sre/alerts"
+    _send_notification('alert_resolved', title, content, detail_url)

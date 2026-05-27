@@ -36,7 +36,7 @@ class Command(BaseCommand):
             # 前端地址
             ('frontend_url', 'http://localhost:3000', 'string', False, '前端根地址，用于生成详情页链接'),
             # 事件类型白名单
-            ('notify_on', ['pipeline_start', 'pipeline_result', 'approval_requested', 'approval_result', 'task_result'], 'json', False, '触发通知的事件类型列表'),
+            ('notify_on', ['pipeline_start', 'pipeline_result', 'approval_requested', 'approval_result', 'task_result', 'alert_firing', 'alert_resolved'], 'json', False, '触发通知的事件类型列表'),
             # 鉴权相关
             ('webhook_token', '', 'string', False, '告警接收 Webhook 鉴权 Token（留空表示不启用鉴权）'),
         ]
@@ -56,6 +56,21 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(self.style.SUCCESS(f'  Created: notification.{key}'))
             else:
+                if key == 'notify_on':
+                    current_list = item.value
+                    if not isinstance(current_list, list):
+                        current_list = []
+                    
+                    updated = False
+                    for new_event in ['alert_firing', 'alert_resolved']:
+                        if new_event not in current_list:
+                            current_list.append(new_event)
+                            updated = True
+                    
+                    if updated:
+                        item.value = current_list
+                        item.save(update_fields=['value'])
+                        self.stdout.write(self.style.SUCCESS(f'  Updated notification.{key} with new event types.'))
                 self.stdout.write(f'  Already exists: notification.{key}')
 
         self.stdout.write(self.style.SUCCESS('\n通知配置初始化完成！'))

@@ -62,6 +62,42 @@ class TaskManagementTest(TestCase):
         # 检查变量快照是否保存（注意：快照是在 ViewSet 的 action 中保存的，Task 内部不保存快照，只读取）
         # 这里验证 Task 能够正常运行即可
 
+    @patch('ansible_runner.run')
+    def test_run_ansible_task_with_config_vars(self, mock_run):
+        """测试执行任务时是否正确替换了配置中心的变量"""
+        # 1. 创建配置中心变量
+        from apps.config_center.models import ConfigCategory, ConfigItem
+        category, _ = ConfigCategory.objects.get_or_create(name="global", defaults={"label": "全局配置"})
+        ConfigItem.objects.create(category=category, key="timer", value=5, value_type="int")
+        ConfigItem.objects.create(category=category, key="app_name", value="AnsFlow", value_type="string")
+        
+        # 2. 创建带占位符的任务
+        task_with_vars = AnsibleTask.objects.create(
+            name="Test Var Task",
+            task_type="cmd",
+            resource_pool=self.pool,
+            content="echo timer is ${timer} and app is ${global.app_name} jinja {{ timer }}",
+            forks=5
+        )
+        
+        # 3. 模拟 runner 返回
+        mock_result = MagicMock()
+        mock_result.rc = 0
+        mock_result.stats = {}
+        mock_run.return_value = mock_result
+        
+        execution = AnsibleExecution.objects.create(task=task_with_vars, status='pending')
+        
+        # 清理缓存，确保能够重新从 DB 加载最新创建的配置项
+        from django.core.cache import cache
+        cache.clear()
+        
+        run_ansible_task(execution.id)
+        
+        # 4. 验证替换后的 module_args
+        args, kwargs = mock_run.call_args
+        self.assertEqual(kwargs['module_args'], "echo timer is 5 and app is AnsFlow jinja 5")
+
 from rest_framework.test import APITestCase
 from django.contrib.auth import get_user_model
 from apps.rbac_permission.models import Role, DataPolicy, Permission

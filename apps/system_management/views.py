@@ -141,11 +141,26 @@ class DashboardViewSet(viewsets.ViewSet):
                 "failed": period_data.filter(status='failed').count()
             })
 
-        # 5. 实时告警数据
+        # 5. 实时告警数据与按级别分布统计
         from apps.sre_management.models import AlertEvent
         firing_alerts = AlertEvent.objects.filter(status='firing').order_by('-create_time')[:5].values(
             'id', 'alert_name', 'severity', 'create_time'
         )
+        alert_dist = AlertEvent.objects.filter(status='firing').values('severity').annotate(count=models.Count('id')).order_by('-count')
+        severity_map = {
+            'critical': {'name': '致命 (Critical)', 'color': '#ff4d4f'},
+            'warning': {'name': '警告 (Warning)', 'color': '#faad14'},
+            'info': {'name': '提示 (Info)', 'color': '#1890ff'},
+        }
+        alert_severity_dist = []
+        for item in alert_dist:
+            sev = item['severity']
+            info = severity_map.get(sev, {'name': sev.upper(), 'color': '#d9d9d9'})
+            alert_severity_dist.append({
+                "name": info['name'],
+                "value": item['count'],
+                "color": info['color']
+            })
 
         # 6. 最近动态 (混合排序与脱敏)
         ansible_recent = AnsibleExecution.objects.all().select_related('task', 'executor').order_by('-create_time')[:10]
@@ -206,6 +221,7 @@ class DashboardViewSet(viewsets.ViewSet):
             "envDistribution": [
                 {"name": item['env__name'] or "Unknown", "value": item['count'], "color": item['env__color']} for item in env_dist
             ],
+            "alertSeverityDistribution": alert_severity_dist,
             "firingAlerts": list(firing_alerts),
             "taskTrend": task_trend,
             "recentTasks": final_recent
