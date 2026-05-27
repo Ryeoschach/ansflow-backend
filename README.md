@@ -96,6 +96,11 @@ backend/
 - **Row-level Tenancy Protection**: Hard isolation on Hosts, Credentials, Pipelines, K8s Clusters, Ansible Tasks, and SRE Policies using database-level project checks via `SmartRBACPermission` and `DataScopeMixin`.
 - **Cross-Project Asset Sharing (ProjectAssetShare)**：Support controlled resource sharing with targeted permissions: `read` (read-only), `use` (executable/referenceable in pipelines without revealing secrets), and `full` (complete control), coupled with auditing and origin-restricted revocation.
 
+### 8. Multi-Dimensional Operation Reports (system_reports)
+- **Database Metrics Aggregation**: High-performance SQL analytical queries spanning Django Models for alert history, Celery task logs, Ansible pipeline durations, and host compliance score registers.
+- **Asynchronous Report Exporter**: Dispatches Celery-backed worker jobs to query, compile, package, and compress CSV logs for offline analytical download.
+- **Project-Level Scope Restriction**: Integrates with workspace filters to restrict reporting data visibility in accordance with tenant scopes.
+
 ---
 
 ## Quick Start
