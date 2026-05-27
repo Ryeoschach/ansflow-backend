@@ -160,6 +160,7 @@ class Command(BaseCommand):
             ]},
             {"title": "AI与RAG配置", "title_en": "Config AI&RAG", "key": "configAI", "path": "v1/ai-rag/config", "icon": "arcticons:ai-chat-open-assistant-chatbot", "order": 9},
             {"title": "等保2.0", "title_en": "compliance2.0", "key": "compliance", "path": "v1/system/compliance", "icon": "carbon:ibm-cloud-security-compliance-center", "order": 10},
+            {"title": "报表中心", "title_en": "Report Center", "key": "system-reports", "path": "v1/system/reports", "icon": "carbon:analytics", "order": 88},
             {"title": "资源管理", "title_en": "Resources Management", "key": "resources", "path": "resources", "icon": "grommet-icons:resources", "order": 888, "children": [
                 {"title": "平台管理", "title_en": "Platform Management", "key": "platform", "path": "v1/system/platforms", "icon": "tdesign:control-platform", "order": 0},
                 {"title": "环境管理", "title_en": "Envs Management", "key": "envs", "path": "v1/system/envs", "icon": "fluent-mdl2:server-enviroment", "order": 1},

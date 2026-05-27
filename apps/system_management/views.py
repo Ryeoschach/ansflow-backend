@@ -614,3 +614,368 @@ class UserNotificationViewSet(viewsets.ModelViewSet):
     def mark_all_read(self, request):
         self.get_queryset().filter(is_read=False).update(is_read=True)
         return Response({'status': 'success'}, status=status.HTTP_200_OK)
+
+
+class SystemReportViewSet(viewsets.ViewSet):
+    """
+    系统统一报表中心
+    """
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['get'], url_path='pipeline')
+    def pipeline(self, request):
+        from django.utils.dateparse import parse_datetime, parse_date
+        import datetime
+        from django.utils import timezone
+        from apps.pipeline_management.models import PipelineRun
+
+        start_str = request.query_params.get('start_time')
+        end_str = request.query_params.get('end_time')
+
+        def parse_date_param(param_str, is_end=False):
+            if not param_str:
+                return None
+            try:
+                dt = parse_datetime(param_str)
+                if dt:
+                    if timezone.is_naive(dt):
+                        dt = timezone.make_aware(dt)
+                    return dt
+            except Exception:
+                pass
+            try:
+                d = parse_date(param_str)
+                if d:
+                    dt = datetime.datetime.combine(d, datetime.time.max if is_end else datetime.time.min)
+                    return timezone.make_aware(dt)
+            except Exception:
+                pass
+            return None
+
+        start_time = parse_date_param(start_str, is_end=False)
+        end_time = parse_date_param(end_str, is_end=True)
+
+        if not start_time:
+            start_time = timezone.now() - datetime.timedelta(days=7)
+        if not end_time:
+            end_time = timezone.now()
+
+        runs = PipelineRun.objects.filter(create_time__range=(start_time, end_time))
+        project_id = request.query_params.get('project_id')
+        if project_id:
+            runs = runs.filter(pipeline__project_id=project_id)
+
+        total_runs = runs.count()
+        success_runs = runs.filter(status='success').count()
+        failed_runs = runs.filter(status='failed').count()
+        success_rate = round(success_runs * 100.0 / total_runs, 2) if total_runs > 0 else 0.0
+
+        # Trend (daily)
+        from django.db.models.functions import TruncDay
+        trend_stats = runs.annotate(day=TruncDay('create_time')) \
+                          .values('day') \
+                          .annotate(
+                              total=Count('id'),
+                              success=Count('id', filter=Q(status='success')),
+                              failed=Count('id', filter=Q(status='failed'))
+                          ) \
+                          .order_by('day')
+        trend = []
+        for t in trend_stats:
+            trend.append({
+                'day': t['day'].strftime('%Y-%m-%d'),
+                'total': t['total'],
+                'success': t['success'],
+                'failed': t['failed']
+            })
+
+        # Trigger distribution
+        trigger_stats = runs.values('trigger_type').annotate(count=Count('id')).order_by('-count')
+        trigger_distribution = []
+        trigger_labels = {
+            'manual': '手动触发',
+            'schedule': '定时触发',
+            'webhook': 'Webhook 触发',
+            'retry': '重试触发',
+            'automation': '自动自愈触发'
+        }
+        for ts in trigger_stats:
+            trigger_distribution.append({
+                'trigger_type': ts['trigger_type'],
+                'label': trigger_labels.get(ts['trigger_type'], ts['trigger_type']),
+                'count': ts['count']
+            })
+
+        # Slow nodes (slowest node runs)
+        from apps.pipeline_management.models import PipelineNodeRun
+        node_runs = PipelineNodeRun.objects.filter(
+            run__in=runs, 
+            status__in=['success', 'failed'], 
+            start_time__isnull=False, 
+            end_time__isnull=False
+        )
+        slowest_nodes = []
+        for nr in node_runs[:50]:
+            duration = int((nr.end_time - nr.start_time).total_seconds()) if nr.start_time and nr.end_time else 0
+            slowest_nodes.append({
+                'node_label': nr.node_label,
+                'node_type': nr.node_type,
+                'pipeline_name': nr.run.pipeline.name,
+                'duration': duration,
+                'status': nr.status,
+                'run_id': nr.run_id
+            })
+        slowest_nodes = sorted(slowest_nodes, key=lambda x: x['duration'], reverse=True)[:5]
+
+        return Response({
+            'summary': {
+                'total_runs': total_runs,
+                'success_runs': success_runs,
+                'failed_runs': failed_runs,
+                'success_rate': success_rate
+            },
+            'trend': trend,
+            'trigger_distribution': trigger_distribution,
+            'slowest_nodes': slowest_nodes
+        })
+
+    @action(detail=False, methods=['get'], url_path='ansible')
+    def ansible(self, request):
+        from django.utils.dateparse import parse_datetime, parse_date
+        import datetime
+        from django.utils import timezone
+        from apps.task_management.models import AnsibleExecution
+
+        start_str = request.query_params.get('start_time')
+        end_str = request.query_params.get('end_time')
+
+        def parse_date_param(param_str, is_end=False):
+            if not param_str:
+                return None
+            try:
+                dt = parse_datetime(param_str)
+                if dt:
+                    if timezone.is_naive(dt):
+                        dt = timezone.make_aware(dt)
+                    return dt
+            except Exception:
+                pass
+            try:
+                d = parse_date(param_str)
+                if d:
+                    dt = datetime.datetime.combine(d, datetime.time.max if is_end else datetime.time.min)
+                    return timezone.make_aware(dt)
+            except Exception:
+                pass
+            return None
+
+        start_time = parse_date_param(start_str, is_end=False)
+        end_time = parse_date_param(end_str, is_end=True)
+
+        if not start_time:
+            start_time = timezone.now() - datetime.timedelta(days=7)
+        if not end_time:
+            end_time = timezone.now()
+
+        executions = AnsibleExecution.objects.filter(create_time__range=(start_time, end_time))
+        
+        project_id = request.query_params.get('project_id')
+        env_id = request.query_params.get('env_id')
+        platform_id = request.query_params.get('platform_id')
+        resource_pool_id = request.query_params.get('resource_pool_id')
+
+        if project_id:
+            executions = executions.filter(task__project_id=project_id)
+        if resource_pool_id:
+            executions = executions.filter(task__resource_pool_id=resource_pool_id)
+        if env_id:
+            executions = executions.filter(task__resource_pool__hosts__env_id=env_id).distinct()
+        if platform_id:
+            executions = executions.filter(task__resource_pool__hosts__platform_id=platform_id).distinct()
+
+        total_execs = executions.count()
+        success_execs = executions.filter(status='success').count()
+        failed_execs = executions.filter(status='failed').count()
+        success_rate = round(success_execs * 100.0 / total_execs, 2) if total_execs > 0 else 0.0
+
+        total_host_runs = 0
+        for ex in executions.prefetch_related('task__resource_pool__hosts'):
+            if ex.task.resource_pool:
+                total_host_runs += ex.task.resource_pool.hosts.count()
+
+        # Trend (daily)
+        from django.db.models.functions import TruncDay
+        trend_stats = executions.annotate(day=TruncDay('create_time')) \
+                                .values('day') \
+                                .annotate(
+                                    total=Count('id'),
+                                    success=Count('id', filter=Q(status='success')),
+                                    failed=Count('id', filter=Q(status='failed'))
+                                ) \
+                                .order_by('day')
+        trend = []
+        for t in trend_stats:
+            trend.append({
+                'day': t['day'].strftime('%Y-%m-%d'),
+                'total': t['total'],
+                'success': t['success'],
+                'failed': t['failed']
+            })
+
+        # Breakdown stats helper
+        def get_rate(success, total):
+            return round(success * 100.0 / total, 2) if total > 0 else 0.0
+
+        # Environment Breakdown
+        from apps.host_management.models import Environment
+        env_breakdown = []
+        for env in Environment.objects.all():
+            env_execs = executions.filter(task__resource_pool__hosts__env=env).distinct()
+            total = env_execs.count()
+            if total > 0:
+                success = env_execs.filter(status='success').count()
+                env_breakdown.append({
+                    'name': env.name,
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        # Platform Breakdown
+        from apps.host_management.models import Platform
+        platform_breakdown = []
+        for plat in Platform.objects.all():
+            plat_execs = executions.filter(task__resource_pool__hosts__platform=plat).distinct()
+            total = plat_execs.count()
+            if total > 0:
+                success = plat_execs.filter(status='success').count()
+                platform_breakdown.append({
+                    'name': plat.name or plat.get_type_display(),
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        # Resource Pool Breakdown
+        from apps.host_management.models import ResourcePool
+        pool_breakdown = []
+        for pool in ResourcePool.objects.all():
+            pool_execs = executions.filter(task__resource_pool=pool)
+            total = pool_execs.count()
+            if total > 0:
+                success = pool_execs.filter(status='success').count()
+                pool_breakdown.append({
+                    'name': pool.name,
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        # Project Breakdown
+        from apps.rbac_permission.models import Project
+        project_breakdown = []
+        for proj in Project.objects.all():
+            proj_execs = executions.filter(task__project=proj)
+            total = proj_execs.count()
+            if total > 0:
+                success = proj_execs.filter(status='success').count()
+                project_breakdown.append({
+                    'name': proj.name,
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        return Response({
+            'summary': {
+                'total_executions': total_execs,
+                'success_executions': success_execs,
+                'failed_executions': failed_execs,
+                'success_rate': success_rate,
+                'total_host_runs': total_host_runs
+            },
+            'trend': trend,
+            'breakdown': {
+                'environment': env_breakdown,
+                'platform': platform_breakdown,
+                'resource_pool': pool_breakdown,
+                'project': project_breakdown
+            }
+        })
+
+    @action(detail=False, methods=['get'], url_path='compliance')
+    def compliance(self, request):
+        from apps.host_management.models import ComplianceFramework, ComplianceClause
+        
+        frameworks = ComplianceFramework.objects.all()
+        total_frameworks = frameworks.count()
+
+        total_clauses = 0
+        success_count = 0
+        failed_count = 0
+        running_count = 0
+        pending_count = 0
+        
+        non_compliant_clauses = []
+
+        for fw in frameworks:
+            leaf_clauses = ComplianceClause.objects.filter(framework=fw, children__isnull=True)
+            for cl in leaf_clauses:
+                total_clauses += 1
+                status = cl.compliance_status
+                if status == 'success':
+                    success_count += 1
+                elif status == 'failed':
+                    failed_count += 1
+                    mappings = cl.baseline_mappings.all()
+                    baselines = [m.baseline.name for m in mappings]
+                    pools = [m.baseline.resource_pool.name for m in mappings if m.baseline.resource_pool]
+                    non_compliant_clauses.append({
+                        'code': cl.code,
+                        'name': cl.name,
+                        'framework': fw.name,
+                        'baselines': baselines,
+                        'resource_pools': pools
+                    })
+                elif status == 'running':
+                    running_count += 1
+                else:
+                    pending_count += 1
+
+        overall_score = round(success_count * 100.0 / total_clauses, 2) if total_clauses > 0 else 100.0
+
+        return Response({
+            'summary': {
+                'overall_score': overall_score,
+                'total_frameworks': total_frameworks,
+                'total_compliance_items': total_clauses,
+                'failed_compliance_items': failed_count,
+            },
+            'clause_distribution': {
+                'success': success_count,
+                'failed': failed_count,
+                'running': running_count,
+                'pending': pending_count
+            },
+            'non_compliant_clauses': non_compliant_clauses
+        })
+
+    @action(detail=False, methods=['post'], url_path='export')
+    def export(self, request):
+        export_types = request.data.get('export_types', [])
+        start_time_str = request.data.get('start_time')
+        end_time_str = request.data.get('end_time')
+        filters = request.data.get('filters', {})
+
+        if not export_types:
+            return Response({'error': '请选择至少一个导出的报表类型'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .tasks import export_system_report_task
+        export_system_report_task.delay(
+            user_id=request.user.id,
+            export_types=export_types,
+            start_time_str=start_time_str,
+            end_time_str=end_time_str,
+            filters=filters
+        )
+        return Response({'message': '多维报表生成任务已提交，请留意右上角弹窗及通知铃铛。'}, status=status.HTTP_202_ACCEPTED)
