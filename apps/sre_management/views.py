@@ -34,6 +34,8 @@ class AlertEventViewSet(viewsets.ModelViewSet):
         'export_to_knowledge': {'name': '导出诊断至知识库', 'danger': 'safe'},
         'trigger_healing': {'name': '触发自愈流水线', 'danger': 'warn'},
         'bulk_destroy': {'name': '批量删除告警', 'danger': 'danger'},
+        'report': {'name': '查看告警报表', 'danger': 'safe'},
+        'export_report': {'name': '导出告警报表', 'danger': 'safe'},
     }
 
     @action(detail=False, methods=['post'], url_path='bulk-destroy')
@@ -44,6 +46,158 @@ class AlertEventViewSet(viewsets.ModelViewSet):
         
         count = self.queryset.filter(id__in=ids).delete()[0]
         return Response({"message": f"Successfully deleted {count} alerts"}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='report')
+    def report(self, request):
+        from django.utils.dateparse import parse_datetime, parse_date
+        from django.db.models import Count, Q
+        from django.db.models.functions import TruncDay
+        import datetime
+        from django.utils import timezone
+
+        start_str = request.query_params.get('start_time')
+        end_str = request.query_params.get('end_time')
+
+        def parse_date_param(param_str, is_end=False):
+            if not param_str:
+                return None
+            try:
+                dt = parse_datetime(param_str)
+                if dt:
+                    if timezone.is_naive(dt):
+                        dt = timezone.make_aware(dt)
+                    return dt
+            except Exception:
+                pass
+            try:
+                d = parse_date(param_str)
+                if d:
+                    dt = datetime.datetime.combine(d, datetime.time.max if is_end else datetime.time.min)
+                    return timezone.make_aware(dt)
+            except Exception:
+                pass
+            return None
+
+        start_time = parse_date_param(start_str, is_end=False)
+        end_time = parse_date_param(end_str, is_end=True)
+
+        if not start_time:
+            start_time = timezone.now() - datetime.timedelta(days=7)
+        if not end_time:
+            end_time = timezone.now()
+
+        events = self.filter_queryset(self.get_queryset()).filter(create_time__range=(start_time, end_time))
+
+        # 1. Summary statistics
+        total_alerts = events.count()
+        firing_alerts = events.filter(status='firing').count()
+        resolved_alerts = events.filter(status='resolved').count()
+        
+        healing_success = events.filter(healing_status='success').count()
+        healing_failed = events.filter(healing_status='failed').count()
+        healing_executing = events.filter(healing_status='executing').count()
+        healing_triggered = healing_success + healing_failed + healing_executing
+        
+        healing_success_rate = round(healing_success * 100.0 / (healing_success + healing_failed), 2) if (healing_success + healing_failed) > 0 else 0.0
+
+        # 2. Daily trend
+        trend_data = events.annotate(day=TruncDay('create_time')) \
+                           .values('day') \
+                           .annotate(
+                               count=Count('id'),
+                               resolved=Count('id', filter=Q(status='resolved')),
+                               healing=Count('id', filter=Q(healing_status__in=['executing', 'success', 'failed']))
+                           ) \
+                           .order_by('day')
+        
+        trend_list = []
+        for item in trend_data:
+            if item['day']:
+                trend_list.append({
+                    "date": item['day'].strftime("%Y-%m-%d"),
+                    "count": item['count'],
+                    "resolved": item['resolved'],
+                    "healing": item['healing']
+                })
+
+        # 3. Severity Distribution
+        severity_data = events.values('severity').annotate(count=Count('id')).order_by('-count')
+        severity_list = [{"severity": item['severity'], "count": item['count']} for item in severity_data]
+
+        # 4. Healing Status Distribution
+        status_data = events.values('healing_status').annotate(count=Count('id')).order_by('-count')
+        status_list = [{"status": item['healing_status'], "count": item['count']} for item in status_data]
+
+        # 5. Grouped by Alert Name for the table
+        name_stats = events.values('alert_name', 'severity') \
+                           .annotate(
+                               count=Count('id'),
+                               resolved_count=Count('id', filter=Q(status='resolved')),
+                               healing_count=Count('id', filter=Q(healing_status__in=['executing', 'success', 'failed'])),
+                               healing_success_count=Count('id', filter=Q(healing_status='success')),
+                               healing_failed_count=Count('id', filter=Q(healing_status='failed'))
+                           ) \
+                           .order_by('-count')
+        
+        name_list = []
+        for item in name_stats:
+            total = item['count']
+            resolved = item['resolved_count']
+            healing = item['healing_count']
+            success = item['healing_success_count']
+            failed = item['healing_failed_count']
+
+            recovery_rate = round(resolved * 100.0 / total, 2) if total > 0 else 0.0
+            healing_success_rate_item = round(success * 100.0 / (success + failed), 2) if (success + failed) > 0 else 0.0
+
+            name_list.append({
+                "alert_name": item['alert_name'],
+                "severity": item['severity'],
+                "count": total,
+                "resolved_count": resolved,
+                "recovery_rate": recovery_rate,
+                "healing_count": healing,
+                "healing_success_count": success,
+                "healing_failed_count": failed,
+                "healing_success_rate": healing_success_rate_item
+            })
+
+        return Response({
+            "summary": {
+                "total_alerts": total_alerts,
+                "firing_alerts": firing_alerts,
+                "resolved_alerts": resolved_alerts,
+                "healing_triggered": healing_triggered,
+                "healing_success": healing_success,
+                "healing_failed": healing_failed,
+                "healing_success_rate": healing_success_rate
+            },
+            "trend": trend_list,
+            "severity_distribution": severity_list,
+            "healing_status_distribution": status_list,
+            "alerts_by_name": name_list
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post', 'get'], url_path='export-report')
+    def export_report(self, request):
+        """
+        异步流式触发 Celery 导出告警报表
+        """
+        # 支持 POST body 以及 GET query params 两种传参方式
+        start_str = request.data.get('start_time') or request.query_params.get('start_time')
+        end_str = request.data.get('end_time') or request.query_params.get('end_time')
+
+        from .tasks import export_alert_report_task
+        export_alert_report_task.delay(
+            user_id=request.user.id,
+            start_time_str=start_str,
+            end_time_str=end_str
+        )
+
+        return Response({
+            "message": "报表正在后台异步生成中，完成后您将在通知中心收到下载提示"
+        }, status=status.HTTP_200_OK)
+
 
     @action(detail=True, methods=['post'], url_path='export-to-knowledge')
     def export_to_knowledge(self, request, pk=None):

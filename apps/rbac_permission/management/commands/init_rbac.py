@@ -156,6 +156,7 @@ class Command(BaseCommand):
             {"title": "SRE运维", "title_en": "SRE", "key": "sre", "path": "sre", "icon": "carbon:uv-index-alt", "order": 8, "children": [
                 {"title": "告警中心", "title_en": "Alert Center", "key": "sre-alerts", "path": "v1/sre/alerts", "icon": "carbon:alarm", "order": 0},
                 {"title": "任务脉搏", "title_en": "Task Pulse", "key": "sre-pulse", "path": "v1/sre/pulse", "icon": "carbon:activity", "order": 1},
+                {"title": "告警报表", "title_en": "Alert Report", "key": "sre-report", "path": "v1/sre/report", "icon": "carbon:report", "order": 2},
             ]},
             {"title": "AI与RAG配置", "title_en": "Config AI&RAG", "key": "configAI", "path": "v1/ai-rag/config", "icon": "arcticons:ai-chat-open-assistant-chatbot", "order": 9},
             {"title": "等保2.0", "title_en": "compliance2.0", "key": "compliance", "path": "v1/system/compliance", "icon": "carbon:ibm-cloud-security-compliance-center", "order": 10},

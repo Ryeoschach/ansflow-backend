@@ -582,3 +582,122 @@ def trigger_self_healing(alert_id):
         except:
             pass
         raise e
+
+
+@shared_task(name="apps.sre_management.tasks.export_alert_report_task")
+def export_alert_report_task(user_id, start_time_str, end_time_str):
+    import datetime
+    import csv
+    import uuid
+    import os
+    from django.conf import settings
+    from django.utils import timezone
+    from django.utils.dateparse import parse_datetime, parse_date
+    from django.db.models import Count, Q
+    from apps.sre_management.models import AlertEvent
+    from apps.system_management.models import UserNotification
+    from asgiref.sync import async_to_sync
+    from channels.layers import get_channel_layer
+
+    def parse_date_param(param_str, is_end=False):
+        if not param_str:
+            return None
+        try:
+            dt = parse_datetime(param_str)
+            if dt:
+                if timezone.is_naive(dt):
+                    dt = timezone.make_aware(dt)
+                return dt
+        except Exception:
+            pass
+        try:
+            d = parse_date(param_str)
+            if d:
+                dt = datetime.datetime.combine(d, datetime.time.max if is_end else datetime.time.min)
+                return timezone.make_aware(dt)
+        except Exception:
+            pass
+        return None
+
+    start_time = parse_date_param(start_time_str, is_end=False)
+    end_time = parse_date_param(end_time_str, is_end=True)
+
+    if not start_time:
+        start_time = timezone.now() - datetime.timedelta(days=7)
+    if not end_time:
+        end_time = timezone.now()
+
+    events = AlertEvent.objects.filter(create_time__range=(start_time, end_time))
+
+    name_stats = events.values('alert_name', 'severity') \
+                       .annotate(
+                           count=Count('id'),
+                           resolved_count=Count('id', filter=Q(status='resolved')),
+                           healing_count=Count('id', filter=Q(healing_status__in=['executing', 'success', 'failed'])),
+                           healing_success_count=Count('id', filter=Q(healing_status='success')),
+                           healing_failed_count=Count('id', filter=Q(healing_status='failed'))
+                       ) \
+                       .order_by('-count')
+
+    # Ensure reports directory exists inside media
+    reports_dir = os.path.join(settings.MEDIA_ROOT, 'reports')
+    os.makedirs(reports_dir, exist_ok=True)
+
+    filename = f"sre_alert_report_{uuid.uuid4().hex}.csv"
+    filepath = os.path.join(reports_dir, filename)
+    file_url = f"{settings.MEDIA_URL}reports/{filename}"
+
+    with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            '告警名称', '严重程度', '发生次数', '已恢复次数', '恢复率 (%)',
+            '自愈执行次数', '自愈成功次数', '自愈失败次数', '自愈成功率 (%)'
+        ])
+
+        for item in name_stats:
+            total = item['count']
+            resolved = item['resolved_count']
+            healing = item['healing_count']
+            success = item['healing_success_count']
+            failed = item['healing_failed_count']
+
+            recovery_rate = round(resolved * 100.0 / total, 2) if total > 0 else 0.0
+            healing_success_rate = round(success * 100.0 / (success + failed), 2) if (success + failed) > 0 else 0.0
+
+            writer.writerow([
+                item['alert_name'],
+                item['severity'],
+                total,
+                resolved,
+                f"{recovery_rate}%",
+                healing,
+                success,
+                failed,
+                f"{healing_success_rate}%"
+            ])
+
+    # Save UserNotification
+    notification = UserNotification.objects.create(
+        user_id=user_id,
+        title="告警自愈报表生成成功",
+        content=f"您于 {timezone.now().strftime('%Y-%m-%d %H:%M:%S')} 导出的告警报表已生成完毕，点击直接下载。",
+        extra_data={"download_url": file_url, "type": "report_ready"}
+    )
+
+    # Broadcast via websocket group
+    channel_layer = get_channel_layer()
+    if channel_layer:
+        async_to_sync(channel_layer.group_send)(
+            f"user_notifications_{user_id}",
+            {
+                "type": "send_notification",
+                "data": {
+                    "id": notification.id,
+                    "title": notification.title,
+                    "content": notification.content,
+                    "is_read": notification.is_read,
+                    "create_time": notification.create_time.isoformat(),
+                    "extra_data": notification.extra_data
+                }
+            }
+        )

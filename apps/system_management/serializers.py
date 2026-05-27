@@ -44,3 +44,11 @@ class PeriodicTaskSerializer(serializers.ModelSerializer):
             except ValueError:
                 raise serializers.ValidationError("Kwargs 必须是合法的 JSON 对象")
         return value
+
+
+from .models import UserNotification
+
+class UserNotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserNotification
+        fields = '__all__'

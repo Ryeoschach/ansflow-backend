@@ -624,4 +624,132 @@ class AlertWebhookNotificationTestCase(TestCase):
         ConfigCache.invalidate('sre', 'sre.ignored_alert_names')
 
 
+from rest_framework.test import APITestCase
+
+class AlertReportTestCase(APITestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        self.user = User.objects.create_superuser(username='reportadmin', password='password', email='report@test.com')
+        self.client.force_authenticate(user=self.user)
+        
+        # Create some dummy AlertEvents across a timeline
+        from django.utils import timezone
+        import datetime
+        
+        # 5 days ago
+        a1 = AlertEvent.objects.create(
+            alert_name="NodeMemoryUsageHigh",
+            severity="warning",
+            status="resolved",
+            fingerprint="fp-1",
+            healing_status="success"
+        )
+        AlertEvent.objects.filter(id=a1.id).update(create_time=timezone.now() - datetime.timedelta(days=5))
+        
+        # 3 days ago
+        a2 = AlertEvent.objects.create(
+            alert_name="NodeMemoryUsageHigh",
+            severity="warning",
+            status="firing",
+            fingerprint="fp-2",
+            healing_status="failed"
+        )
+        AlertEvent.objects.filter(id=a2.id).update(create_time=timezone.now() - datetime.timedelta(days=3))
+        
+        # 1 day ago
+        a3 = AlertEvent.objects.create(
+            alert_name="CpuCoreTempTooHigh",
+            severity="critical",
+            status="firing",
+            fingerprint="fp-3",
+            healing_status="none"
+        )
+        AlertEvent.objects.filter(id=a3.id).update(create_time=timezone.now() - datetime.timedelta(days=1))
+
+    def test_report_stats_aggregation(self):
+        url = reverse('sre-alerts-report')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        response_data = response.json()
+        self.assertEqual(response_data['code'], 200)
+        data = response_data['data']
+        summary = data['summary']
+        self.assertEqual(summary['total_alerts'], 3)
+        self.assertEqual(summary['firing_alerts'], 2)
+        self.assertEqual(summary['resolved_alerts'], 1)
+        self.assertEqual(summary['healing_triggered'], 2) # success + failed
+        self.assertEqual(summary['healing_success'], 1)
+        self.assertEqual(summary['healing_failed'], 1)
+        self.assertEqual(summary['healing_success_rate'], 50.0)
+
+        # Check trend
+        self.assertEqual(len(data['trend']), 3)
+
+        # Check severity distribution
+        self.assertEqual(len(data['severity_distribution']), 2)
+
+        # Check alerts_by_name
+        self.assertEqual(len(data['alerts_by_name']), 2)
+        node_memory_stat = next(item for item in data['alerts_by_name'] if item['alert_name'] == "NodeMemoryUsageHigh")
+        self.assertEqual(node_memory_stat['count'], 2)
+        self.assertEqual(node_memory_stat['resolved_count'], 1)
+        self.assertEqual(node_memory_stat['recovery_rate'], 50.0)
+        self.assertEqual(node_memory_stat['healing_count'], 2)
+        self.assertEqual(node_memory_stat['healing_success_rate'], 50.0)
+
+    @patch('apps.sre_management.tasks.export_alert_report_task.delay')
+    def test_report_export_async_trigger(self, mock_task):
+        url = reverse('sre-alerts-export-report')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        
+        response_data = response.json()
+        self.assertEqual(response_data['code'], 200)
+        self.assertIn("生成中", response_data['data']['message'])
+        mock_task.assert_called_once()
+
+    def test_report_export_celery_task(self):
+        from apps.sre_management.tasks import export_alert_report_task
+        from apps.system_management.models import UserNotification
+        import os
+        import datetime
+        from django.conf import settings
+
+        # Clear existing notifications
+        UserNotification.objects.all().delete()
+
+        # Run task synchronously
+        export_alert_report_task(
+            user_id=self.user.id,
+            start_time_str=(timezone.now() - datetime.timedelta(days=7)).isoformat(),
+            end_time_str=timezone.now().isoformat()
+        )
+
+        # Check if notification was created
+        notifications = UserNotification.objects.filter(user=self.user)
+        self.assertEqual(notifications.count(), 1)
+        notif = notifications.first()
+        self.assertEqual(notif.title, "告警自愈报表生成成功")
+        self.assertIn("download_url", notif.extra_data)
+        
+        # Verify the CSV file exists in media path
+        download_url = notif.extra_data['download_url']
+        file_path = os.path.join(settings.BASE_DIR, download_url.lstrip('/'))
+        self.assertTrue(os.path.exists(file_path))
+        
+        # Read file content
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            content = f.read()
+            self.assertIn("告警名称", content)
+            self.assertIn("NodeMemoryUsageHigh", content)
+            self.assertIn("CpuCoreTempTooHigh", content)
+
+        # Cleanup test files
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+
+
 

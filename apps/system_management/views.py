@@ -587,3 +587,29 @@ class PeriodicTaskViewSet(viewsets.ModelViewSet):
             
         task.save()
         return Response({'status': 'success'})
+
+
+from .models import UserNotification
+from .serializers import UserNotificationSerializer
+
+class UserNotificationViewSet(viewsets.ModelViewSet):
+    """
+    用户实时通知管理
+    """
+    serializer_class = UserNotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return UserNotification.objects.filter(user=self.request.user).order_by('-create_time')
+
+    @action(detail=True, methods=['post'], url_path='mark-read')
+    def mark_read(self, request, pk=None):
+        obj = self.get_object()
+        obj.is_read = True
+        obj.save(update_fields=['is_read'])
+        return Response({'status': 'success'}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='mark-all-read')
+    def mark_all_read(self, request):
+        self.get_queryset().filter(is_read=False).update(is_read=True)
+        return Response({'status': 'success'}, status=status.HTTP_200_OK)

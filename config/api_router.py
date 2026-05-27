@@ -10,7 +10,7 @@ from apps.host_management.views import (
 from apps.task_management.views import AnsibleTaskViewSet, AnsibleExecutionViewSet, AnsibleScheduleViewSet
 from apps.pipeline_management.views import PipelineViewSet, PipelineRunViewSet, PipelineNodeRunViewSet, CIEnvironmentViewSet, PipelineWebhookViewSet, PipelineVersionViewSet
 from apps.registry_management.views import ImageRegistryViewSet, ArtifactoryInstanceViewSet, ArtifactoryRepositoryViewSet, ArtifactViewSet, ArtifactVersionViewSet
-from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet, PeriodicTaskViewSet
+from apps.system_management.views import SystemHealthViewSet, DashboardViewSet, BackupViewSet, PeriodicTaskViewSet, UserNotificationViewSet
 from apps.approval_center.views import ApprovalPolicyViewSet, ApprovalTicketViewSet, ApprovalResourceViewSet
 from apps.credentials_management.views import CredentialViewSet
 from apps.config_center.views import ConfigCategoryViewSet, ConfigItemViewSet, ConfigChangeLogViewSet
@@ -60,6 +60,7 @@ router.register(r'system/health', SystemHealthViewSet, basename='system-health')
 router.register(r'system/dashboard', DashboardViewSet, basename='system-dashboard')
 router.register(r'system/backup', BackupViewSet, basename='system-backup')
 router.register(r'system/periodic-tasks', PeriodicTaskViewSet, basename='system-periodic-tasks')
+router.register(r'system/notifications', UserNotificationViewSet, basename='system-notifications')
 router.register(r'audit-logs', AuditLogViewSet, basename='审计日志')
 router.register(r'credentials', CredentialViewSet, basename='credentials')
 router.register(r'config/categories', ConfigCategoryViewSet, basename='config-categories')
