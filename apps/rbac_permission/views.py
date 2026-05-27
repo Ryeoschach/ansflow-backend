@@ -368,3 +368,89 @@ class ProjectAssetShareViewSet(viewsets.ModelViewSet):
             id__in=ids, from_project=project
         ).delete()
         return Response({'message': f'已撤销 {deleted} 条授权'})
+
+
+class ProjectMemberViewSet(viewsets.ModelViewSet):
+    """
+    项目成员管理。
+    - 超级管理员可查看和管理所有项目的成员
+    - 项目所有者(owner)和项目内 admin 成员可添加、修改或删除该项目的成员
+    - 普通成员/只读成员只能查看本项目的成员列表
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        from apps.rbac_permission.serializers import ProjectMemberSerializer
+        return ProjectMemberSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        from apps.rbac_permission.models import ProjectMember, Project
+        
+        # 超级管理员返回所有
+        if user.is_superuser:
+            queryset = ProjectMember.objects.all()
+        else:
+            # 普通用户仅能查询自己所在项目的成员
+            from django.db.models import Q
+            user_projects = Project.objects.filter(
+                Q(owner=user) | Q(members__user=user)
+            ).distinct()
+            queryset = ProjectMember.objects.filter(project__in=user_projects)
+            
+        queryset = queryset.select_related('project', 'user')
+        
+        # 支持按项目ID过滤
+        project_id = self.request.query_params.get('project_id')
+        if project_id:
+            queryset = queryset.filter(project_id=project_id)
+            
+        return queryset.order_by('-create_time')
+
+    def check_project_admin(self, project, user):
+        if user.is_superuser:
+            return True
+        if project.owner == user:
+            return True
+        from apps.rbac_permission.models import ProjectMember
+        is_admin = ProjectMember.objects.filter(project=project, user=user, role='admin').exists()
+        return is_admin
+
+    def perform_create(self, serializer):
+        project = serializer.validated_data.get('project')
+        user = self.request.user
+        if not self.check_project_admin(project, user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("您不是该项目的管理员，无法管理成员")
+        
+        # 避免重复添加同一个用户到同一个项目
+        target_user = serializer.validated_data.get('user')
+        from apps.rbac_permission.models import ProjectMember
+        if ProjectMember.objects.filter(project=project, user=target_user).exists():
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError("该用户已是项目成员")
+
+        serializer.save()
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        project = instance.project
+        user = self.request.user
+        if not self.check_project_admin(project, user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("您不是该项目的管理员，无法管理成员")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        project = instance.project
+        user = self.request.user
+        if not self.check_project_admin(project, user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("您不是该项目的管理员，无法管理成员")
+        
+        # 不允许删除项目负责人(owner)自己的项目成员记录，防止项目没有管理员
+        if project.owner == instance.user:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError("不能移除项目负责人")
+            
+        instance.delete()

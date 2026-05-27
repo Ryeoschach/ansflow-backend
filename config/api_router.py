@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from apps.k8s_management.views import K8sClusterViewSet, HelmRepositoryViewSet, K8sApplicationViewSet
-from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewSet, MenuViewSet, AuditLogViewSet, ProjectViewSet, ProjectAssetShareViewSet
+from apps.rbac_permission.views import UserViewSet, RoleViewSet, PermissionViewSet, MenuViewSet, AuditLogViewSet, ProjectViewSet, ProjectAssetShareViewSet, ProjectMemberViewSet
 from apps.host_management.views import (
     HostViewSet, EnvironmentViewSet, ResourcePoolViewSet, PlatformViewSet, SshCredentialViewSet, HostBaselineViewSet,
     ComplianceFrameworkViewSet, ComplianceClauseViewSet, ComplianceBaselineMappingViewSet
@@ -27,6 +27,7 @@ router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='users')
 router.register(r'projects', ProjectViewSet, basename='projects')
 router.register(r'asset-shares', ProjectAssetShareViewSet, basename='asset-shares')
+router.register(r'project-members', ProjectMemberViewSet, basename='project-members')
 router.register(r'roles', RoleViewSet, basename='roles')
 router.register(r'hosts', HostViewSet, basename='hosts')
 router.register(r'environments', EnvironmentViewSet, basename='environments')

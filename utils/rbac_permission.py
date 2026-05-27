@@ -32,9 +32,15 @@ class SmartRBACPermission(permissions.BasePermission):
         project = getattr(request, 'project', None)
         if project and not request.user.is_superuser:
             from apps.rbac_permission.models import ProjectMember
-            has_membership = ProjectMember.objects.filter(project=project, user=request.user).exists()
-            if not has_membership:
+            membership = ProjectMember.objects.filter(project=project, user=request.user).first()
+            if not membership:
                 raise permissions.exceptions.PermissionDenied(f"您没有当前项目 {project.name} 的访问权限。")
+            
+            # 对只读成员限制写操作
+            action = getattr(view, 'action', None) or request.method.lower()
+            perm_action = RBAC_ACTION_MAP.get(action, action)
+            if membership.role == 'viewer' and perm_action not in ['view', 'list', 'get', 'retrieve', 'head', 'options']:
+                raise permissions.exceptions.PermissionDenied("您在当前项目中仅有只读权限，无法执行修改操作。")
 
         # 获取资源标识
         # 如果 View 中没有定义 resource_code，说明该接口不参与 RBAC 审计，生产环境直接禁用
