@@ -1,11 +1,23 @@
 # AnsFlow Backend
 
+<p align="left">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Django-5.2-092E20?style=for-the-badge&logo=django&logoColor=white" alt="Django 5.2">
+  <img src="https://img.shields.io/badge/Celery-Ready-37814A?style=for-the-badge&logo=celery" alt="Celery">
+  <img src="https://img.shields.io/badge/Docker-Supported-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/Version-v2.0.0-orange?style=for-the-badge" alt="Version">
+  <a href="./README_ZH.md"><img src="https://img.shields.io/badge/Lang-中文说明-red?style=for-the-badge" alt="中文说明"></a>
+</p>
+
+> **Enterprise-level DevOps pipeline platform backend**, built with Django 5.2 + DRF. Integrated with **RAG Knowledge Base**, **Intelligent Diagnosis**, and **SRE Self-healing** capabilities.
+
 English | [中文说明](./README_ZH.md)
 
-Enterprise-level DevOps pipeline platform backend, built with Django 5.2 + DRF. Integrated with **RAG Knowledge Base**, **Intelligent Diagnosis**, and **SRE Self-healing** capabilities.
-
-**Current Version**: v2.0.0 (build: 2026-05-08)  
-**Core Capabilities**: DevOps + SRE + RAG AI Assistant
+### 🌟 Core Capabilities
+* 📖 **RAG Knowledge Base**: High-performance vector search with ChromaDB & FastEmbed.
+* 🧠 **Intelligent Diagnosis**: Real-time root-cause analysis based on DeepSeek-V3.
+* ⚡ **SRE Self-healing**: Closed-loop event detection, playbook matching, and Ansible Runner execution.
+* ⏳ **Async Tasks**: Celery-powered task scheduling, document vectorization, and background execution.
 
 ---
 

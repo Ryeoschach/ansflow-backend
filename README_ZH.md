@@ -1,11 +1,23 @@
 # AnsFlow Backend
 
+<p align="left">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/Django-5.2-092E20?style=for-the-badge&logo=django&logoColor=white" alt="Django 5.2">
+  <img src="https://img.shields.io/badge/Celery-Ready-37814A?style=for-the-badge&logo=celery" alt="Celery">
+  <img src="https://img.shields.io/badge/Docker-支持-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/版本-v2.0.0-orange?style=for-the-badge" alt="版本">
+  <a href="./README.md"><img src="https://img.shields.io/badge/Lang-English-red?style=for-the-badge" alt="English"></a>
+</p>
+
+> **企业级 DevOps 流水线平台后端**，基于 Django 5.2 + DRF 构建。集成了 **RAG 知识库**、**智能诊断**与 **SRE 自愈**能力。
+
 [English](./README.md) | 中文说明
 
-企业级 DevOps 流水线平台后端，基于 Django 5.2 + DRF 构建。集成了 **RAG 知识库**、**智能诊断**与 **SRE 自愈**能力。
-
-**当前版本**：v2.0.0 (build: 2026-05-08)  
-**核心能力**：DevOps + SRE + RAG 智能助手  
+### 🌟 核心能力
+* 📖 **RAG 知识库**：基于 ChromaDB & FastEmbed 的高性能向量检索与问答。
+* 🧠 **智能诊断**：基于 DeepSeek-V3 的实时根因分析与排障建议。
+* ⚡ **SRE 自愈**：闭环告警接收、策略匹配及 Ansible Runner 自动化剧本执行。
+* ⏳ **异步任务**：由 Celery 驱动的多通道并发任务、文档向量化及后台自愈匹配。
 
 ---
 
