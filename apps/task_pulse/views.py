@@ -84,7 +84,9 @@ class TaskPulseViewSet(viewsets.ReadOnlyModelViewSet):
             'message': '任务已撤销并已更新数据库状态'
         })
 
-class WorkerNodeViewSet(viewsets.ReadOnlyModelViewSet):
+from rest_framework import mixins
+
+class WorkerNodeViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     """Worker 节点状态 API"""
     queryset = WorkerNode.objects.all()
     serializer_class = WorkerNodeSerializer
