@@ -21,6 +21,7 @@ dependencies = [
     "aliyun-python-sdk-core>=2.16.0",
     "aliyun-python-sdk-ecs>=4.24.82",
     "boto3>=1.42.69",
+    "ansible-core>=2.19.0",
     "ansible-runner>=2.4.3",
     "paramiko>=4.0.0",
     "cryptography>=46.0.5",
