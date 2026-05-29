@@ -177,6 +177,8 @@ class Command(BaseCommand):
                 {"title": "角色管理", "title_en": "Roles Management", "key": "roles", "path": "v1/system/roles", "icon": "TeamOutlined", "order": 3},
                 {"title": "系统备份/还原", "title_en": "System Backup", "key": "backup", "path": "/v1/system/backups", "icon": "iconoir:database-backup", "order": 4},
                 {"title": "定时任务", "title_en": "Scheduled Tasks", "key": "periodic-tasks", "path": "/v1/system/periodic-tasks", "icon": "ant-design:schedule-outlined", "order": 5},
+                {"title": "项目管理", "title_en": "Project Management", "key": "projects", "path": "v1/system/projects", "icon": "ProjectOutlined", "order": 6},
+                {"title": "跨项目授权", "title_en": "Cross-project Authorization", "key": "asset-shares", "path": "v1/system/asset-shares", "icon": "ShareAltOutlined", "order": 7},
             ]},
         ]
 
