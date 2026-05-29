@@ -20,6 +20,7 @@ import logging
 import uuid
 import os
 import base64
+import copy
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -110,7 +111,7 @@ def get_decrypted_field_value(obj, field_name: str) -> Optional[str]:
 MODULE_DEFINITIONS = {
     'rbac': {
         'label': '权限与用户 (RBAC)',
-        'models': ['Permission', 'Credential', 'Role', 'DataPolicy', 'User']
+        'models': ['Permission', 'Credential', 'Role', 'DataPolicy', 'User', 'Project', 'ProjectMember', 'ProjectAssetShare']
     },
     'menu': {
         'label': '系统菜单配置 (Menus)',
@@ -158,6 +159,33 @@ MODULE_DEFINITIONS = {
     },
 }
 
+RESTORE_MODULE_DEPENDENCIES = {
+    'pipeline': ['rbac', 'task', 'host', 'k8s', 'registry'],
+    'task': ['rbac', 'host'],
+}
+
+HISTORY_MODELS = {'PipelineRun', 'PipelineNodeRun', 'AnsibleExecution'}
+
+EMBEDDED_REF_FIELDS = {
+    'ansible_task_id': 'AnsibleTask',
+    'resource_pool_id': 'ResourcePool',
+    'k8s_cluster_id': 'K8sCluster',
+    'k8s_repo_id': 'HelmRepository',
+    'ci_env_id': 'CIEnvironment',
+    'registry_id': 'ImageRegistry',
+}
+
+PROJECT_ASSET_TYPE_MODEL = {
+    'host': 'Host',
+    'ssh_credential': 'SshCredential',
+    'credential': 'Credential',
+    'pipeline': 'Pipeline',
+    'ansible_task': 'AnsibleTask',
+    'k8s_cluster': 'K8sCluster',
+    'resource_pool': 'ResourcePool',
+    'self_healing_policy': 'SelfHealingPolicy',
+}
+
 
 # ============================================================
 # 数据模型映射
@@ -193,6 +221,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'Credential': ModelInfo(
         app_label='credentials_management', model_name='Credential', table_name='sys_credential_vault',
+        fk_fields={'project': ('Project', 'id')},
         exclude_fields=['remark'],
         encrypted_fields=['secret_value'],
         unique_fields=['name'],
@@ -200,6 +229,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'SshCredential': ModelInfo(
         app_label='host_management', model_name='SshCredential', table_name='cmdb_ssh_credential',
+        fk_fields={'project': ('Project', 'id')},
         exclude_fields=['remark'],
         encrypted_fields=['password', 'private_key', 'passphrase'],
         unique_fields=['name'],
@@ -238,6 +268,31 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         unique_fields=['username'],
         export_order=8,
     ),
+    'Project': ModelInfo(
+        app_label='rbac_permission', model_name='Project', table_name='rbac_project',
+        fk_fields={'owner': ('User', 'id')},
+        exclude_fields=['remark'],
+        unique_fields=['code'],
+        export_order=8.2,
+    ),
+    'ProjectMember': ModelInfo(
+        app_label='rbac_permission', model_name='ProjectMember', table_name='rbac_project_member',
+        fk_fields={'project': ('Project', 'id'), 'user': ('User', 'id')},
+        exclude_fields=['remark'],
+        unique_fields=['project', 'user'],
+        export_order=8.3,
+    ),
+    'ProjectAssetShare': ModelInfo(
+        app_label='rbac_permission', model_name='ProjectAssetShare', table_name='rbac_project_asset_share',
+        fk_fields={
+            'from_project': ('Project', 'id'),
+            'to_project': ('Project', 'id'),
+            'shared_by': ('User', 'id'),
+        },
+        exclude_fields=['remark'],
+        unique_fields=['from_project', 'to_project', 'asset_type', 'asset_id'],
+        export_order=8.4,
+    ),
     'Platform': ModelInfo(
         app_label='host_management', model_name='Platform', table_name='cmdb_platform',
         fk_fields={'default_credential': ('SshCredential', 'id')},
@@ -247,6 +302,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'K8sCluster': ModelInfo(
         app_label='k8s_management', model_name='K8sCluster', table_name='k8s_clusters',
+        fk_fields={'project': ('Project', 'id')},
         exclude_fields=['remark'],
         encrypted_fields=['kubeconfig_content', 'token'],
         unique_fields=['name'],
@@ -275,7 +331,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'Pipeline': ModelInfo(
         app_label='pipeline_management', model_name='Pipeline', table_name='pipeline_template',
-        fk_fields={'creator': ('User', 'id')},
+        fk_fields={'creator': ('User', 'id'), 'project': ('Project', 'id')},
         exclude_fields=['remark'],
         unique_fields=['name'],
         export_order=13,
@@ -342,6 +398,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
             'env': ('Environment', 'id'),
             'platform': ('Platform', 'id'),
             'credential': ('SshCredential', 'id'),
+            'project': ('Project', 'id'),
         },
         exclude_fields=['remark'],
         unique_fields=['hostname'],
@@ -349,6 +406,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'ResourcePool': ModelInfo(
         app_label='host_management', model_name='ResourcePool', table_name='cmdb_resource_pool',
+        fk_fields={'project': ('Project', 'id')},
         m2m_fields={'hosts': 'Host'},
         exclude_fields=['remark'],
         unique_fields=['code'],
@@ -365,9 +423,10 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         fk_fields={
             'resource_pool': ('ResourcePool', 'id'),
             'creator': ('User', 'id'),
+            'project': ('Project', 'id'),
         },
         exclude_fields=['remark'],
-        unique_fields=['id'],
+        unique_fields=['project', 'name', 'create_type'],
         export_order=19.5,
     ),
     'AnsibleExecution': ModelInfo(
@@ -495,7 +554,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'SelfHealingPolicy': ModelInfo(
         app_label='sre_management', model_name='SelfHealingPolicy', table_name='sre_healing_policy',
-        fk_fields={'pipeline': ('Pipeline', 'id')},
+        fk_fields={'pipeline': ('Pipeline', 'id'), 'project': ('Project', 'id')},
         unique_fields=['name'],
         export_order=23.4,
     ),
@@ -638,14 +697,22 @@ class DecryptionError(Exception):
 
 
 class BackupImporter:
-    def __init__(self, backup_data: Dict[str, Any], passphrase: Optional[str] = None):
+    def __init__(self, backup_data: Dict[str, Any], passphrase: Optional[str] = None, include_history: bool = False):
         self.data = backup_data.get('data', {})
         self.metadata = backup_data.get('metadata', {})
         self.passphrase = passphrase
+        self.include_history = include_history
         self.id_map: Dict[str, Dict[int, int]] = {}
         self.errors: List[str] = []
+        self.warnings: List[str] = []
         self.imported_counts: Dict[str, int] = {}
         self.key = None
+        self.requested_modules: List[str] = []
+        self.effective_modules: List[str] = []
+        self.added_dependency_modules: List[str] = []
+        self.skipped_history_models: List[str] = []
+        self.remapped_refs: Dict[str, int] = {}
+        self.unresolved_refs: List[str] = []
 
     def _derive_key_if_needed(self):
         # Derive key if passphrase and encrypted data exist
@@ -667,6 +734,58 @@ class BackupImporter:
         self.errors.append(msg)
         logger.error(f"[Restore] 错误: {msg}")
 
+    def _warning(self, msg: str):
+        self.warnings.append(msg)
+        logger.warning(f"[Restore] 警告: {msg}")
+
+    def _record_unresolved_ref(self, msg: str):
+        self.unresolved_refs.append(msg)
+        self._warning(msg)
+
+    def _expand_modules(self, selected_modules: Optional[List[str]]) -> List[str]:
+        if selected_modules:
+            requested = [m for m in selected_modules if m in MODULE_DEFINITIONS]
+        else:
+            requested = list(MODULE_DEFINITIONS.keys())
+
+        expanded = list(requested)
+        queue = list(requested)
+        while queue:
+            module = queue.pop(0)
+            for dep in RESTORE_MODULE_DEPENDENCIES.get(module, []):
+                if dep not in expanded:
+                    expanded.append(dep)
+                    queue.append(dep)
+
+        ordered = [m for m in MODULE_DEFINITIONS.keys() if m in expanded]
+        self.requested_modules = requested
+        self.effective_modules = ordered
+        self.added_dependency_modules = [m for m in ordered if m not in requested]
+        return ordered
+
+    def _model_names_for_modules(self, modules: List[str]) -> List[str]:
+        target_model_names = []
+        for mod_key in modules:
+            target_model_names.extend(MODULE_DEFINITIONS[mod_key]['models'])
+        return target_model_names
+
+    def _build_lookup(self, model_info: ModelInfo, record: Dict, clean_data: Dict) -> Dict[str, Any]:
+        lookup = {}
+        for field_name in model_info.unique_fields:
+            if field_name in model_info.fk_fields:
+                fk_key = f'{field_name}_id'
+                if fk_key in clean_data:
+                    lookup[fk_key] = clean_data[fk_key]
+                elif record.get(field_name) is None:
+                    lookup[fk_key] = None
+                else:
+                    return {}
+            elif field_name in record:
+                lookup[field_name] = record[field_name]
+            else:
+                return {}
+        return lookup
+
     def import_all(self, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
         """执行恢复导入
         :param selected_modules: 指定要恢复的模块列表（key），None 表示恢复全部
@@ -674,20 +793,20 @@ class BackupImporter:
         self._derive_key_if_needed()
         from django.apps import apps
 
-        # 1. 确定要恢复的模型范围
-        target_model_names = []
-        if selected_modules:
-            for mod_key in selected_modules:
-                if mod_key in MODULE_DEFINITIONS:
-                    target_model_names.extend(MODULE_DEFINITIONS[mod_key]['models'])
-        else:
-            # 如果不指定，则恢复备份文件中包含的所有模型
-            target_model_names = list(self.data.keys())
+        # 1. 确定要恢复的模型范围，并为模板资产自动补齐依赖模块
+        target_modules = self._expand_modules(selected_modules)
+        target_model_names = self._model_names_for_modules(target_modules)
+        if not selected_modules:
+            target_model_names = [name for name in target_model_names if name in self.data]
 
         # 2. 过滤并按顺序排序
         sorted_models = []
         for name in target_model_names:
             if name in MODEL_INFOS:
+                if not self.include_history and name in HISTORY_MODELS:
+                    if name in self.data and name not in self.skipped_history_models:
+                        self.skipped_history_models.append(name)
+                    continue
                 sorted_models.append((name, MODEL_INFOS[name]))
         sorted_models.sort(key=lambda x: x[1].export_order)
 
@@ -714,6 +833,10 @@ class BackupImporter:
                     if records:
                         self._import_phase_3(model_name, model_info, records)
 
+                self._log("=== 阶段 4: 重写嵌入式资源引用 ===")
+                self._remap_project_asset_shares()
+                self._remap_pipeline_embedded_refs()
+
             # Celery Beat 定时任务自动同步机制
             if 'AnsibleSchedule' in self.id_map:
                 try:
@@ -735,7 +858,14 @@ class BackupImporter:
         return {
             'success': len(self.errors) == 0,
             'errors': self.errors,
+            'warnings': self.warnings,
             'imported': self.imported_counts,
+            'requested_modules': self.requested_modules,
+            'effective_modules': self.effective_modules,
+            'added_dependency_modules': self.added_dependency_modules,
+            'skipped_history_models': self.skipped_history_models,
+            'remapped_refs': self.remapped_refs,
+            'unresolved_refs': self.unresolved_refs,
         }
 
     def _import_phase_1(self, model_name: str, model_info: ModelInfo, records: List[Dict]):
@@ -750,15 +880,10 @@ class BackupImporter:
             if old_id is None:
                 continue
 
-            # 跳过超级用户
-            if model_name == 'User' and old_id == 1:
-                self.id_map.setdefault(model_name, {})[old_id] = 1
-                self._log(f"  跳过超级用户 (id=1)")
-                continue
-
             try:
                 # 构建仅包含非 FK/M2M 字段的数据
                 clean_data = {}
+                model_fields = {field.name: field for field in Model._meta.fields}
                 for field_name, value in record.items():
                     if field_name.endswith('_ids'):
                         continue  # 跳过 M2M
@@ -769,6 +894,11 @@ class BackupImporter:
                         new_fk_id = self.id_map.get(rel_model, {}).get(value)
                         if new_fk_id:
                             clean_data[field_name + '_id'] = new_fk_id
+                        continue
+
+                    field = model_fields.get(field_name)
+                    if field and field.is_relation and field.many_to_one:
+                        self._warning(f"{model_name}[{old_id}] 字段 {field_name} 是未注册 FK，已跳过，避免跨环境旧 ID 误写入。")
                         continue
 
                     if field_name in model_info.exclude_fields:
@@ -794,7 +924,7 @@ class BackupImporter:
                                     clean_data[field_name] = decrypted_val
                             except Exception as e:
                                 if self.metadata.get('encrypted_by_secret_key', False):
-                                    self._log(f"警告: 使用本地 SECRET_KEY 解密敏感字段 {model_name}.{field_name} 失败，可能是跨环境还原。跳过该字段还原。")
+                                    self._warning(f"使用本地 SECRET_KEY 解密敏感字段 {model_name}.{field_name} 失败，可能是跨环境还原。跳过该字段还原。")
                                 else:
                                     raise DecryptionError(f"解密敏感字段 {model_name}.{field_name} 失败，密码可能错误: {str(e)}")
                         continue
@@ -808,10 +938,7 @@ class BackupImporter:
                 # 查找已存在的记录
                 obj = None
                 if model_info.unique_fields:
-                    lookup = {}
-                    for k in model_info.unique_fields:
-                        if k in record:
-                            lookup[k] = record[k]
+                    lookup = self._build_lookup(model_info, record, clean_data)
                     if lookup:
                         obj = Model.objects.filter(**lookup).first()
 
@@ -867,7 +994,7 @@ class BackupImporter:
                             self._log(f"  创建: {model_name} id={obj.id} (旧id={old_id})")
                     except Exception:
                         # UNIQUE 约束失败时，改用 get_or_create（确保记录存在即可，不重复创建）
-                        lookup = {k: record[k] for k in model_info.unique_fields if k in record}
+                        lookup = self._build_lookup(model_info, record, clean_data)
                         if lookup:
                             obj, _ = Model.objects.get_or_create(defaults=clean_data, **lookup)
                             self._log(f"  创建(get_or_create): {model_name} id={obj.id} (旧id={old_id})")
@@ -909,7 +1036,7 @@ class BackupImporter:
                     if new_fk_id is not None:
                         update_data[field_name + '_id'] = new_fk_id
                     else:
-                        self._log(f"  {model_name}[{old_id}] {field_name}: 旧 id={old_fk_id} 无法映射")
+                        self._record_unresolved_ref(f"{model_name}[{old_id}] {field_name}: {rel_model} 旧 id={old_fk_id} 无法映射")
 
                 if update_data:
                     Model.objects.filter(pk=new_id).update(**update_data)
@@ -943,6 +1070,8 @@ class BackupImporter:
                         mapped = self.id_map.get(rel_model_name, {}).get(oid)
                         if mapped:
                             new_m2m_ids.append(mapped)
+                        else:
+                            self._record_unresolved_ref(f"{model_name}[{old_id}] {field_name}: {rel_model_name} 旧 id={oid} 无法映射")
 
                     if new_m2m_ids:
                         getattr(obj, field_name).set(new_m2m_ids)
@@ -950,6 +1079,130 @@ class BackupImporter:
 
             except Exception as e:
                 self._error(f"  {model_name}[{old_id}] Phase3 失败: {str(e)}")
+
+    def _remap_value(self, value: Any, target_model: str, context: str) -> Any:
+        if value is None:
+            return value
+        try:
+            old_id = int(value)
+        except (TypeError, ValueError):
+            return value
+
+        new_id = self.id_map.get(target_model, {}).get(old_id)
+        if new_id is None:
+            msg = f"{context}: {target_model} 旧 id={old_id} 无法映射"
+            self._record_unresolved_ref(msg)
+            return value
+
+        if new_id != value:
+            self.remapped_refs[target_model] = self.remapped_refs.get(target_model, 0) + 1
+        return new_id
+
+    def _remap_embedded_refs(self, payload: Any, context: str) -> Tuple[Any, bool]:
+        changed = False
+        if isinstance(payload, list):
+            new_list = []
+            for idx, item in enumerate(payload):
+                new_item, item_changed = self._remap_embedded_refs(item, f"{context}[{idx}]")
+                changed = changed or item_changed
+                new_list.append(new_item)
+            return new_list, changed
+
+        if isinstance(payload, dict):
+            new_dict = {}
+            for key, value in payload.items():
+                if key in EMBEDDED_REF_FIELDS:
+                    new_value = self._remap_value(value, EMBEDDED_REF_FIELDS[key], f"{context}.{key}")
+                    changed = changed or new_value != value
+                    new_dict[key] = new_value
+                else:
+                    new_value, item_changed = self._remap_embedded_refs(value, f"{context}.{key}")
+                    changed = changed or item_changed
+                    new_dict[key] = new_value
+            return new_dict, changed
+
+        return payload, False
+
+    def _remap_yaml_refs(self, yaml_text: str, context: str) -> Tuple[str, bool]:
+        if not yaml_text:
+            return yaml_text, False
+        try:
+            import yaml
+            payload = yaml.safe_load(yaml_text)
+            if payload is None:
+                return yaml_text, False
+            remapped, changed = self._remap_embedded_refs(payload, context)
+            if not changed:
+                return yaml_text, False
+            return yaml.safe_dump(remapped, allow_unicode=True, sort_keys=False), True
+        except Exception as exc:
+            self._warning(f"{context}: YAML 解析失败，已保留原文: {exc}")
+            return yaml_text, False
+
+    def _remap_project_asset_shares(self):
+        if 'ProjectAssetShare' not in self.id_map:
+            return
+        try:
+            from django.apps import apps
+            ProjectAssetShare = apps.get_model('rbac_permission', 'ProjectAssetShare')
+            for old_id, new_id in self.id_map.get('ProjectAssetShare', {}).items():
+                share = ProjectAssetShare.objects.filter(id=new_id).first()
+                if not share:
+                    continue
+                target_model = PROJECT_ASSET_TYPE_MODEL.get(share.asset_type)
+                if not target_model:
+                    continue
+                new_asset_id = self._remap_value(share.asset_id, target_model, f"ProjectAssetShare[{old_id}].asset_id")
+                if new_asset_id != share.asset_id:
+                    share.asset_id = new_asset_id
+                    share.save(update_fields=['asset_id', 'update_time'])
+        except Exception as exc:
+            self._error(f"ProjectAssetShare 资产引用重写失败: {exc}")
+
+    def _remap_pipeline_embedded_refs(self):
+        try:
+            from django.apps import apps
+            Pipeline = apps.get_model('pipeline_management', 'Pipeline')
+            PipelineVersion = apps.get_model('pipeline_management', 'PipelineVersion')
+
+            for old_id, new_id in self.id_map.get('Pipeline', {}).items():
+                pipeline = Pipeline.objects.filter(id=new_id).first()
+                if not pipeline:
+                    continue
+                update_fields = []
+                graph_data, changed = self._remap_embedded_refs(
+                    copy.deepcopy(pipeline.graph_data),
+                    f"Pipeline[{old_id}].graph_data",
+                )
+                if changed:
+                    pipeline.graph_data = graph_data
+                    update_fields.append('graph_data')
+
+                yaml_definition, yaml_changed = self._remap_yaml_refs(
+                    pipeline.yaml_definition,
+                    f"Pipeline[{old_id}].yaml_definition",
+                )
+                if yaml_changed:
+                    pipeline.yaml_definition = yaml_definition
+                    update_fields.append('yaml_definition')
+
+                if update_fields:
+                    update_data = {field: getattr(pipeline, field) for field in update_fields}
+                    Pipeline.objects.filter(id=pipeline.id).update(**update_data)
+
+            for old_id, new_id in self.id_map.get('PipelineVersion', {}).items():
+                version = PipelineVersion.objects.filter(id=new_id).first()
+                if not version:
+                    continue
+                graph_data, changed = self._remap_embedded_refs(
+                    copy.deepcopy(version.graph_data),
+                    f"PipelineVersion[{old_id}].graph_data",
+                )
+                if changed:
+                    version.graph_data = graph_data
+                    version.save(update_fields=['graph_data', 'update_time'])
+        except Exception as exc:
+            self._error(f"流水线嵌入式资源引用重写失败: {exc}")
 
     def import_from_file(self, file_path: str, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
         """从 gzip 压缩的 JSON 文件恢复"""

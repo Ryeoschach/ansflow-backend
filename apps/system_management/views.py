@@ -284,6 +284,16 @@ class BackupViewSet(viewsets.ViewSet):
 
         return None
 
+    def _get_bool_param(self, data, key, default=False):
+        if not data:
+            return default
+        value = data.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ('1', 'true', 'yes', 'on')
+        return bool(value)
+
     @action(detail=False, methods=['get'])
     def modules(self, request):
         """
@@ -423,6 +433,7 @@ class BackupViewSet(viewsets.ViewSet):
         filename = request.data.get('filename')
         selected_modules = self._get_selected_modules(request.data)
         passphrase = request.data.get('passphrase')
+        include_history = self._get_bool_param(request.data, 'include_history', False)
         if not passphrase:
             passphrase = None
         
@@ -434,13 +445,20 @@ class BackupViewSet(viewsets.ViewSet):
             return Response({'error': '备份文件不存在'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            importer = BackupImporter({}, passphrase=passphrase)
+            importer = BackupImporter({}, passphrase=passphrase, include_history=include_history)
             result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             return Response({
                 'success': result['success'],
                 'imported': result['imported'],
                 'errors': result['errors'],
+                'warnings': result.get('warnings', []),
+                'requested_modules': result.get('requested_modules', []),
+                'effective_modules': result.get('effective_modules', []),
+                'added_dependency_modules': result.get('added_dependency_modules', []),
+                'skipped_history_models': result.get('skipped_history_models', []),
+                'remapped_refs': result.get('remapped_refs', {}),
+                'unresolved_refs': result.get('unresolved_refs', []),
             })
 
         except Exception as e:
@@ -459,6 +477,7 @@ class BackupViewSet(viewsets.ViewSet):
         file = request.FILES.get('file')
         selected_modules = self._get_selected_modules(request.data)
         passphrase = request.data.get('passphrase')
+        include_history = self._get_bool_param(request.data, 'include_history', False)
         if not passphrase:
             passphrase = None
         
@@ -479,7 +498,7 @@ class BackupViewSet(viewsets.ViewSet):
                     f.write(chunk)
 
             # 执行恢复
-            importer = BackupImporter({}, passphrase=passphrase)
+            importer = BackupImporter({}, passphrase=passphrase, include_history=include_history)
             result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             # 删除临时上传文件
@@ -489,6 +508,13 @@ class BackupViewSet(viewsets.ViewSet):
                 'success': result['success'],
                 'imported': result['imported'],
                 'errors': result['errors'],
+                'warnings': result.get('warnings', []),
+                'requested_modules': result.get('requested_modules', []),
+                'effective_modules': result.get('effective_modules', []),
+                'added_dependency_modules': result.get('added_dependency_modules', []),
+                'skipped_history_models': result.get('skipped_history_models', []),
+                'remapped_refs': result.get('remapped_refs', {}),
+                'unresolved_refs': result.get('unresolved_refs', []),
             })
 
         except Exception as e:

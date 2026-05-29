@@ -2,17 +2,24 @@ import os
 import gzip
 import json
 from django.test import TestCase
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 from django.contrib.auth import get_user_model
-from apps.host_management.models import Host, Environment, SshCredential
-from apps.pipeline_management.models import Pipeline
-from apps.task_management.models import AnsibleTask, AnsibleSchedule
+from apps.host_management.models import Host, Environment, SshCredential, ResourcePool
+from apps.pipeline_management.models import Pipeline, PipelineRun
+from apps.rbac_permission.models import Project
+from apps.task_management.models import AnsibleTask, AnsibleExecution, AnsibleSchedule
 from django_celery_beat.models import PeriodicTask
 from apps.registry_management.models import ImageRegistry, ArtifactoryInstance, ArtifactoryRepository, Artifact, ArtifactVersion
 from apps.system_management.backup import BackupExporter, BackupImporter, MODULE_DEFINITIONS
 
+@override_settings(
+    CELERY_TASK_ALWAYS_EAGER=True,
+    CELERY_TASK_EAGER_PROPAGATES=True,
+    CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}},
+)
 class BackupModularTest(APITestCase):
     def setUp(self):
         User = get_user_model()
@@ -61,15 +68,113 @@ class BackupModularTest(APITestCase):
         Host.objects.all().delete()
         Environment.objects.all().delete()
         
-        # 3. 仅恢复 pipeline 模块
+        # 3. 仅恢复 pipeline 模块，恢复器会自动补齐依赖模块
         importer = BackupImporter(full_data)
         result = importer.import_all(selected_modules=['pipeline'])
         
         self.assertTrue(result['success'])
+        self.assertIn('host', result['added_dependency_modules'])
         # 验证 Pipeline 已恢复
         self.assertTrue(Pipeline.objects.filter(name="Backup Test Pipeline").exists())
-        # 验证 Host 未恢复
-        self.assertFalse(Host.objects.filter(hostname="backup-node").exists())
+        # 验证 Host 作为流水线依赖资产被自动恢复
+        self.assertTrue(Host.objects.filter(hostname="backup-node").exists())
+
+    def test_pipeline_restore_remaps_project_and_embedded_asset_ids(self):
+        """跨环境恢复流水线时，项目 FK 与 graph_data 内部资源 ID 必须重写"""
+        project = Project.objects.create(name="Portable Project", code="portable", owner=self.user)
+        pool = ResourcePool.objects.create(name="Portable Pool", code="portable_pool", project=project)
+        task_tmpl = AnsibleTask.objects.create(
+            name="Portable Deploy",
+            task_type="playbook",
+            content="- hosts: all\n  tasks:\n    - ping:",
+            resource_pool=pool,
+            creator=self.user,
+            project=project,
+        )
+        pipeline = Pipeline.objects.create(
+            name="Portable Pipeline",
+            creator=self.user,
+            project=project,
+            graph_data={
+                "nodes": [
+                    {"id": "n1", "type": "ansible", "data": {"label": "Run", "ansible_task_id": task_tmpl.id}},
+                    {"id": "n2", "type": "host_deploy", "data": {"label": "Deploy", "resource_pool_id": pool.id}},
+                ],
+                "edges": [],
+            },
+        )
+        old_task_id = task_tmpl.id
+        old_pool_id = pool.id
+
+        backup_data = BackupExporter().export()
+
+        pipeline.delete()
+        task_tmpl.delete()
+        pool.delete()
+
+        filler_pool = ResourcePool.objects.create(name="Filler Pool", code="filler_pool", project=project)
+        filler_task = AnsibleTask.objects.create(
+            name="Filler Task",
+            task_type="cmd",
+            content="echo filler",
+            resource_pool=filler_pool,
+            creator=self.user,
+            project=project,
+        )
+
+        importer = BackupImporter(backup_data)
+        result = importer.import_all(selected_modules=['pipeline'])
+
+        self.assertTrue(result['success'], result['errors'])
+        self.assertIn('task', result['added_dependency_modules'])
+        self.assertIn('host', result['added_dependency_modules'])
+
+        filler_task.refresh_from_db()
+        self.assertEqual(filler_task.content, "echo filler")
+
+        restored_pool = ResourcePool.objects.get(code="portable_pool")
+        restored_task = AnsibleTask.objects.get(name="Portable Deploy", project=project)
+        restored_pipeline = Pipeline.objects.get(name="Portable Pipeline")
+
+        self.assertEqual(restored_pipeline.project, project)
+        self.assertEqual(restored_task.project, project)
+        self.assertNotEqual(restored_task.id, old_task_id)
+        self.assertNotEqual(restored_pool.id, old_pool_id)
+
+        node_data = {node["id"]: node["data"] for node in restored_pipeline.graph_data["nodes"]}
+        self.assertEqual(node_data["n1"]["ansible_task_id"], restored_task.id)
+        self.assertEqual(node_data["n2"]["resource_pool_id"], restored_pool.id)
+        self.assertNotEqual(node_data["n1"]["ansible_task_id"], old_task_id)
+        self.assertNotEqual(node_data["n2"]["resource_pool_id"], old_pool_id)
+
+    def test_restore_skips_history_by_default_and_restores_when_requested(self):
+        """默认只迁移资产配置，显式 include_history=True 时才恢复执行历史"""
+        task_tmpl = AnsibleTask.objects.create(
+            name="History Test Task",
+            task_type="cmd",
+            content="uptime",
+            creator=self.user,
+        )
+        pipeline = Pipeline.objects.create(name="History Test Pipeline", creator=self.user)
+        ansible_execution = AnsibleExecution.objects.create(task=task_tmpl, executor=self.user, status="success")
+        pipeline_run = PipelineRun.objects.create(pipeline=pipeline, trigger_user=self.user, status="success")
+
+        backup_data = BackupExporter().export(selected_modules=['pipeline', 'task'])
+
+        ansible_execution.delete()
+        pipeline_run.delete()
+
+        default_result = BackupImporter(backup_data).import_all(selected_modules=['pipeline', 'task'])
+        self.assertTrue(default_result['success'], default_result['errors'])
+        self.assertIn('AnsibleExecution', default_result['skipped_history_models'])
+        self.assertIn('PipelineRun', default_result['skipped_history_models'])
+        self.assertFalse(AnsibleExecution.objects.filter(task__name="History Test Task").exists())
+        self.assertFalse(PipelineRun.objects.filter(pipeline__name="History Test Pipeline").exists())
+
+        history_result = BackupImporter(backup_data, include_history=True).import_all(selected_modules=['pipeline', 'task'])
+        self.assertTrue(history_result['success'], history_result['errors'])
+        self.assertTrue(AnsibleExecution.objects.filter(task__name="History Test Task").exists())
+        self.assertTrue(PipelineRun.objects.filter(pipeline__name="History Test Pipeline").exists())
 
     def test_passphrase_encryption_and_decryption(self):
         """测试使用密码加密导出与还原解密"""
@@ -524,4 +629,3 @@ class BackupModularTest(APITestCase):
         # 验证条款与基线的 ManyToMany 映射关联
         db_baseline = HostBaseline.objects.get(name="Compliance Host Baseline")
         self.assertTrue(ComplianceBaselineMapping.objects.filter(clause=db_child_clause, baseline=db_baseline).exists())
-
