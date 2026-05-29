@@ -15,6 +15,8 @@ RBAC_ACTION_MAP = {
     'patch': 'edit',
     'destroy': 'delete',
     'delete': 'delete',
+    'registry': 'view',
+    'promote': 'edit',
 }
 
 class SmartRBACPermission(permissions.BasePermission):
@@ -26,6 +28,20 @@ class SmartRBACPermission(permissions.BasePermission):
         # 如果未登录或者是匿名用户，直接拒掉
         if not request.user or not request.user.is_authenticated:
             return False
+
+        # --- 项目/工作区隔离权限校验 ---
+        project = getattr(request, 'project', None)
+        if project and not request.user.is_superuser:
+            from apps.rbac_permission.models import ProjectMember
+            membership = ProjectMember.objects.filter(project=project, user=request.user).first()
+            if not membership:
+                raise permissions.exceptions.PermissionDenied(f"您没有当前项目 {project.name} 的访问权限。")
+            
+            # 对只读成员限制写操作
+            action = getattr(view, 'action', None) or request.method.lower()
+            perm_action = RBAC_ACTION_MAP.get(action, action)
+            if membership.role == 'viewer' and perm_action not in ['view', 'list', 'get', 'retrieve', 'head', 'options']:
+                raise permissions.exceptions.PermissionDenied("您在当前项目中仅有只读权限，无法执行修改操作。")
 
         # 获取资源标识
         # 如果 View 中没有定义 resource_code，说明该接口不参与 RBAC 审计，生产环境直接禁用
@@ -137,7 +153,7 @@ class SmartRBACPermission(permissions.BasePermission):
             
         # 根据请求动作判断所需的数据权限类型
         action = getattr(view, 'action', None) or request.method.lower()
-        needed_type = 'manage' if action in ['update', 'partial_update', 'destroy', 'delete'] else 'use'
+        needed_type = 'manage' if action in ['update', 'partial_update', 'destroy', 'delete', 'promote'] else 'use'
         
         allowed_ids = get_user_data_scope(request.user, resource_type, action_type=needed_type)
         if "*" in allowed_ids:
@@ -170,8 +186,10 @@ def get_user_data_scope(user, resource_type, action_type='use'):
     all_ids = set()
     # 只要满足条件的 DataPolicy 都在采纳范围内
     target_action_types = ['manage']
-    if action_type == 'use':
+    if action_type in ['use', 'view']:
         target_action_types.append('use')
+    if action_type == 'view':
+        target_action_types.append('view')
         
     for role in user.roles.all():
         # 获取角色继承链条上的所有策略元数据
@@ -225,6 +243,34 @@ class DataScopeMixin:
         if not user or not user.is_authenticated:
             return queryset.none()
             
+        # --- 项目/工作区物理隔离过滤 + 跨项目授权合并 ---
+        project = getattr(self.request, 'project', None)
+        if project:
+            model = queryset.model
+            has_project_field = any(field.name == 'project' for field in model._meta.get_fields())
+            if has_project_field:
+                from django.db.models import Q
+                # 本项目自有资产
+                own_q = Q(project=project)
+
+                # 被授权的跨项目资产（当前项目是 to_project）
+                asset_share_type = getattr(self, 'asset_share_type', None)
+                if asset_share_type:
+                    try:
+                        from apps.rbac_permission.models import ProjectAssetShare
+                        shared_ids = list(
+                            ProjectAssetShare.objects.filter(
+                                to_project=project,
+                                asset_type=asset_share_type,
+                            ).values_list('asset_id', flat=True)
+                        )
+                        queryset = queryset.filter(own_q | Q(id__in=shared_ids))
+                    except Exception:
+                        queryset = queryset.filter(own_q)
+                else:
+                    queryset = queryset.filter(own_q)
+
+
         if user.is_superuser:
             return queryset
             

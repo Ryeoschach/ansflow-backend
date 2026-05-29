@@ -228,3 +228,95 @@ class AuditLog(BaseModel):
     class Meta:
         db_table = 'rbac_audit_log'
         ordering = ['-create_time']
+
+
+class Project(BaseModel):
+    name = models.CharField(max_length=100, unique=True, verbose_name="项目名称")
+    code = models.CharField(max_length=50, unique=True, verbose_name="项目标识")
+    description = models.TextField(null=True, blank=True, verbose_name="项目描述")
+    owner = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, related_name='owned_projects', verbose_name="项目负责人")
+
+    class Meta:
+        db_table = 'rbac_project'
+        verbose_name = "项目"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+
+class ProjectMember(BaseModel):
+    ROLE_CHOICES = (
+        ('admin', '项目管理员'),
+        ('member', '成员'),
+        ('viewer', '只读成员'),
+    )
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='members', verbose_name="所属项目")
+    user = models.ForeignKey('User', on_delete=models.CASCADE, related_name='project_memberships', verbose_name="用户")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='member', verbose_name="项目角色")
+
+    class Meta:
+        db_table = 'rbac_project_member'
+        unique_together = ('project', 'user')
+        verbose_name = "项目成员"
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.project.name} - {self.user.username} ({self.get_role_display()})"
+
+
+class ProjectAssetShare(BaseModel):
+    """
+    跨项目资产授权表：
+    允许来源项目（from_project）将特定资产（asset_type + asset_id）授权给目标项目（to_project）访问。
+    权限级别（permission）控制目标项目对该资产的操作范围。
+    """
+    ASSET_TYPE_CHOICES = (
+        ('host',                'Host 主机'),
+        ('ssh_credential',      'SSH 凭证'),
+        ('credential',          '通用凭据'),
+        ('pipeline',            '流水线模板'),
+        ('ansible_task',        'Ansible 任务'),
+        ('k8s_cluster',         'K8s 集群'),
+        ('resource_pool',       '资源池'),
+        ('self_healing_policy', '自愈策略'),
+    )
+    PERMISSION_CHOICES = (
+        ('read', '只读 (read)'),
+        ('use',  '可执行 (use)'),
+        ('full', '完全控制 (full)'),
+    )
+
+    from_project = models.ForeignKey(
+        Project, on_delete=models.CASCADE,
+        related_name='shared_out', verbose_name="来源项目（授权方）"
+    )
+    to_project = models.ForeignKey(
+        Project, on_delete=models.CASCADE,
+        related_name='shared_in', verbose_name="目标项目（被授权方）"
+    )
+    asset_type = models.CharField(
+        max_length=50, choices=ASSET_TYPE_CHOICES, verbose_name="资产类型"
+    )
+    asset_id = models.IntegerField(verbose_name="资产 ID（对应各 app 的主键）")
+    permission = models.CharField(
+        max_length=20, choices=PERMISSION_CHOICES, default='use', verbose_name="授权权限级别"
+    )
+    shared_by = models.ForeignKey(
+        'User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='asset_shares_created', verbose_name="授权操作人"
+    )
+
+    class Meta:
+        db_table = 'rbac_project_asset_share'
+        unique_together = ('from_project', 'to_project', 'asset_type', 'asset_id')
+        verbose_name = "跨项目资产授权"
+        verbose_name_plural = verbose_name
+        ordering = ['-create_time']
+
+    def __str__(self):
+        return (
+            f"[{self.get_asset_type_display()}#{self.asset_id}] "
+            f"{self.from_project.name} → {self.to_project.name} "
+            f"({self.get_permission_display()})"
+        )

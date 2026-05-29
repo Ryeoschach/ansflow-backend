@@ -14,6 +14,7 @@ class AnsibleTask(BaseModel):
     )
 
     name = models.CharField(max_length=128, verbose_name="任务名称")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='ansible_tasks', verbose_name="所属项目")
     task_type = models.CharField(max_length=20, choices=TASK_TYPE_CHOICES, default='cmd', verbose_name="任务类型")
     
     # 关联资源池
@@ -23,16 +24,43 @@ class AnsibleTask(BaseModel):
     content = models.TextField(verbose_name="内容", help_text="指令或剧本内容")
     extra_vars = models.JSONField(default=dict, blank=True, verbose_name="额外变量")
     
+    # 执行控制
+    forks = models.IntegerField(default=5, verbose_name="并发数", help_text="Ansible forks 参数")
+
     # 超时设置 (秒)
     timeout = models.IntegerField(default=3600, verbose_name="超时时间(秒)")
     
     # 创建者
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='created_tasks', verbose_name="创建者")
 
+    # 创建类型与内容指纹
+    create_type = models.CharField(
+        max_length=20, 
+        choices=(('manual', '人工区'), ('ai', 'AI草稿区')), 
+        default='manual', 
+        verbose_name="创建类型",
+        db_index=True
+    )
+    content_hash = models.CharField(
+        max_length=64, 
+        blank=True, 
+        null=True, 
+        verbose_name="内容哈希值",
+        db_index=True
+    )
+
     class Meta:
         db_table = 'task_ansible_template'
         verbose_name = "Ansible 任务定义"
         verbose_name_plural = verbose_name
+
+    def save(self, *args, **kwargs):
+        if self.content:
+            import hashlib
+            self.content_hash = hashlib.sha256(self.content.strip().encode('utf-8')).hexdigest()
+        else:
+            self.content_hash = None
+        super(AnsibleTask, self).save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -58,6 +86,7 @@ class AnsibleExecution(BaseModel):
     
     # 结果摘要
     result_summary = models.JSONField(null=True, blank=True, verbose_name="结果摘要")
+    extra_vars_snapshot = models.JSONField(null=True, blank=True, verbose_name="变量快照")
     
     # 关联的异步任务 ID (用于停止/控制)
     celery_task_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="Celery 任务 ID")

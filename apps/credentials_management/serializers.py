@@ -7,7 +7,7 @@ class CredentialSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = Credential
-        fields = ['id', 'name', 'type', 'username', 'secret_value', 'description', 'create_time', 'update_time']
+        fields = ['id', 'name', 'type', 'username', 'secret_value', 'project', 'description', 'create_time', 'update_time']
         
     def to_representation(self, instance):
         """

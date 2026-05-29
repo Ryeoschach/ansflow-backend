@@ -31,6 +31,10 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
     queryset = AnsibleTask.objects.all().order_by('-create_time')
     serializer_class = AnsibleTaskSerializer
+
+    def get_queryset(self):
+        # 排除系统级临时任务，防止污染前端任务模板列表
+        return super().get_queryset().exclude(create_type='system').order_by('-create_time')
     permission_classes = [SmartRBACPermission]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     filterset_class = AnsibleTaskFilter
@@ -39,6 +43,7 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     resource_type = 'ansible_task'
     resource_owner_field = 'creator'
     resource_code = 'tasks:ansible_tasks'
+    asset_share_type = 'ansible_task'
     permission_labels = {
         'view':   {'name': '查看任务模板列表', 'danger': 'safe'},
         'add':    {'name': '新建任务模板',     'danger': 'warn'},
@@ -48,8 +53,11 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
     }
 
     def perform_create(self, serializer):
-        # 保存时自动关联创建者
-        task = serializer.save(creator=self.request.user)
+        # 保存时自动关联创建者和项目
+        task = serializer.save(
+            creator=self.request.user,
+            project=getattr(self.request, 'project', None),
+        )
 
         # 如果请求中带有 run_now，则立即触发一次执行
         if self.request.data.get('run_now'):
@@ -70,6 +78,23 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
         """
         task = self.get_object()
 
+        # --- 🛡️ 目标资源池权限校验 (防提权越权) ---
+        if task.resource_pool_id and not request.user.is_superuser:
+            from utils.rbac_permission import get_user_data_scope
+            allowed_pools = get_user_data_scope(request.user, 'resource_pool', action_type='use')
+            
+            # 检查用户是不是该主机资源池的创建者以豁免
+            is_pool_owner = False
+            pool_creator = getattr(task.resource_pool, 'creator', None)
+            if pool_creator:
+                is_pool_owner = (pool_creator == request.user or getattr(pool_creator, 'id', None) == request.user.id)
+            
+            # 校验 ID
+            has_pool_access = "*" in allowed_pools or is_pool_owner or any(str(pid) == str(task.resource_pool_id) for pid in allowed_pools)
+            if not has_pool_access:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied(f"权限不足：您无权对目标主机资源池 [{task.resource_pool.name}] 执行任何任务")
+
         # --- 🚀 审批拦截逻辑集成 ---
         from apps.approval_center.engine import ProxyApprovalEngine
         is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
@@ -82,12 +107,13 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
             return approval_res
         # --- End 拦截 ---
 
+        extra_vars = _get_extra_vars(task)
         execution = AnsibleExecution.objects.create(
             task=task,
             executor=request.user,
-            status='pending'
+            status='pending',
+            extra_vars_snapshot=extra_vars
         )
-        extra_vars = _get_extra_vars(task)
         res = run_ansible_task.delay(execution.id, extra_vars)
         execution.celery_task_id = res.id
         execution.save()
@@ -97,6 +123,66 @@ class AnsibleTaskViewSet(DataScopeMixin, viewsets.ModelViewSet):
             "execution_id": execution.id
         }, status=status.HTTP_201_CREATED)
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        create_type = self.request.query_params.get('create_type')
+        if create_type:
+            qs = qs.filter(create_type=create_type)
+        elif self.action == 'list':
+            qs = qs.filter(create_type='manual')
+        return qs
+
+    @action(detail=True, methods=['post'])
+    def promote(self, request, pk=None):
+        """
+        将 AI 草稿剧本转正为人工模板
+        """
+        task = self.get_object()
+        if task.create_type != 'ai':
+            return Response({'error': '只有 AI 草稿区的任务模板可以被转正'}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = request.data.get('name')
+        content = request.data.get('content')
+        
+        from django.db import transaction
+        with transaction.atomic():
+            if name:
+                task.name = name
+            if content is not None:
+                task.content = content
+            task.create_type = 'manual'
+            task.save()
+            
+        # 转正完成后，将元数据向量化存入 RAG 知识库
+        try:
+            from apps.ai_engine.rag_service import RAGService
+            rag_service = RAGService()
+            
+            task_doc_content = f"""[Ansible 剧本组件]
+ID: {task.id}
+名称: {task.name}
+类型: {task.get_task_type_display()}
+剧本内容或指令:
+{task.content}
+"""
+            rag_service.add_knowledge(
+                content=task_doc_content,
+                title=f"Ansible 剧本 - {task.name}",
+                metadata={'source_type': 'ansible_task', 'id': task.id}
+            )
+        except Exception as e:
+            # 向量化同步失败不应该阻断 API 成功返回，但需要记录日志
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[Promote Task] Failed to sync to RAG: {e}", exc_info=True)
+            
+        return Response({
+            'msg': '任务模板已成功转正为人工模板',
+            'id': task.id,
+            'name': task.name,
+            'create_type': task.create_type
+        })
+
 
 class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
@@ -104,6 +190,32 @@ class AnsibleExecutionViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
     queryset = AnsibleExecution.objects.all().order_by('-create_time')
     serializer_class = AnsibleExecutionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return AnsibleExecution.objects.none()
+        if user.is_superuser:
+            return AnsibleExecution.objects.all().order_by('-create_time')
+
+        # 1. 获取 DataScopeMixin 过滤出来的常规执行历史（基于 task 的 use 权限或 executor 本人）
+        base_qs = super().get_queryset()
+
+        # 2. 对于系统/临时任务，只要用户拥有该任务对应资源池的 'view' 权限，也允许查看执行历史
+        from django.db.models import Q
+        from utils.rbac_permission import get_user_data_scope
+        allowed_pools = get_user_data_scope(user, 'resource_pool', action_type='view')
+
+        if "*" in allowed_pools:
+            system_q = Q(task__create_type='system')
+        else:
+            system_q = Q(task__create_type='system', task__resource_pool_id__in=allowed_pools)
+
+        system_qs = AnsibleExecution.objects.filter(system_q).distinct()
+        base_qs = base_qs.distinct()
+
+        # 合并去重并排序
+        return (base_qs | system_qs).distinct().order_by('-create_time')
     permission_classes = [SmartRBACPermission]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_class = AnsibleExecutionFilter

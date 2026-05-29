@@ -7,13 +7,23 @@ class Pipeline(BaseModel):
     name = models.CharField(max_length=100, unique=True, verbose_name="流水线名称")
     desc = models.TextField(blank=True, null=True, verbose_name="描述")
     graph_data = JSONField(default=dict, verbose_name="前端流程图数据") # 保存 ReactFlow 导出的整个 JSON
+    yaml_definition = models.TextField(blank=True, null=True, verbose_name="YAML 声明式定义")
     creator = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, verbose_name="创建人")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='pipelines', verbose_name="所属项目")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     timeout = models.IntegerField(default=3600, verbose_name="流水线全局超时时间(秒)")
+    create_type = models.CharField(
+        max_length=20, 
+        choices=(('manual', '人工区'), ('ai', 'AI草稿区')), 
+        default='manual', 
+        verbose_name="创建类型",
+        db_index=True
+    )
 
     # Cron 调度相关字段
     cron_expression = models.CharField(max_length=100, blank=True, null=True, verbose_name="Cron调度表达式", help_text="例如: 0 2 * * *")
     is_cron_enabled = models.BooleanField(default=False, verbose_name="是否启用定时调度")
+    auto_kb_summary = models.BooleanField(default=False, verbose_name="成功后自动生成知识摘要", help_text="流水线成功后，自动调用 AI 总结执行经验并存入知识库")
     celery_periodic_task_id = models.IntegerField(null=True, blank=True, verbose_name="绑定的 Celery PeriodicTask 的 ID")
 
     class Meta:
@@ -131,9 +141,12 @@ class PipelineRun(BaseModel):
         ('schedule', '定时触发'),
         ('webhook', 'Webhook 触发'),
         ('retry', '重试触发'),
+        ('automation', '自动自愈触发'),
     )
     pipeline = models.ForeignKey(Pipeline, on_delete=models.CASCADE, related_name='runs')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    graph_data = JSONField(default=dict, blank=True, verbose_name="运行时的图数据快照")
+    yaml_definition = models.TextField(blank=True, null=True, verbose_name="运行时的 YAML 定义快照")
     trigger_user = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, blank=True)
     celery_task_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="DAG 任务 ID")
     start_time = models.DateTimeField(null=True, blank=True)
@@ -141,6 +154,7 @@ class PipelineRun(BaseModel):
     trigger_type = models.CharField(max_length=20, choices=TRIGGER_TYPE_CHOICES, default='manual', verbose_name="触发类型")
     parent_run = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='retry_runs', verbose_name="父级 Run（重试时）")
     start_node_id = models.CharField(max_length=128, null=True, blank=True, verbose_name="重试起始节点 ID")
+    extra_vars = JSONField(default=dict, blank=True, verbose_name="运行变量池")
 
     class Meta:
         db_table = 'pipeline_run_instance'
@@ -150,6 +164,7 @@ class PipelineNodeRun(BaseModel):
     """流水线运行时：具体各个节点的执行状态与日志"""
     STATUS_CHOICES = (
         ('pending', '等待前置节点完成'),
+        ('waiting', '等待人工审批'),
         ('running', '正在执行本节点'),
         ('success', '本节点成功'),
         ('failed', '本节点失败'),
@@ -162,6 +177,11 @@ class PipelineNodeRun(BaseModel):
     node_label = models.CharField(max_length=100, blank=True, verbose_name="节点可视化名称")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     
+    # 审批相关
+    approver = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_pipeline_nodes', verbose_name="审批人")
+    approval_time = models.DateTimeField(null=True, blank=True, verbose_name="审批时间")
+    approval_comment = models.TextField(blank=True, null=True, verbose_name="审批意见")
+
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     logs = models.TextField(blank=True, null=True, verbose_name="执行日志")

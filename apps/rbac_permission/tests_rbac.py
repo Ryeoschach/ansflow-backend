@@ -142,3 +142,155 @@ class SmartRBACTestCase(TestCase):
         permission = SmartRBACPermission()
         # 即使没有 ID 99 的授权，但因为是 owner，has_object_permission 应通过
         self.assertTrue(permission.has_object_permission(request, view, mock_obj))
+
+    def test_project_membership_permissions(self):
+        """测试项目成员权限"""
+        from apps.rbac_permission.models import Project, ProjectMember
+        
+        # 创建一个项目
+        project = Project.objects.create(name='Test Project', code='test_proj')
+        
+        request = self.factory.get('/api/v1/mock/')
+        request.user = self.user
+        request.project = project
+        
+        view = MockViewSet()
+        view.action = 'list'
+        permission = SmartRBACPermission()
+        
+        # 1. 默认情况下，用户不是项目成员，访问被拒
+        cache.clear()
+        self.user.roles.add(self.role_viewer)
+        with self.assertRaises(Exception) as context:
+            permission.has_permission(request, view)
+        self.assertIn("没有当前项目", str(context.exception))
+        
+        # 2. 将用户加入项目，访问应该通过
+        cache.clear()
+        ProjectMember.objects.create(project=project, user=self.user, role='member')
+        self.assertTrue(permission.has_permission(request, view))
+        
+        # 3. 超级管理员不受项目限制
+        request_admin = self.factory.get('/api/v1/mock/')
+        admin_user = User.objects.create_superuser(username='admin_user', email='a@b.com', password='password')
+        request_admin.user = admin_user
+        request_admin.project = project
+        self.assertTrue(permission.has_permission(request_admin, view))
+
+    def test_project_queryset_filtering(self):
+        """测试 DataScopeMixin 按当前项目过滤查询集"""
+        from apps.rbac_permission.models import Project
+        from apps.credentials_management.models import Credential
+        from apps.credentials_management.views import CredentialViewSet
+        
+        # 清理已有数据
+        Credential.objects.all().delete()
+        
+        # 创建两个项目
+        project1 = Project.objects.create(name='Project 1', code='p1')
+        project2 = Project.objects.create(name='Project 2', code='p2')
+        
+        # 每个项目各建一个 Credential
+        c1 = Credential.objects.create(name='C1', type='ssh_key', secret_value='key1', project=project1)
+        c2 = Credential.objects.create(name='C2', type='ssh_key', secret_value='key2', project=project2)
+        
+        # 模拟请求 project1
+        request = self.factory.get('/api/v1/credentials/')
+        request.user = self.user
+        request.project = project1
+        
+        # 实例化视图并获取过滤后的 queryset
+        view = CredentialViewSet()
+        view.request = request
+        view.format_kwarg = None
+        
+        # 由于 user 没有 superuser，我们需要给它授权或者将 user 设为 superuser 以测试项目过滤
+        self.user.is_superuser = True
+        self.user.save()
+        
+        qs = view.get_queryset()
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(qs.first().id, c1.id)
+
+    def test_project_viewer_write_restriction(self):
+        """测试项目只读成员只读权限约束"""
+        from apps.rbac_permission.models import Project, ProjectMember, Role
+        project = Project.objects.create(name='Viewer Project', code='viewer_proj')
+        
+        request = self.factory.post('/api/v1/mock/')
+        request.user = self.user
+        request.project = project
+        
+        view = MockViewSet()
+        view.action = 'create'
+        permission = SmartRBACPermission()
+        
+        # 建立一个拥有 add 权限的角色，并赋给用户
+        role_admin = Role.objects.create(name='Test Admin', code='test_admin')
+        role_admin.permissions.add(self.perm_add)
+        self.user.roles.add(role_admin)
+        
+        # 1. 把用户设为 viewer，访问 mutating 接口应被拒
+        cache.clear()
+        ProjectMember.objects.create(project=project, user=self.user, role='viewer')
+        
+        with self.assertRaises(Exception) as context:
+            permission.has_permission(request, view)
+        self.assertIn("只读权限", str(context.exception))
+        
+        # 2. 更改角色为 member，写操作被允许
+        cache.clear()
+        ProjectMember.objects.filter(project=project, user=self.user).update(role='member')
+        self.assertTrue(permission.has_permission(request, view))
+
+    def test_project_member_viewset_actions(self):
+        """测试项目成员管理 API 行为与权限"""
+        from apps.rbac_permission.models import Project, ProjectMember, User
+        from apps.rbac_permission.views import ProjectMemberViewSet
+        from rest_framework.exceptions import PermissionDenied
+        
+        project = Project.objects.create(name='Members Project', code='members_proj')
+        other_user = User.objects.create_user(username='other_user', password='password')
+        
+        # 1. 模拟普通成员(无 admin 权限)尝试添加新成员，应该报 PermissionDenied
+        request = self.factory.post('/api/v1/project-members/', {
+            'project': project.id,
+            'user': other_user.id,
+            'role': 'member'
+        })
+        request.user = self.user
+        
+        # 将当前用户加为普通成员
+        ProjectMember.objects.create(project=project, user=self.user, role='member')
+        
+        view = ProjectMemberViewSet()
+        view.request = request
+        view.action = 'create'
+        
+        # 模拟 serializer validation
+        from apps.rbac_permission.serializers import ProjectMemberSerializer
+        serializer = ProjectMemberSerializer(data={
+            'project': project.id,
+            'user': other_user.id,
+            'role': 'member'
+        })
+        self.assertTrue(serializer.is_valid())
+        
+        with self.assertRaises(PermissionDenied):
+            view.perform_create(serializer)
+            
+        # 2. 模拟项目管理员添加成员，应该成功
+        # 设为管理员
+        ProjectMember.objects.filter(project=project, user=self.user).update(role='admin')
+        request = self.factory.post('/api/v1/project-members/', {
+            'project': project.id,
+            'user': other_user.id,
+            'role': 'member'
+        })
+        request.user = self.user
+        view = ProjectMemberViewSet()
+        view.request = request
+        view.action = 'create'
+        
+        view.perform_create(serializer)
+        self.assertTrue(ProjectMember.objects.filter(project=project, user=other_user).exists())

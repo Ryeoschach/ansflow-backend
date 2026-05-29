@@ -143,3 +143,52 @@ class AuditLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = AuditLog
         fields = '__all__'
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    owner_username = serializers.ReadOnlyField(source='owner.username')
+
+    class Meta:
+        from apps.rbac_permission.models import Project
+        model = Project
+        fields = ['id', 'name', 'code', 'description', 'owner', 'owner_username', 'create_time']
+
+
+class ProjectMemberSerializer(serializers.ModelSerializer):
+    username = serializers.ReadOnlyField(source='user.username')
+    project_name = serializers.ReadOnlyField(source='project.name')
+
+    class Meta:
+        from apps.rbac_permission.models import ProjectMember
+        model = ProjectMember
+        fields = ['id', 'project', 'project_name', 'user', 'username', 'role', 'create_time']
+
+
+class ProjectAssetShareSerializer(serializers.ModelSerializer):
+    from_project_name = serializers.ReadOnlyField(source='from_project.name')
+    to_project_name   = serializers.ReadOnlyField(source='to_project.name')
+    shared_by_name    = serializers.ReadOnlyField(source='shared_by.username')
+    asset_type_label  = serializers.CharField(source='get_asset_type_display', read_only=True)
+    permission_label  = serializers.CharField(source='get_permission_display', read_only=True)
+
+    class Meta:
+        from apps.rbac_permission.models import ProjectAssetShare
+        model = ProjectAssetShare
+        fields = [
+            'id',
+            'from_project', 'from_project_name',
+            'to_project',   'to_project_name',
+            'asset_type',   'asset_type_label',
+            'asset_id',
+            'permission',   'permission_label',
+            'shared_by',    'shared_by_name',
+            'create_time',
+        ]
+        read_only_fields = ['shared_by', 'create_time']
+
+    def validate(self, data):
+        fp = data.get('from_project')
+        tp = data.get('to_project')
+        if fp and tp and fp == tp:
+            raise serializers.ValidationError("来源项目与目标项目不能相同")
+        return data

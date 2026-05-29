@@ -4,9 +4,10 @@ from rest_framework.decorators import action
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 
-from .models import ApprovalPolicy, ApprovalTicket
-from .serializers import ApprovalPolicySerializer, ApprovalTicketSerializer
+from .models import ApprovalPolicy, ApprovalTicket, ApprovalResource
+from .serializers import ApprovalPolicySerializer, ApprovalTicketSerializer, ApprovalResourceSerializer
 from .engine import ProxyApprovalEngine
+from .registry import approval_registry
 
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 
@@ -36,24 +37,34 @@ class ApprovalPolicyViewSet(viewsets.ModelViewSet):
 from django.core.cache import cache
 
 @extend_schema_view(
-    list=extend_schema(summary="获取可拦截资源模板列表"),
+    list=extend_schema(summary="查看可拦截资源列表"),
+    update=extend_schema(summary="修改资源展示信息/启用状态"),
 )
-class ApprovalTemplateViewSet(viewsets.ViewSet):
+class ApprovalResourceViewSet(viewsets.ModelViewSet):
     """
-    暴露系统支持审批拦截的资源模版类型
+    可拦截资源管理（模板管理）：由系统自动发现并入库，管理员可在此进行 UI 层面的调整。
     """
+    queryset = ApprovalResource.objects.all().order_by('code')
+    serializer_class = ApprovalResourceSerializer
     permission_classes = [SmartRBACPermission]
-    resource_code = 'system:approval_policy' # 复用策略权限
+    resource_code = 'system:approval_resource'
+    permission_labels = {
+        'view': {'name': '查看拦截资源'},
+        'edit': {'name': '配置资源展示/开关'},
+        'delete': {'name': '注销过时资源', 'danger': 'high'},
+    }
 
-    def list(self, request):
-        # 预定义的受支持资源列表
-        templates = [
-            {"code": "pipeline:run", "name": "流水线运行 (生产环境发布拦截)", "icon": "PartitionOutlined"},
-            {"code": "ansible:execution", "name": "Ansible 任务执行 (高危指令拦截)", "icon": "ConsoleSqlOutlined"},
-            {"code": "k8s:helm_install", "name": "Helm 应用安装/升级 (K8s 环境变更拦截)", "icon": "ClusterOutlined"},
-            {"code": "host:terminal_access", "name": "SSH 终端登录 (远程访问审批)", "icon": "KeyOutlined"},
-        ]
-        return Response(templates)
+    def get_queryset(self):
+        # 如果是策略配置下拉框调用，只返回启用的
+        if self.request.query_params.get('active_only') == 'true':
+            return self.queryset.filter(is_active=True)
+        return self.queryset
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_system:
+            return Response({"detail": "系统内置资源不可删除，仅可禁用。"}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
 
 @extend_schema_view(
     list=extend_schema(summary="获取审批工单列表"),
@@ -107,11 +118,11 @@ class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['POST'])
     def approve(self, request, pk=None):
         """
-        核心API：点击同意放行！
+        核心API：点击同意放行！支持对失败的工单进行重试。
         """
         ticket = self.get_object()
-        if ticket.status != 'pending':
-            return Response({"detail": "该审批单不在待审批状态！"}, status=status.HTTP_400_BAD_REQUEST)
+        if ticket.status not in ['pending', 'failed']:
+            return Response({"detail": "该审批单当前状态不支持放行操作！"}, status=status.HTTP_400_BAD_REQUEST)
         
         # 将工单状态扭转之前，强行路由执行！！
         ProxyApprovalEngine.resume_execution(ticket, request.user)

@@ -1,9 +1,9 @@
 from rest_framework import viewsets
 from .models import Credential
 from .serializers import CredentialSerializer
-from utils.rbac_permission import SmartRBACPermission
+from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 
-class CredentialViewSet(viewsets.ModelViewSet):
+class CredentialViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
     全量统一凭据管理视图
     """
@@ -13,9 +13,13 @@ class CredentialViewSet(viewsets.ModelViewSet):
     
     permission_classes = [SmartRBACPermission]
     resource_code = 'system:credential'
+    asset_share_type = 'credential'
     permission_labels = {
         'view': {'name': '查看凭据令牌清单'},
         'add': {'name': '新增敏感凭据', 'danger': 'warn'},
         'edit': {'name': '修改凭据配置', 'danger': 'warn'},
         'delete': {'name': '删除系统凭据', 'danger': 'high'},
     }
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))

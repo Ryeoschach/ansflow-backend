@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 def get_notification_config(key: str, default=None):
     """
     从配置中心读取通知配置，优先读取配置中心，
-    回退到环境变量（兼容未迁移前的部署）。
+    若配置值为空字符串或未配置，则回退到环境变量（兼容环境配置与未迁移前的部署）。
     """
     value = ConfigCache.get('notification', key)
-    if value is not None:
+    if value is not None and value != "":
         return value
     # 环境变量回退
     env_map = {
@@ -30,7 +30,7 @@ def get_notification_config(key: str, default=None):
     env_key = env_map.get(key)
     if env_key:
         env_val = os.getenv(env_key)
-        if env_val is not None:
+        if env_val is not None and env_val != "":
             return env_val
     return default
 
@@ -38,7 +38,7 @@ def get_notification_config(key: str, default=None):
 def is_notification_enabled(event_type: str) -> bool:
     """
     检查通知是否启用。
-    event_type: pipeline_start / pipeline_result / approval_requested / approval_result / task_result
+    event_type: pipeline_start / pipeline_result / approval_requested / approval_result / task_result / alert_firing / alert_resolved
     """
     # 总开关
     enabled = get_notification_config('enabled', True)
@@ -49,20 +49,21 @@ def is_notification_enabled(event_type: str) -> bool:
     level = get_notification_config('level', 'all')
     if level == 'none':
         return False
-    if level == 'error_only' and event_type not in ('pipeline_result', 'approval_result', 'task_result'):
+    if level == 'error_only' and event_type not in ('pipeline_result', 'approval_result', 'task_result', 'alert_firing', 'alert_resolved'):
         return False
 
     # 事件类型白名单
     notify_on = get_notification_config('notify_on', None)
-    if notify_on:
+    if notify_on is not None:
         # notify_on 可能是 JSON 字符串（如 '["pipeline_result"]'）或已解析的列表
         if isinstance(notify_on, str):
             try:
                 notify_on = json.loads(notify_on)
             except json.JSONDecodeError:
                 notify_on = None
-        if notify_on and event_type not in notify_on:
-            return False
+        if isinstance(notify_on, list):
+            if event_type not in notify_on:
+                return False
 
     return True
 
@@ -273,3 +274,55 @@ def notify_task_result(execution_obj):
     detail_url = f"{_get_frontend_url()}/v1/task/executions?id={execution_obj.id}"
 
     _send_notification('task_result', title, content, detail_url)
+
+
+def notify_alert_firing(alert_obj):
+    """
+    告警触发通知
+    """
+    logger.info(f"[Notify] 正在尝试发送告警触发通知: Alert #{alert_obj.id}, Name: {alert_obj.alert_name}")
+    title = f"🚨 告警触发: {alert_obj.alert_name}"
+    
+    labels_str = ""
+    if alert_obj.labels:
+        labels_str = "\n".join([f"- **{k}**: {v}" for k, v in alert_obj.labels.items()])
+    
+    annotations_str = ""
+    if alert_obj.annotations:
+        annotations_str = "\n".join([f"- **{k}**: {v}" for k, v in alert_obj.annotations.items()])
+
+    content = (
+        f"**告警名称**: {alert_obj.alert_name}\n"
+        f"**严重程度**: {alert_obj.severity.upper()}\n"
+        f"**触发时间**: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if labels_str:
+        content += f"\n**告警标签**:\n{labels_str}\n"
+    if annotations_str:
+        content += f"\n**告警注释**:\n{annotations_str}\n"
+        
+    detail_url = f"{_get_frontend_url()}/v1/sre/alerts"
+    _send_notification('alert_firing', title, content, detail_url)
+
+
+def notify_alert_resolved(alert_obj):
+    """
+    告警恢复通知
+    """
+    logger.info(f"[Notify] 正在尝试发送告警恢复通知: Alert #{alert_obj.id}, Name: {alert_obj.alert_name}")
+    title = f"✅ 告警恢复: {alert_obj.alert_name}"
+    
+    labels_str = ""
+    if alert_obj.labels:
+        labels_str = "\n".join([f"- **{k}**: {v}" for k, v in alert_obj.labels.items()])
+
+    content = (
+        f"**恢复告警**: {alert_obj.alert_name}\n"
+        f"**严重程度**: {alert_obj.severity.upper()}\n"
+        f"**恢复时间**: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if labels_str:
+        content += f"\n**告警标签**:\n{labels_str}\n"
+        
+    detail_url = f"{_get_frontend_url()}/v1/sre/alerts"
+    _send_notification('alert_resolved', title, content, detail_url)

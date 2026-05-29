@@ -29,7 +29,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # sys.path.insert(0, os.path.join(BASE_DIR, 'apps'))
 
 # 读取 .env 文件
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+# 尝试读取 .env 文件（如果存在），主要用于本地开发环境
+# 在生产环境下，推荐通过环境变量直接注入，无需依赖物理文件
+DOTENV_PATH = os.path.join(BASE_DIR, '.env')
+if os.path.exists(DOTENV_PATH):
+    environ.Env.read_env(DOTENV_PATH)
 
 
 # 从 .env 中读取 SECRET_KEY
@@ -92,6 +96,9 @@ INSTALLED_APPS = [
     'apps.approval_center',
     'apps.credentials_management',
     'apps.config_center',
+    'apps.ai_engine',
+    'apps.sre_management',
+    'apps.task_pulse',
 ]
 
 MIDDLEWARE = [
@@ -101,6 +108,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'utils.project_middleware.ProjectMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 
@@ -277,6 +285,26 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 # 开启扩展结果模式，数据库记录 task_name、args、kwargs 等额外信息
 CELERY_RESULT_EXTENDED = True
 
+# 开启事件广播 (TaskPulse 核心配置)
+CELERY_SEND_EVENTS = True
+CELERY_TASK_SEND_SENT_EVENT = True
+CELERY_WORKER_SEND_TASK_EVENTS = True
+
+# TaskPulse worker lifecycle.
+# Online workers without a heartbeat after this window are treated as offline.
+TASK_PULSE_WORKER_HEARTBEAT_TIMEOUT_SECONDS = env(
+    'TASK_PULSE_WORKER_HEARTBEAT_TIMEOUT_SECONDS',
+    default=120,
+    cast=int,
+)
+# Offline workers older than this window are pruned to avoid unbounded growth
+# when container/pod hostnames change on each restart. Set 0 to disable pruning.
+TASK_PULSE_OFFLINE_WORKER_RETENTION_HOURS = env(
+    'TASK_PULSE_OFFLINE_WORKER_RETENTION_HOURS',
+    default=24,
+    cast=int,
+)
+
 # Spectacular 的具体配置
 SPECTACULAR_SETTINGS = {
     'TITLE': 'AnsFlow 运维平台 API',
@@ -318,6 +346,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'verify_platform_connectivity',
         # 'schedule': 3600.0,  # 每小时执行一次 (单位: 秒)
         'schedule': 60,
+    },
+    'task-pulse-maintenance-every-60s': {
+        'task': 'task_pulse.maintenance',
+        'schedule': 60.0,
+    },
+    'cleanup-expired-ai-drafts-daily': {
+        'task': 'apps.pipeline_management.tasks.cleanup_expired_ai_drafts',
+        'schedule': 86400.0,  # 每天执行一次 (24小时)
     },
 }
 # 允许携带 Cookie

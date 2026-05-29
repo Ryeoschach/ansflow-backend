@@ -3,10 +3,16 @@ from rest_framework.response import Response
 import paramiko
 import io
 
-from apps.host_management.models import Host, Environment, ResourcePool, Platform, SshCredential
+from apps.host_management.models import (
+    Host, Environment, ResourcePool, Platform, SshCredential, HostBaseline,
+    ComplianceFramework, ComplianceClause, ComplianceBaselineMapping
+)
 
-from apps.host_management.serializers import HostSerializer, EnvironmentSerializer, PlatformSerializer, \
-    ResourceSerializer, SshCredentialSerializer
+from apps.host_management.serializers import (
+    HostSerializer, EnvironmentSerializer, PlatformSerializer,
+    ResourceSerializer, SshCredentialSerializer, HostBaselineSerializer,
+    ComplianceFrameworkSerializer, ComplianceClauseSerializer, ComplianceBaselineMappingSerializer
+)
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from rest_framework.decorators import action
 
@@ -18,6 +24,10 @@ class SshCredentialViewSet(DataScopeMixin, viewsets.ModelViewSet):
     resource_type = 'credential'
 
     resource_code = 'credential:ssh_credentials'
+    asset_share_type = 'ssh_credential'
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
 
     @action(detail=True, methods=['post'])
     def verify(self, request, pk=None):
@@ -70,18 +80,70 @@ class SshCredentialViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
 
 from apps.host_management.filters import HostFilter, ResourcePoolFilter
-from apps.host_management.tasks import verify_platform_connectivity, sync_platform_assets
+from apps.host_management.tasks import verify_platform_connectivity, sync_platform_assets, check_host_baseline
+
+
+class HostBaselineViewSet(viewsets.ModelViewSet):
+    """
+    主机基线管理
+    """
+    queryset = HostBaseline.objects.all()
+    serializer_class = HostBaselineSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:baselines'
+
+    @action(detail=True, methods=['post'])
+    def check(self, request, pk=None):
+        """
+        手动触发基线巡检
+        """
+        baseline = self.get_object()
+        check_host_baseline.delay(baseline.id)
+        return Response({"message": "基线巡检任务已下发"})
 
 
 
 
-class HostViewSet(viewsets.ModelViewSet):
+class HostViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = Host.objects.all()
     serializer_class = HostSerializer
     permission_classes = [SmartRBACPermission]
     filterset_class = HostFilter
 
     resource_code = 'resource:hosts'
+    asset_share_type = 'host'
+
+    @action(detail=False, methods=['post'])
+    def bulk_import(self, request):
+        """
+        批量导入主机
+        格式要求: [{"hostname": "xxx", "private_ip": "1.1.1.1", "env": 1, ...}]
+        """
+        data = request.data
+        if not isinstance(data, list):
+            return Response({"error": "数据格式错误，期望收到列表格式"}, status=status.HTTP_400_BAD_REQUEST)
+
+        success_count = 0
+        errors = []
+
+        for index, item in enumerate(data):
+            try:
+                # 使用 Serializer 验证单条数据
+                serializer = self.get_serializer(data=item)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
+                success_count += 1
+            except Exception as e:
+                errors.append(f"第 {index+1} 条记录错误: {str(e)}")
+
+        return Response({
+            "status": "success",
+            "message": f"成功导入 {success_count} 台主机",
+            "errors": errors
+        })
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
 
 class EnvironmentViewSet(viewsets.ModelViewSet):
     queryset = Environment.objects.all()
@@ -97,8 +159,11 @@ class ResourcePoolViewSet(DataScopeMixin, viewsets.ModelViewSet):
     permission_classes = [SmartRBACPermission]
     filterset_class = ResourcePoolFilter
     resource_type = 'resource_pool'
-
     resource_code = 'resource:resource_pools'
+    asset_share_type = 'resource_pool'
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
 
 
 class PlatformViewSet(viewsets.ModelViewSet):
@@ -131,3 +196,51 @@ class PlatformViewSet(viewsets.ModelViewSet):
         platform.refresh_from_db()
         serializer = self.get_serializer(platform)
         return Response(serializer.data)
+
+
+class ComplianceFrameworkViewSet(viewsets.ModelViewSet):
+    """
+    合规框架管理
+    """
+    queryset = ComplianceFramework.objects.all()
+    serializer_class = ComplianceFrameworkSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:compliance'
+
+
+class ComplianceClauseViewSet(viewsets.ModelViewSet):
+    """
+    合规条款管理
+    """
+    queryset = ComplianceClause.objects.all().order_by('sort_order', 'id')
+    serializer_class = ComplianceClauseSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:compliance'
+
+    @action(detail=True, methods=['post'])
+    def trigger_check(self, request, pk=None):
+        """
+        手动触发该条款关联的所有基线巡检
+        """
+        clause = self.get_object()
+        mappings = clause.baseline_mappings.all()
+        if not mappings.exists():
+            return Response({"error": "该条款尚未关联任何主机基线"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        triggered_count = 0
+        from apps.host_management.tasks import check_host_baseline
+        for m in mappings:
+            check_host_baseline.delay(m.baseline.id)
+            triggered_count += 1
+            
+        return Response({"message": f"成功下发 {triggered_count} 个基线巡检任务"})
+
+
+class ComplianceBaselineMappingViewSet(viewsets.ModelViewSet):
+    """
+    条款基线映射关系管理
+    """
+    queryset = ComplianceBaselineMapping.objects.all()
+    serializer_class = ComplianceBaselineMappingSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'resource:compliance'

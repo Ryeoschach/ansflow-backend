@@ -15,6 +15,7 @@ from apps.task_management.models import AnsibleExecution
 from apps.pipeline_management.models import PipelineRun
 from django.utils import timezone
 from datetime import timedelta
+from django.db import models
 from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.conf import settings
@@ -103,7 +104,7 @@ class SystemHealthViewSet(viewsets.ViewSet):
 
 class DashboardViewSet(viewsets.ViewSet):
     """
-    仪表盘概览数据视图
+    仪表盘概览数据视图 (优化版)
     """
     permission_classes = [IsAuthenticated]
 
@@ -112,17 +113,22 @@ class DashboardViewSet(viewsets.ViewSet):
         now = timezone.now()
         last_24h = now - timedelta(hours=24)
 
-        # 基础指标 (Metrics)
-        total_hosts = Host.objects.count()
-        online_hosts = Host.objects.filter(status=1).count()
-        total_pools = ResourcePool.objects.count()
+        # 1. 基础指标聚合查询 (Host 状态统计)
+        host_stats = Host.objects.aggregate(
+            total=models.Count('id'),
+            online=models.Count('id', filter=models.Q(status=1))
+        )
         
-        # 任务执行统计 (24小时内)
+        # 2. 资产分布统计 (饼图数据)
+        platform_dist = Host.objects.values('platform__name').annotate(count=models.Count('id')).order_by('-count')
+        env_dist = Host.objects.values('env__name', 'env__color').annotate(count=models.Count('id')).order_by('-count')
+
+        # 3. 任务执行统计
         daily_executions = AnsibleExecution.objects.filter(create_time__gte=last_24h)
         daily_task_runs = daily_executions.count()
         daily_failed_tasks = daily_executions.filter(status='failed').count()
 
-        # 任务趋势 (Task Trend - 每4小时一个点)
+        # 4. 任务趋势 (每4小时一个采样点)
         task_trend = []
         for i in range(6):
             start = now - timedelta(hours=(6-i)*4)
@@ -135,58 +141,88 @@ class DashboardViewSet(viewsets.ViewSet):
                 "failed": period_data.filter(status='failed').count()
             })
 
-        # 最近任务 (Recent Tasks - 混合 Ansible 和 Pipeline)
+        # 5. 实时告警数据与按级别分布统计
+        from apps.sre_management.models import AlertEvent
+        firing_alerts = AlertEvent.objects.filter(status='firing').order_by('-create_time')[:5].values(
+            'id', 'alert_name', 'severity', 'create_time'
+        )
+        alert_dist = AlertEvent.objects.filter(status='firing').values('severity').annotate(count=models.Count('id')).order_by('-count')
+        severity_map = {
+            'critical': {'name': '致命 (Critical)', 'color': '#ff4d4f'},
+            'warning': {'name': '警告 (Warning)', 'color': '#faad14'},
+            'info': {'name': '提示 (Info)', 'color': '#1890ff'},
+        }
+        alert_severity_dist = []
+        for item in alert_dist:
+            sev = item['severity']
+            info = severity_map.get(sev, {'name': sev.upper(), 'color': '#d9d9d9'})
+            alert_severity_dist.append({
+                "name": info['name'],
+                "value": item['count'],
+                "color": info['color']
+            })
+
+        # 6. 最近动态 (混合排序与脱敏)
         ansible_recent = AnsibleExecution.objects.all().select_related('task', 'executor').order_by('-create_time')[:10]
         pipeline_recent = PipelineRun.objects.all().select_related('pipeline', 'trigger_user').order_by('-create_time')[:10]
         
         combined_recent = []
-        for task in ansible_recent:
+        for t in ansible_recent:
             combined_recent.append({
-                "raw_id": task.id,
-                "id": f"TSK-{task.id}",
+                "raw_id": t.id,
+                "id": f"TSK-{t.id}",
                 "type": "ansible",
-                "name": task.task.name if task.task else "Unknown Task",
-                "status": task.status.upper(),
-                "time": task.create_time,
-                "user": task.executor.username if task.executor else "System"
+                "name": t.task.name if t.task else "Ad-hoc Task",
+                "status": t.status.upper(),
+                "time": t.create_time,
+                "user": t.executor.username if t.executor else "System"
             })
         
-        for run in pipeline_recent:
+        for p in pipeline_recent:
             combined_recent.append({
-                "raw_id": run.id,
-                "id": f"RUN-{run.id}",
+                "raw_id": p.id,
+                "id": f"RUN-{p.id}",
                 "type": "pipeline",
-                "name": run.pipeline.name if run.pipeline else "Unknown Pipeline",
-                "status": run.status.upper(),
-                "time": run.create_time,
-                "user": run.trigger_user.username if run.trigger_user else "System"
+                "name": p.pipeline.name if p.pipeline else "Unknown Pipeline",
+                "status": p.status.upper(),
+                "time": p.create_time,
+                "user": p.trigger_user.username if p.trigger_user else "System"
             })
             
-        # 按时间排序并取前 8 条
+        # 按时间全量排序
         combined_recent.sort(key=lambda x: x['time'], reverse=True)
-        final_recent = combined_recent[:8]
+        final_recent = combined_recent[:10]
 
-        for task in final_recent:
-            # 简单的时间友好化处理
-            delta = now - task['time']
-            if delta.seconds < 3600:
-                time_str = f"{delta.seconds // 60} mins ago"
+        for item in final_recent:
+            # 时间友好化处理
+            delta = now - item['time']
+            if delta.total_seconds() < 60:
+                time_str = "just now"
+            elif delta.total_seconds() < 3600:
+                time_str = f"{int(delta.total_seconds() // 60)}m ago"
             elif delta.days < 1:
-                time_str = f"{delta.seconds // 3600} hours ago"
+                time_str = f"{int(delta.total_seconds() // 3600)}h ago"
             else:
-                time_str = f"{delta.days} days ago"
-            task['time_label'] = time_str
-            # 将 datetime 对象移除，因为 Response 不能序列化它，或者转为字符串
-            task['time'] = task['time'].isoformat()
+                time_str = f"{delta.days}d ago"
+            item['time_label'] = time_str
+            item['time'] = item['time'].isoformat() # 序列化兼容
 
         return Response({
             "metrics": {
-                "totalHosts": total_hosts,
-                "onlineHosts": online_hosts,
-                "totalResourcePools": total_pools,
+                "totalHosts": host_stats['total'] or 0,
+                "onlineHosts": host_stats['online'] or 0,
+                "totalResourcePools": ResourcePool.objects.count(),
                 "dailyTaskRuns": daily_task_runs,
                 "dailyFailedTasks": daily_failed_tasks,
             },
+            "platformDistribution": [
+                {"name": item['platform__name'] or "Local", "value": item['count']} for item in platform_dist
+            ],
+            "envDistribution": [
+                {"name": item['env__name'] or "Unknown", "value": item['count'], "color": item['env__color']} for item in env_dist
+            ],
+            "alertSeverityDistribution": alert_severity_dist,
+            "firingAlerts": list(firing_alerts),
             "taskTrend": task_trend,
             "recentTasks": final_recent
         })
@@ -205,20 +241,87 @@ class BackupViewSet(viewsets.ViewSet):
         os.makedirs(backup_dir, exist_ok=True)
         return backup_dir
 
+    def _get_selected_modules(self, data):
+        """
+        从 request.data 或 request.query_params 中解析并规范化模块列表
+        """
+        if not data:
+            return None
+        
+        raw_val = None
+        # 如果是 QueryDict，尝试 getlist
+        if hasattr(data, 'getlist'):
+            val_list = data.getlist('modules')
+            if val_list:
+                if len(val_list) > 1:
+                    raw_val = val_list
+                else:
+                    raw_val = val_list[0]
+                    
+        if raw_val is None:
+            raw_val = data.get('modules')
+
+        if not raw_val:
+            return None
+
+        if isinstance(raw_val, list):
+            return raw_val
+
+        if isinstance(raw_val, str):
+            raw_val = raw_val.strip()
+            if not raw_val:
+                return None
+            # 兼容 JSON 数组格式，例如 '["rbac", "host"]'
+            if raw_val.startswith('[') and raw_val.endswith(']'):
+                try:
+                    parsed = json.loads(raw_val)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+            # 兼容逗号分隔格式，例如 "rbac,host"
+            return [m.strip() for m in raw_val.split(',') if m.strip()]
+
+        return None
+
     @action(detail=False, methods=['get'])
+    def modules(self, request):
+        """
+        获取可备份/恢复的模块列表
+        """
+        from .backup import MODULE_DEFINITIONS
+        return Response([
+            {"key": k, "label": v['label']} for k, v in MODULE_DEFINITIONS.items()
+        ])
+
+    @action(detail=False, methods=['get', 'post'])
     def generate(self, request):
         """
-        创建系统全量备份
+        创建系统备份
         """
         from .backup import BackupExporter
 
+        # 获取请求中的模块过滤列表和密码
+        selected_modules = None
+        passphrase = None
+        if request.method == 'POST':
+            selected_modules = self._get_selected_modules(request.data)
+            passphrase = request.data.get('passphrase')
+        else:
+            selected_modules = self._get_selected_modules(request.query_params)
+            passphrase = request.query_params.get('passphrase')
+
+        if not passphrase:
+            passphrase = None
+
         try:
-            exporter = BackupExporter()
-            backup_data = exporter.export()
+            exporter = BackupExporter(passphrase=passphrase)
+            backup_data = exporter.export(selected_modules=selected_modules)
 
             # 生成文件名
             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f'ansflow_backup_{timestamp}.json.gz'
+            suffix = "_modular" if selected_modules else "_full"
+            filename = f'ansflow_backup_{timestamp}{suffix}.json.gz'
             file_path = os.path.join(self._get_backup_dir(), filename)
 
             # 写入压缩文件
@@ -228,13 +331,16 @@ class BackupViewSet(viewsets.ViewSet):
             # 返回文件路径（相对路径）
             file_url = f'/media/backups/{filename}'
 
+            dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
+            timestamp_display = dt.isoformat()
+
             return Response({
                 'success': True,
                 'filename': filename,
                 'url': file_url,
                 'size': os.path.getsize(file_path),
                 'record_count': {k: len(v) for k, v in backup_data['data'].items()},
-                'created_at': timestamp,
+                'created_at': timestamp_display,
             })
 
         except Exception as e:
@@ -255,13 +361,20 @@ class BackupViewSet(viewsets.ViewSet):
             if filename.endswith('.json.gz'):
                 file_path = os.path.join(backup_dir, filename)
                 stat = os.stat(file_path)
-                # 从文件名提取时间戳
-                timestamp = filename.replace('ansflow_backup_', '').replace('.json.gz', '')
-                try:
-                    dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
-                    timestamp_display = dt.strftime('%Y-%m-%d %H:%M:%S')
-                except Exception:
-                    timestamp_display = timestamp
+                # 尝试从文件名匹配时间戳 YYYYMMDD_HHMMSS
+                import re
+                match = re.search(r'(\d{8}_\d{6})', filename)
+                if match:
+                    timestamp = match.group(1)
+                    try:
+                        dt = datetime.datetime.strptime(timestamp, '%Y%m%d_%H%M%S')
+                        timestamp_display = dt.isoformat()
+                    except Exception:
+                        dt = datetime.datetime.fromtimestamp(stat.st_mtime)
+                        timestamp_display = dt.isoformat()
+                else:
+                    dt = datetime.datetime.fromtimestamp(stat.st_mtime)
+                    timestamp_display = dt.isoformat()
 
                 backups.append({
                     'filename': filename,
@@ -308,6 +421,11 @@ class BackupViewSet(viewsets.ViewSet):
         from .backup import BackupImporter
 
         filename = request.data.get('filename')
+        selected_modules = self._get_selected_modules(request.data)
+        passphrase = request.data.get('passphrase')
+        if not passphrase:
+            passphrase = None
+        
         if not filename:
             return Response({'error': '缺少 filename 参数'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -316,8 +434,8 @@ class BackupViewSet(viewsets.ViewSet):
             return Response({'error': '备份文件不存在'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            importer = BackupImporter({})
-            result = importer.import_from_file(file_path)
+            importer = BackupImporter({}, passphrase=passphrase)
+            result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             return Response({
                 'success': result['success'],
@@ -339,6 +457,11 @@ class BackupViewSet(viewsets.ViewSet):
         from .backup import BackupImporter
 
         file = request.FILES.get('file')
+        selected_modules = self._get_selected_modules(request.data)
+        passphrase = request.data.get('passphrase')
+        if not passphrase:
+            passphrase = None
+        
         if not file:
             return Response({'error': '缺少备份文件'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -356,8 +479,8 @@ class BackupViewSet(viewsets.ViewSet):
                     f.write(chunk)
 
             # 执行恢复
-            importer = BackupImporter({})
-            result = importer.import_from_file(file_path)
+            importer = BackupImporter({}, passphrase=passphrase)
+            result = importer.import_from_file(file_path, selected_modules=selected_modules)
 
             # 删除临时上传文件
             os.remove(file_path)
@@ -409,3 +532,450 @@ class BackupViewSet(viewsets.ViewSet):
             'deleted': deleted,
             'errors': errors,
         })
+
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
+from .serializers import PeriodicTaskSerializer
+from utils.rbac_permission import SmartRBACPermission
+from utils.pagination import MyCustomPagination
+import json
+
+class PeriodicTaskViewSet(viewsets.ModelViewSet):
+    """
+    通用系统级定时任务管理
+    """
+    queryset = PeriodicTask.objects.all().order_by('-id')
+    serializer_class = PeriodicTaskSerializer
+    permission_classes = [SmartRBACPermission]
+    pagination_class = MyCustomPagination
+    resource_code = "system:periodic_tasks"
+    
+    def get_queryset(self):
+        return super().get_queryset()
+
+    @action(detail=True, methods=['put'])
+    def update_schedule(self, request, pk=None):
+        task = self.get_object()
+        data = request.data
+        
+        if 'args' in data:
+            task.args = data['args']
+        if 'kwargs' in data:
+            task.kwargs = data['kwargs']
+            
+        schedule_type = data.get('schedule_type')
+        if schedule_type == 'interval':
+            every = data.get('every', 1)
+            period = data.get('period', 'seconds')
+            interval, _ = IntervalSchedule.objects.get_or_create(every=every, period=period)
+            task.interval = interval
+            task.crontab = None
+        elif schedule_type == 'crontab':
+            crontab_data = data.get('crontab', {})
+            minute = crontab_data.get('minute', '*')
+            hour = crontab_data.get('hour', '*')
+            day_of_week = crontab_data.get('day_of_week', '*')
+            day_of_month = crontab_data.get('day_of_month', '*')
+            month_of_year = crontab_data.get('month_of_year', '*')
+            crontab, _ = CrontabSchedule.objects.get_or_create(
+                minute=minute, hour=hour, day_of_week=day_of_week, 
+                day_of_month=day_of_month, month_of_year=month_of_year
+            )
+            task.crontab = crontab
+            task.interval = None
+            
+        task.save()
+        return Response({'status': 'success'})
+
+
+from .models import UserNotification
+from .serializers import UserNotificationSerializer
+
+class UserNotificationViewSet(viewsets.ModelViewSet):
+    """
+    用户实时通知管理
+    """
+    serializer_class = UserNotificationSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return UserNotification.objects.filter(user=self.request.user).order_by('-create_time')
+
+    @action(detail=True, methods=['post'], url_path='mark-read')
+    def mark_read(self, request, pk=None):
+        obj = self.get_object()
+        obj.is_read = True
+        obj.save(update_fields=['is_read'])
+        return Response({'status': 'success'}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='mark-all-read')
+    def mark_all_read(self, request):
+        self.get_queryset().filter(is_read=False).update(is_read=True)
+        return Response({'status': 'success'}, status=status.HTTP_200_OK)
+
+
+class SystemReportViewSet(viewsets.ViewSet):
+    """
+    系统统一报表中心
+    """
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['get'], url_path='pipeline')
+    def pipeline(self, request):
+        from django.utils.dateparse import parse_datetime, parse_date
+        import datetime
+        from django.utils import timezone
+        from apps.pipeline_management.models import PipelineRun
+
+        start_str = request.query_params.get('start_time')
+        end_str = request.query_params.get('end_time')
+
+        def parse_date_param(param_str, is_end=False):
+            if not param_str:
+                return None
+            try:
+                dt = parse_datetime(param_str)
+                if dt:
+                    if timezone.is_naive(dt):
+                        dt = timezone.make_aware(dt)
+                    return dt
+            except Exception:
+                pass
+            try:
+                d = parse_date(param_str)
+                if d:
+                    dt = datetime.datetime.combine(d, datetime.time.max if is_end else datetime.time.min)
+                    return timezone.make_aware(dt)
+            except Exception:
+                pass
+            return None
+
+        start_time = parse_date_param(start_str, is_end=False)
+        end_time = parse_date_param(end_str, is_end=True)
+
+        if not start_time:
+            start_time = timezone.now() - datetime.timedelta(days=7)
+        if not end_time:
+            end_time = timezone.now()
+
+        runs = PipelineRun.objects.filter(create_time__range=(start_time, end_time))
+        project_id = request.query_params.get('project_id')
+        if project_id:
+            runs = runs.filter(pipeline__project_id=project_id)
+
+        total_runs = runs.count()
+        success_runs = runs.filter(status='success').count()
+        failed_runs = runs.filter(status='failed').count()
+        success_rate = round(success_runs * 100.0 / total_runs, 2) if total_runs > 0 else 0.0
+
+        # Trend (daily)
+        from django.db.models.functions import TruncDay
+        trend_stats = runs.annotate(day=TruncDay('create_time')) \
+                          .values('day') \
+                          .annotate(
+                              total=Count('id'),
+                              success=Count('id', filter=Q(status='success')),
+                              failed=Count('id', filter=Q(status='failed'))
+                          ) \
+                          .order_by('day')
+        trend = []
+        for t in trend_stats:
+            trend.append({
+                'day': t['day'].strftime('%Y-%m-%d'),
+                'total': t['total'],
+                'success': t['success'],
+                'failed': t['failed']
+            })
+
+        # Trigger distribution
+        trigger_stats = runs.values('trigger_type').annotate(count=Count('id')).order_by('-count')
+        trigger_distribution = []
+        trigger_labels = {
+            'manual': '手动触发',
+            'schedule': '定时触发',
+            'webhook': 'Webhook 触发',
+            'retry': '重试触发',
+            'automation': '自动自愈触发'
+        }
+        for ts in trigger_stats:
+            trigger_distribution.append({
+                'trigger_type': ts['trigger_type'],
+                'label': trigger_labels.get(ts['trigger_type'], ts['trigger_type']),
+                'count': ts['count']
+            })
+
+        # Slow nodes (slowest node runs)
+        from apps.pipeline_management.models import PipelineNodeRun
+        node_runs = PipelineNodeRun.objects.filter(
+            run__in=runs, 
+            status__in=['success', 'failed'], 
+            start_time__isnull=False, 
+            end_time__isnull=False
+        )
+        slowest_nodes = []
+        for nr in node_runs[:50]:
+            duration = int((nr.end_time - nr.start_time).total_seconds()) if nr.start_time and nr.end_time else 0
+            slowest_nodes.append({
+                'node_label': nr.node_label,
+                'node_type': nr.node_type,
+                'pipeline_name': nr.run.pipeline.name,
+                'duration': duration,
+                'status': nr.status,
+                'run_id': nr.run_id
+            })
+        slowest_nodes = sorted(slowest_nodes, key=lambda x: x['duration'], reverse=True)[:5]
+
+        return Response({
+            'summary': {
+                'total_runs': total_runs,
+                'success_runs': success_runs,
+                'failed_runs': failed_runs,
+                'success_rate': success_rate
+            },
+            'trend': trend,
+            'trigger_distribution': trigger_distribution,
+            'slowest_nodes': slowest_nodes
+        })
+
+    @action(detail=False, methods=['get'], url_path='ansible')
+    def ansible(self, request):
+        from django.utils.dateparse import parse_datetime, parse_date
+        import datetime
+        from django.utils import timezone
+        from apps.task_management.models import AnsibleExecution
+
+        start_str = request.query_params.get('start_time')
+        end_str = request.query_params.get('end_time')
+
+        def parse_date_param(param_str, is_end=False):
+            if not param_str:
+                return None
+            try:
+                dt = parse_datetime(param_str)
+                if dt:
+                    if timezone.is_naive(dt):
+                        dt = timezone.make_aware(dt)
+                    return dt
+            except Exception:
+                pass
+            try:
+                d = parse_date(param_str)
+                if d:
+                    dt = datetime.datetime.combine(d, datetime.time.max if is_end else datetime.time.min)
+                    return timezone.make_aware(dt)
+            except Exception:
+                pass
+            return None
+
+        start_time = parse_date_param(start_str, is_end=False)
+        end_time = parse_date_param(end_str, is_end=True)
+
+        if not start_time:
+            start_time = timezone.now() - datetime.timedelta(days=7)
+        if not end_time:
+            end_time = timezone.now()
+
+        executions = AnsibleExecution.objects.filter(create_time__range=(start_time, end_time))
+        
+        project_id = request.query_params.get('project_id')
+        env_id = request.query_params.get('env_id')
+        platform_id = request.query_params.get('platform_id')
+        resource_pool_id = request.query_params.get('resource_pool_id')
+
+        if project_id:
+            executions = executions.filter(task__project_id=project_id)
+        if resource_pool_id:
+            executions = executions.filter(task__resource_pool_id=resource_pool_id)
+        if env_id:
+            executions = executions.filter(task__resource_pool__hosts__env_id=env_id).distinct()
+        if platform_id:
+            executions = executions.filter(task__resource_pool__hosts__platform_id=platform_id).distinct()
+
+        total_execs = executions.count()
+        success_execs = executions.filter(status='success').count()
+        failed_execs = executions.filter(status='failed').count()
+        success_rate = round(success_execs * 100.0 / total_execs, 2) if total_execs > 0 else 0.0
+
+        total_host_runs = 0
+        for ex in executions.prefetch_related('task__resource_pool__hosts'):
+            if ex.task.resource_pool:
+                total_host_runs += ex.task.resource_pool.hosts.count()
+
+        # Trend (daily)
+        from django.db.models.functions import TruncDay
+        trend_stats = executions.annotate(day=TruncDay('create_time')) \
+                                .values('day') \
+                                .annotate(
+                                    total=Count('id'),
+                                    success=Count('id', filter=Q(status='success')),
+                                    failed=Count('id', filter=Q(status='failed'))
+                                ) \
+                                .order_by('day')
+        trend = []
+        for t in trend_stats:
+            trend.append({
+                'day': t['day'].strftime('%Y-%m-%d'),
+                'total': t['total'],
+                'success': t['success'],
+                'failed': t['failed']
+            })
+
+        # Breakdown stats helper
+        def get_rate(success, total):
+            return round(success * 100.0 / total, 2) if total > 0 else 0.0
+
+        # Environment Breakdown
+        from apps.host_management.models import Environment
+        env_breakdown = []
+        for env in Environment.objects.all():
+            env_execs = executions.filter(task__resource_pool__hosts__env=env).distinct()
+            total = env_execs.count()
+            if total > 0:
+                success = env_execs.filter(status='success').count()
+                env_breakdown.append({
+                    'name': env.name,
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        # Platform Breakdown
+        from apps.host_management.models import Platform
+        platform_breakdown = []
+        for plat in Platform.objects.all():
+            plat_execs = executions.filter(task__resource_pool__hosts__platform=plat).distinct()
+            total = plat_execs.count()
+            if total > 0:
+                success = plat_execs.filter(status='success').count()
+                platform_breakdown.append({
+                    'name': plat.name or plat.get_type_display(),
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        # Resource Pool Breakdown
+        from apps.host_management.models import ResourcePool
+        pool_breakdown = []
+        for pool in ResourcePool.objects.all():
+            pool_execs = executions.filter(task__resource_pool=pool)
+            total = pool_execs.count()
+            if total > 0:
+                success = pool_execs.filter(status='success').count()
+                pool_breakdown.append({
+                    'name': pool.name,
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        # Project Breakdown
+        from apps.rbac_permission.models import Project
+        project_breakdown = []
+        for proj in Project.objects.all():
+            proj_execs = executions.filter(task__project=proj)
+            total = proj_execs.count()
+            if total > 0:
+                success = proj_execs.filter(status='success').count()
+                project_breakdown.append({
+                    'name': proj.name,
+                    'count': total,
+                    'success_count': success,
+                    'success_rate': get_rate(success, total)
+                })
+
+        return Response({
+            'summary': {
+                'total_executions': total_execs,
+                'success_executions': success_execs,
+                'failed_executions': failed_execs,
+                'success_rate': success_rate,
+                'total_host_runs': total_host_runs
+            },
+            'trend': trend,
+            'breakdown': {
+                'environment': env_breakdown,
+                'platform': platform_breakdown,
+                'resource_pool': pool_breakdown,
+                'project': project_breakdown
+            }
+        })
+
+    @action(detail=False, methods=['get'], url_path='compliance')
+    def compliance(self, request):
+        from apps.host_management.models import ComplianceFramework, ComplianceClause
+        
+        frameworks = ComplianceFramework.objects.all()
+        total_frameworks = frameworks.count()
+
+        total_clauses = 0
+        success_count = 0
+        failed_count = 0
+        running_count = 0
+        pending_count = 0
+        
+        non_compliant_clauses = []
+
+        for fw in frameworks:
+            leaf_clauses = ComplianceClause.objects.filter(framework=fw, children__isnull=True)
+            for cl in leaf_clauses:
+                total_clauses += 1
+                status = cl.compliance_status
+                if status == 'success':
+                    success_count += 1
+                elif status == 'failed':
+                    failed_count += 1
+                    mappings = cl.baseline_mappings.all()
+                    baselines = [m.baseline.name for m in mappings]
+                    pools = [m.baseline.resource_pool.name for m in mappings if m.baseline.resource_pool]
+                    non_compliant_clauses.append({
+                        'code': cl.code,
+                        'name': cl.name,
+                        'framework': fw.name,
+                        'baselines': baselines,
+                        'resource_pools': pools
+                    })
+                elif status == 'running':
+                    running_count += 1
+                else:
+                    pending_count += 1
+
+        overall_score = round(success_count * 100.0 / total_clauses, 2) if total_clauses > 0 else 100.0
+
+        return Response({
+            'summary': {
+                'overall_score': overall_score,
+                'total_frameworks': total_frameworks,
+                'total_compliance_items': total_clauses,
+                'failed_compliance_items': failed_count,
+            },
+            'clause_distribution': {
+                'success': success_count,
+                'failed': failed_count,
+                'running': running_count,
+                'pending': pending_count
+            },
+            'non_compliant_clauses': non_compliant_clauses
+        })
+
+    @action(detail=False, methods=['post'], url_path='export')
+    def export(self, request):
+        export_types = request.data.get('export_types', [])
+        start_time_str = request.data.get('start_time')
+        end_time_str = request.data.get('end_time')
+        filters = request.data.get('filters', {})
+
+        if not export_types:
+            return Response({'error': '请选择至少一个导出的报表类型'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .tasks import export_system_report_task
+        export_system_report_task.delay(
+            user_id=request.user.id,
+            export_types=export_types,
+            start_time_str=start_time_str,
+            end_time_str=end_time_str,
+            filters=filters
+        )
+        return Response({'message': '多维报表生成任务已提交，请留意右上角弹窗及通知铃铛。'}, status=status.HTTP_202_ACCEPTED)

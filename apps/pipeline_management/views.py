@@ -5,8 +5,9 @@ from rest_framework import status # Added for status.HTTP_400_BAD_REQUEST
 from django.utils import timezone
 from config.celery import app as celery_app
 from .models import Pipeline, PipelineRun, CIEnvironment, PipelineNodeRun, PipelineWebhook, PipelineVersion
-from .serializers import PipelineSerializer, PipelineRunSerializer, CIEnvironmentSerializer, PipelineWebhookSerializer, PipelineVersionSerializer
+from .serializers import PipelineSerializer, PipelineRunSerializer, PipelineNodeRunSerializer, CIEnvironmentSerializer, PipelineWebhookSerializer, PipelineVersionSerializer
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
+from utils.approval_decorator import require_approval
 
 from apps.pipeline_management.tasks import advance_pipeline_engine, push_pipeline_status_to_ws
 
@@ -42,6 +43,7 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
     resource_code = 'pipeline:template'
     resource_type = 'pipeline'
     resource_owner_field = 'creator'
+    asset_share_type = 'pipeline'
     permission_labels = {
         'view':    {'name': '查看流水线列表/详情', 'danger': 'safe'},
         'add':     {'name': '新建流水线模板',     'danger': 'warn'},
@@ -52,6 +54,12 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        create_type = self.request.query_params.get('create_type')
+        if create_type:
+            qs = qs.filter(create_type=create_type)
+        elif self.action == 'list':
+            qs = qs.filter(create_type='manual')
+
         has_cron = self.request.query_params.get('has_cron')
         if has_cron == 'true':
             # 只返回配置了定时表达式的流水线
@@ -59,22 +67,15 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(creator=self.request.user)
+        serializer.save(
+            creator=self.request.user,
+            project=getattr(self.request, 'project', None),
+        )
 
     @action(detail=True, methods=['post'])
+    @require_approval(resource_type='pipeline:run', action_title_prefix='申请运行流水线模板')
     def execute(self, request, pk=None):
         """触发执行流水线"""
-        
-        # 1. 审批拦截检查
-        from apps.approval_center.engine import ProxyApprovalEngine
-        is_blocked, approval_res = ProxyApprovalEngine.intercept_if_needed(
-            request, 
-            resource_type='pipeline:run', 
-            action_title=f"申请运行流水线模板 #{pk}",
-            target_id=pk
-        )
-        if is_blocked:
-            return approval_res
 
         # 2. 创建运行记录
         pipeline = self.get_object()
@@ -117,6 +118,101 @@ class PipelineViewSet(DataScopeMixin, viewsets.ModelViewSet):
         pipeline.save()
 
         return Response({'msg': f'已回滚到 v{version.version_number}', 'pipeline_id': pipeline.id})
+
+    @action(detail=True, methods=['post'])
+    def promote(self, request, pk=None):
+        """
+        将 AI 草稿流水线转正为人工模板，并级联转正关联的 Ansible 剧本
+        """
+        pipeline = self.get_object()
+        if pipeline.create_type != 'ai':
+            return Response({'error': '只有 AI 草稿区的流水线可以被转正'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        name = request.data.get('name')
+        desc = request.data.get('desc')
+        
+        from django.db import transaction
+        from apps.task_management.models import AnsibleTask
+        
+        with transaction.atomic():
+            if name:
+                pipeline.name = name
+            if desc is not None:
+                pipeline.desc = desc
+            pipeline.create_type = 'manual'
+            pipeline.save()
+            
+            # 级联转正引用的处于 'ai' 状态的 AnsibleTask
+            promoted_tasks = []
+            if pipeline.graph_data and 'nodes' in pipeline.graph_data:
+                for node in pipeline.graph_data.get('nodes', []):
+                    if node.get('type') == 'ansible':
+                        task_id = node.get('data', {}).get('ansible_task_id')
+                        if task_id:
+                            try:
+                                task = AnsibleTask.objects.select_for_update().get(id=task_id)
+                                if task.create_type == 'ai':
+                                    task.create_type = 'manual'
+                                    task.save()
+                                    promoted_tasks.append(task)
+                            except AnsibleTask.DoesNotExist:
+                                pass
+                                
+        # 转正完成后，将元数据向量化存入 RAG 知识库
+        try:
+            from apps.ai_engine.rag_service import RAGService
+            rag_service = RAGService()
+            
+            # 1. 向量化同步流水线本身
+            nodes_info = []
+            if pipeline.graph_data and 'nodes' in pipeline.graph_data:
+                for node in pipeline.graph_data.get('nodes', []):
+                    nodes_info.append(f"- 节点ID: {node.get('id')}, 名称: {node.get('name')}, 类型: {node.get('type')}")
+            nodes_str = "\n".join(nodes_info)
+            
+            pipeline_doc_content = f"""[流水线资产]
+ID: {pipeline.id}
+名称: {pipeline.name}
+描述: {pipeline.desc or '无描述'}
+包含节点:
+{nodes_str}
+YAML定义:
+{pipeline.yaml_definition or '无定义'}
+"""
+            rag_service.add_knowledge(
+                content=pipeline_doc_content,
+                title=f"流水线模板 - {pipeline.name}",
+                metadata={'source_type': 'pipeline_asset', 'id': pipeline.id}
+            )
+            
+            # 2. 向量化同步所有级联转正的 Ansible 剧本
+            for task in promoted_tasks:
+                task_doc_content = f"""[Ansible 剧本组件]
+ID: {task.id}
+名称: {task.name}
+类型: {task.get_task_type_display()}
+剧本内容或指令:
+{task.content}
+"""
+                rag_service.add_knowledge(
+                    content=task_doc_content,
+                    title=f"Ansible 剧本 - {task.name}",
+                    metadata={'source_type': 'ansible_task', 'id': task.id}
+                )
+        except Exception as e:
+            # 向量化同步失败不应该阻断 API 成功返回，但需要记录日志
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"[Promote] Failed to sync to RAG: {e}", exc_info=True)
+            
+        return Response({
+            'msg': '流水线已成功转正为人工模板',
+            'id': pipeline.id,
+            'name': pipeline.name,
+            'create_type': pipeline.create_type,
+            'promoted_tasks_count': len(promoted_tasks)
+        })
+
 
 class PipelineRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """流水线运行记录"""
@@ -436,3 +532,48 @@ class PipelineVersionViewSet(DataScopeMixin, viewsets.ReadOnlyModelViewSet):
         if pipeline_id:
             qs = qs.filter(pipeline_id=pipeline_id)
         return qs
+
+
+class PipelineNodeRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    流水线节点运行记录
+    """
+    queryset = PipelineNodeRun.objects.all()
+    serializer_class = PipelineNodeRunSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = 'pipeline:run'
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """
+        审批通过或驳回流水线节点
+        """
+        node_run = self.get_object()
+        if node_run.status != 'waiting':
+            return Response({"error": "该节点当前不处于等待审批状态"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        action_type = request.data.get('action') # 'pass' or 'reject'
+        comment = request.data.get('comment', '')
+
+        if action_type == 'pass':
+            node_run.status = 'success'
+            node_run.end_time = timezone.now()
+            node_run.logs = (node_run.logs or "") + f"\n[审批通过] 操作人: {request.user.username}\n意见: {comment}"
+        else:
+            node_run.status = 'failed'
+            node_run.end_time = timezone.now()
+            node_run.logs = (node_run.logs or "") + f"\n[审批驳回] 操作人: {request.user.username}\n意见: {comment}"
+        
+        node_run.approver = request.user
+        node_run.approval_time = timezone.now()
+        node_run.approval_comment = comment
+        node_run.save()
+
+        # 实时推送状态
+        from apps.pipeline_management.tasks import push_pipeline_status_to_ws, advance_pipeline_engine
+        push_pipeline_status_to_ws(node_run.run)
+
+        # 唤醒引擎继续决策
+        advance_pipeline_engine.delay(node_run.run.id)
+
+        return Response({"message": f"审批操作成功: {action_type}"})

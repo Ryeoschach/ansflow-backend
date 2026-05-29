@@ -18,11 +18,16 @@ import json
 import gzip
 import logging
 import uuid
+import os
+import base64
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
 from django.db import transaction
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +51,112 @@ def get_encrypted_field_names() -> set:
         'ArtifactoryInstance.api_key',
         'ArtifactoryInstance.password',
         'ConfigItem.value',
+        'AIProvider.api_key',
+        'HelmRepository.password',
     }
 
 
 def is_encrypted_field(model_name: str, field_name: str) -> bool:
     return f'{model_name}.{field_name}' in get_encrypted_field_names()
+
+
+def derive_key(passphrase: str, salt: bytes) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    return kdf.derive(passphrase.encode())
+
+
+def encrypt_data(plaintext: Any, key: bytes) -> str:
+    if not isinstance(plaintext, str):
+        plaintext = str(plaintext)
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    ct = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+    return base64.b64encode(nonce + ct).decode('utf-8')
+
+
+
+def decrypt_data(ciphertext_b64: str, key: bytes) -> str:
+    aesgcm = AESGCM(key)
+    combined = base64.b64decode(ciphertext_b64.encode('utf-8'))
+    nonce = combined[:12]
+    ct = combined[12:]
+    pt = aesgcm.decrypt(nonce, ct, None)
+    return pt.decode('utf-8')
+
+
+def get_decrypted_field_value(obj, field_name: str) -> Optional[str]:
+    """获取敏感/加密字段的明文值"""
+    model_name = obj.__class__.__name__
+    if model_name == 'AIProvider' and field_name == 'api_key':
+        return obj.get_decrypted_key()
+    elif model_name == 'ConfigItem' and field_name == 'value':
+        return obj.get_value()
+    else:
+        val = getattr(obj, field_name)
+        if val is None:
+            return None
+        return str(val)
+
+
+# ============================================================
+# 模块定义
+# ============================================================
+
+MODULE_DEFINITIONS = {
+    'rbac': {
+        'label': '权限与用户 (RBAC)',
+        'models': ['Permission', 'Credential', 'Role', 'DataPolicy', 'User']
+    },
+    'menu': {
+        'label': '系统菜单配置 (Menus)',
+        'models': ['Menu']
+    },
+    'host': {
+        'label': '主机与资源池 (Hosts)',
+        'models': ['SshCredential', 'Environment', 'Platform', 'Host', 'ResourcePool', 'HostBaseline']
+    },
+    'compliance': {
+        'label': '等保合规控制台 (Compliance)',
+        'models': ['ComplianceFramework', 'ComplianceClause', 'ComplianceBaselineMapping']
+    },
+    'k8s': {
+        'label': 'Kubernetes 管理 (K8s)',
+        'models': ['K8sCluster', 'HelmRepository', 'K8sApplication']
+    },
+    'pipeline': {
+        'label': '流水线 (Pipeline)',
+        'models': ['Pipeline', 'PipelineVersion', 'PipelineWebhook', 'CIEnvironment', 'PipelineRun', 'PipelineNodeRun']
+    },
+    'registry': {
+        'label': '镜像与制品 (Registry)',
+        'models': ['ImageRegistry', 'ArtifactoryInstance', 'ArtifactoryRepository', 'Artifact', 'ArtifactVersion']
+    },
+    'task': {
+        'label': '自动化任务 (Tasks)',
+        'models': ['AnsibleTask', 'AnsibleExecution', 'AnsibleSchedule']
+    },
+    'config': {
+        'label': '配置中心 (Config)',
+        'models': ['ConfigCategory', 'ConfigItem']
+    },
+    'approval': {
+        'label': '审批中心 (Approval)',
+        'models': ['ApprovalPolicy', 'ApprovalTicket']
+    },
+    'ai': {
+        'label': 'AI 引擎与知识库 (AI)',
+        'models': ['KnowledgeBase', 'AIProvider', 'AIModel', 'AIConfig', 'KnowledgeDocument', 'KnowledgeChunk', 'AIPromptTemplate']
+    },
+    'sre': {
+        'label': '自愈与自驱运维 (SRE)',
+        'models': ['SelfHealingPolicy']
+    },
+}
 
 
 # ============================================================
@@ -147,7 +253,7 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         export_order=10,
     ),
     'ImageRegistry': ModelInfo(
-        app_label='registry_management', model_name='ImageRegistry', table_name='registry_image_registry',
+        app_label='registry_management', model_name='ImageRegistry', table_name='pipeline_image_registry',
         exclude_fields=['remark'],
         encrypted_fields=['password'],
         unique_fields=['name'],
@@ -203,7 +309,10 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'PipelineNodeRun': ModelInfo(
         app_label='pipeline_management', model_name='PipelineNodeRun', table_name='pipeline_node_run_log',
-        fk_fields={'run': ('PipelineRun', 'id')},
+        fk_fields={
+            'run': ('PipelineRun', 'id'),
+            'approver': ('User', 'id'),
+        },
         exclude_fields=['remark', 'logs'],
         unique_fields=['id'],
         export_order=14.5,
@@ -273,7 +382,10 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
     ),
     'AnsibleSchedule': ModelInfo(
         app_label='task_management', model_name='AnsibleSchedule', table_name='task_ansible_schedule',
-        fk_fields={'task': ('AnsibleTask', 'id')},
+        fk_fields={
+            'task': ('AnsibleTask', 'id'),
+            'creator': ('User', 'id'),
+        },
         exclude_fields=['remark'],
         unique_fields=['id'],
         export_order=19.7,
@@ -309,6 +421,94 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
         unique_fields=['id'],
         export_order=23,
     ),
+    'KnowledgeBase': ModelInfo(
+        app_label='ai_engine', model_name='KnowledgeBase', table_name='ai_knowledge_base',
+        exclude_fields=['remark'],
+        unique_fields=['name'],
+        export_order=23.5,
+    ),
+    'AIProvider': ModelInfo(
+        app_label='ai_engine', model_name='AIProvider', table_name='ai_provider',
+        exclude_fields=['remark'],
+        encrypted_fields=['api_key'],
+        unique_fields=['name'],
+        export_order=24,
+    ),
+    'AIModel': ModelInfo(
+        app_label='ai_engine', model_name='AIModel', table_name='ai_model',
+        fk_fields={'provider': ('AIProvider', 'id')},
+        exclude_fields=['remark'],
+        unique_fields=['provider', 'name'],
+        export_order=25,
+    ),
+    'AIConfig': ModelInfo(
+        app_label='ai_engine', model_name='AIConfig', table_name='ai_config',
+        fk_fields={
+            'default_llm': ('AIModel', 'id'),
+            'default_embedding': ('AIModel', 'id'),
+            'default_vision': ('AIModel', 'id'),
+            'default_rerank': ('AIModel', 'id'),
+            'default_kb': ('KnowledgeBase', 'id'),
+        },
+        exclude_fields=['remark'],
+        unique_fields=['name'],
+        export_order=26,
+    ),
+    'AIPromptTemplate': ModelInfo(
+        app_label='ai_engine', model_name='AIPromptTemplate', table_name='ai_prompt_template',
+        exclude_fields=['remark'],
+        unique_fields=['code'],
+        export_order=27,
+    ),
+    'HelmRepository': ModelInfo(
+        app_label='k8s_management', model_name='HelmRepository', table_name='helm_repositories',
+        encrypted_fields=['password'],
+        unique_fields=['name'],
+        export_order=10.2,
+    ),
+    'K8sApplication': ModelInfo(
+        app_label='k8s_management', model_name='K8sApplication', table_name='k8s_applications',
+        fk_fields={'cluster': ('K8sCluster', 'id')},
+        exclude_fields=['error_message', 'diff_details'],
+        unique_fields=['name'],
+        export_order=10.5,
+    ),
+    'HostBaseline': ModelInfo(
+        app_label='host_management', model_name='HostBaseline', table_name='cmdb_host_baseline',
+        fk_fields={'resource_pool': ('ResourcePool', 'id')},
+        export_order=18.5,
+    ),
+    'ComplianceFramework': ModelInfo(
+        app_label='host_management', model_name='ComplianceFramework', table_name='cmdb_compliance_framework',
+        unique_fields=['code'],
+        export_order=19,
+    ),
+    'ComplianceClause': ModelInfo(
+        app_label='host_management', model_name='ComplianceClause', table_name='cmdb_compliance_clause',
+        fk_fields={'framework': ('ComplianceFramework', 'id'), 'parent': ('ComplianceClause', 'id')},
+        export_order=20,
+    ),
+    'ComplianceBaselineMapping': ModelInfo(
+        app_label='host_management', model_name='ComplianceBaselineMapping', table_name='cmdb_compliance_baseline_mapping',
+        fk_fields={'clause': ('ComplianceClause', 'id'), 'baseline': ('HostBaseline', 'id')},
+        export_order=21,
+    ),
+    'SelfHealingPolicy': ModelInfo(
+        app_label='sre_management', model_name='SelfHealingPolicy', table_name='sre_healing_policy',
+        fk_fields={'pipeline': ('Pipeline', 'id')},
+        unique_fields=['name'],
+        export_order=23.4,
+    ),
+    'KnowledgeDocument': ModelInfo(
+        app_label='ai_engine', model_name='KnowledgeDocument', table_name='ai_knowledge_document',
+        fk_fields={'kb': ('KnowledgeBase', 'id')},
+        export_order=23.6,
+    ),
+    'KnowledgeChunk': ModelInfo(
+        app_label='ai_engine', model_name='KnowledgeChunk', table_name='ai_knowledge_chunk',
+        fk_fields={'document': ('KnowledgeDocument', 'id')},
+        export_order=23.7,
+    ),
 }
 
 
@@ -319,26 +519,57 @@ MODEL_INFOS: Dict[str, ModelInfo] = {
 class BackupExporter:
     VERSION = '1.0'
 
-    def __init__(self):
+    def __init__(self, passphrase: Optional[str] = None):
+        self.passphrase = passphrase
         self.data: Dict[str, List[Dict]] = {}
         self.metadata: Dict[str, Any] = {
             'version': self.VERSION,
             'created_at': datetime.now().isoformat(),
             'encrypted_fields': list(get_encrypted_field_names()),
+            'has_encrypted_data': False,
         }
+        if self.passphrase:
+            salt_bytes = os.urandom(16)
+            self.metadata['encryption_salt'] = base64.b64encode(salt_bytes).decode('utf-8')
+            self.metadata['has_encrypted_data'] = True
+            self.key = derive_key(self.passphrase, salt_bytes)
+        else:
+            from django.conf import settings
+            salt_bytes = os.urandom(16)
+            self.metadata['encryption_salt'] = base64.b64encode(salt_bytes).decode('utf-8')
+            self.metadata['has_encrypted_data'] = True
+            self.metadata['encrypted_by_secret_key'] = True
+            self.key = derive_key(settings.SECRET_KEY, salt_bytes)
 
-    def export(self) -> Dict[str, Any]:
-        """执行全量导出"""
+    def export(self, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
+        """执行导出
+        :param selected_modules: 指定要导出的模块列表（key），None 表示导出全部
+        """
         from django.apps import apps
 
-        sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
+        # 1. 确定要导出的模型范围
+        target_model_names = []
+        if selected_modules:
+            for mod_key in selected_modules:
+                if mod_key in MODULE_DEFINITIONS:
+                    target_model_names.extend(MODULE_DEFINITIONS[mod_key]['models'])
+        else:
+            target_model_names = list(MODEL_INFOS.keys())
 
+        # 2. 过滤并按顺序排序
+        sorted_models = []
+        for name in target_model_names:
+            if name in MODEL_INFOS:
+                sorted_models.append((name, MODEL_INFOS[name]))
+        sorted_models.sort(key=lambda x: x[1].export_order)
+
+        # 3. 执行导出
         for model_name, model_info in sorted_models:
             Model = apps.get_model(model_info.app_label, model_name)
             records = []
 
             # 基础排除字段
-            base_excludes = {'create_time', 'update_time'} | set(model_info.exclude_fields) | set(model_info.encrypted_fields)
+            base_excludes = {'create_time', 'update_time'} | set(model_info.exclude_fields)
 
             for obj in Model.objects.all():
                 record = {'id': obj.id}
@@ -347,6 +578,20 @@ class BackupExporter:
                 for field in obj._meta.fields:
                     if field.name in base_excludes or field.name == 'id':
                         continue
+
+                    # 如果是敏感/加密字段，进行加密
+                    is_field_encrypted = field.name in model_info.encrypted_fields
+                    if is_field_encrypted and model_name == 'ConfigItem' and field.name == 'value':
+                        is_field_encrypted = obj.is_encrypted
+
+                    if is_field_encrypted and self.key:
+                        plaintext = get_decrypted_field_value(obj, field.name)
+                        if plaintext is not None:
+                            record[field.name] = encrypt_data(plaintext, self.key)
+                        else:
+                            record[field.name] = None
+                        continue
+
 
                     value = getattr(obj, field.name)
                     # 处理外键
@@ -388,13 +633,32 @@ class BackupExporter:
 # 备份恢复导入器 (三阶段)
 # ============================================================
 
+class DecryptionError(Exception):
+    pass
+
+
 class BackupImporter:
-    def __init__(self, backup_data: Dict[str, Any]):
+    def __init__(self, backup_data: Dict[str, Any], passphrase: Optional[str] = None):
         self.data = backup_data.get('data', {})
         self.metadata = backup_data.get('metadata', {})
+        self.passphrase = passphrase
         self.id_map: Dict[str, Dict[int, int]] = {}
         self.errors: List[str] = []
         self.imported_counts: Dict[str, int] = {}
+        self.key = None
+
+    def _derive_key_if_needed(self):
+        # Derive key if passphrase and encrypted data exist
+        has_encrypted_data = self.metadata.get('has_encrypted_data', False)
+        salt_b64 = self.metadata.get('encryption_salt', '')
+        if has_encrypted_data and salt_b64:
+            if self.passphrase:
+                salt_bytes = base64.b64decode(salt_b64.encode('utf-8'))
+                self.key = derive_key(self.passphrase, salt_bytes)
+            elif self.metadata.get('encrypted_by_secret_key', False):
+                from django.conf import settings
+                salt_bytes = base64.b64decode(salt_b64.encode('utf-8'))
+                self.key = derive_key(settings.SECRET_KEY, salt_bytes)
 
     def _log(self, msg: str):
         logger.info(f"[Restore] {msg}")
@@ -403,16 +667,34 @@ class BackupImporter:
         self.errors.append(msg)
         logger.error(f"[Restore] 错误: {msg}")
 
-    def import_all(self) -> Dict[str, Any]:
-        """执行全量恢复（三阶段）"""
+    def import_all(self, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
+        """执行恢复导入
+        :param selected_modules: 指定要恢复的模块列表（key），None 表示恢复全部
+        """
+        self._derive_key_if_needed()
         from django.apps import apps
 
-        sorted_models = sorted(MODEL_INFOS.items(), key=lambda x: x[1].export_order)
+        # 1. 确定要恢复的模型范围
+        target_model_names = []
+        if selected_modules:
+            for mod_key in selected_modules:
+                if mod_key in MODULE_DEFINITIONS:
+                    target_model_names.extend(MODULE_DEFINITIONS[mod_key]['models'])
+        else:
+            # 如果不指定，则恢复备份文件中包含的所有模型
+            target_model_names = list(self.data.keys())
+
+        # 2. 过滤并按顺序排序
+        sorted_models = []
+        for name in target_model_names:
+            if name in MODEL_INFOS:
+                sorted_models.append((name, MODEL_INFOS[name]))
+        sorted_models.sort(key=lambda x: x[1].export_order)
 
         try:
             with transaction.atomic():
-                # Phase 1: 创建基础实例（忽略所有 FK 和 M2M）
-                self._log("=== 阶段 1: 创建基础实例 ===")
+                # Phase 1: 创建基础实例
+                self._log(f"=== 阶段 1: 创建基础实例 (模块: {selected_modules or 'ALL'}) ===")
                 for model_name, model_info in sorted_models:
                     records = self.data.get(model_name, [])
                     if records:
@@ -431,6 +713,21 @@ class BackupImporter:
                     records = self.data.get(model_name, [])
                     if records:
                         self._import_phase_3(model_name, model_info, records)
+
+            # Celery Beat 定时任务自动同步机制
+            if 'AnsibleSchedule' in self.id_map:
+                try:
+                    from apps.task_management.tasks import sync_schedule_to_beat
+                    from apps.task_management.models import AnsibleSchedule
+                    for old_id, new_id in self.id_map['AnsibleSchedule'].items():
+                        try:
+                            schedule = AnsibleSchedule.objects.get(id=new_id)
+                            sync_schedule_to_beat(schedule)
+                            self._log(f"Synced schedule {schedule.id} to Celery Beat")
+                        except Exception as ex:
+                            self._error(f"Failed to sync schedule {new_id} to Celery Beat: {ex}")
+                except Exception as ex:
+                    self._error(f"Failed to import or sync schedules to beat: {ex}")
 
         except Exception as e:
             self._error(f"恢复过程中发生严重错误: {str(e)}")
@@ -476,15 +773,39 @@ class BackupImporter:
 
                     if field_name in model_info.exclude_fields:
                         continue
-                    if field_name in model_info.encrypted_fields:
+
+                    is_field_encrypted = field_name in model_info.encrypted_fields
+                    if is_field_encrypted and model_name == 'ConfigItem' and field_name == 'value':
+                        is_field_encrypted = record.get('is_encrypted', False)
+
+                    if is_field_encrypted:
+                        if self.key and value is not None:
+                            try:
+                                decrypted_val = decrypt_data(value, self.key)
+                                
+                                # ConfigItem 特殊处理
+                                if model_name == 'ConfigItem' and field_name == 'value':
+                                    if record.get('is_encrypted'):
+                                        from utils.encryption import encrypt_string
+                                        clean_data[field_name] = encrypt_string(decrypted_val)
+                                    else:
+                                        clean_data[field_name] = decrypted_val
+                                else:
+                                    clean_data[field_name] = decrypted_val
+                            except Exception as e:
+                                if self.metadata.get('encrypted_by_secret_key', False):
+                                    self._log(f"警告: 使用本地 SECRET_KEY 解密敏感字段 {model_name}.{field_name} 失败，可能是跨环境还原。跳过该字段还原。")
+                                else:
+                                    raise DecryptionError(f"解密敏感字段 {model_name}.{field_name} 失败，密码可能错误: {str(e)}")
                         continue
+
                     if field_name == 'id':
                         continue
                     if model_name == 'User' and field_name == 'password':
                         continue
                     clean_data[field_name] = value
 
-                # 查找或创建
+                # 查找已存在的记录
                 obj = None
                 if model_info.unique_fields:
                     lookup = {}
@@ -494,11 +815,49 @@ class BackupImporter:
                     if lookup:
                         obj = Model.objects.filter(**lookup).first()
 
+                # 仅在需要创建新记录时，动态填充缺失的且不可为空（NOT NULL）且没有定义默认值的字段，防止在严格数据库（如 Postgres/MySQL）中报错
+                if not obj:
+                    from django.db import models as django_models
+                    for field in Model._meta.fields:
+                        if field.name == 'id' or field.primary_key:
+                            continue
+                        if field.name in model_info.m2m_fields:
+                            continue
+                        if field.is_relation and field.many_to_one:
+                            continue
+                        if getattr(field, 'auto_now', False) or getattr(field, 'auto_now_add', False):
+                            continue
+
+                        if not field.null and field.default == django_models.fields.NOT_PROVIDED:
+                            if field.name not in clean_data:
+                                if isinstance(field, (django_models.IntegerField, django_models.FloatField, django_models.DecimalField, django_models.AutoField)):
+                                    clean_data[field.name] = 0
+                                elif isinstance(field, django_models.BooleanField):
+                                    clean_data[field.name] = False
+                                elif isinstance(field, (django_models.DateTimeField, django_models.DateField, django_models.TimeField)):
+                                    from django.utils import timezone
+                                    if isinstance(field, django_models.DateTimeField):
+                                        clean_data[field.name] = timezone.now()
+                                    elif isinstance(field, django_models.DateField):
+                                        clean_data[field.name] = timezone.now().date()
+                                    else:
+                                        clean_data[field.name] = timezone.now().time()
+                                elif isinstance(field, (django_models.CharField, django_models.TextField)):
+                                    clean_data[field.name] = ""
+                                elif isinstance(field, django_models.JSONField):
+                                    clean_data[field.name] = {}
+                                else:
+                                    clean_data[field.name] = ""
+
                 if obj:
                     # 更新
                     for k, v in clean_data.items():
                         setattr(obj, k, v)
-                    obj.save()
+                    if clean_data:
+                        fields_to_update = list(clean_data.keys())
+                        if hasattr(obj, 'update_time'):
+                            fields_to_update.append('update_time')
+                        obj.save(update_fields=fields_to_update)
                     self._log(f"  更新: {model_name} id={obj.id} (旧id={old_id})")
                 else:
                     # 创建（可能因 UNIQUE 约束失败，改用 get_or_create）
@@ -518,6 +877,8 @@ class BackupImporter:
                 self.id_map.setdefault(model_name, {})[old_id] = obj.id
                 self.imported_counts[model_name] = self.imported_counts.get(model_name, 0) + 1
 
+            except DecryptionError:
+                raise
             except Exception as e:
                 self._error(f"  {model_name}[{old_id}] Phase1 失败: {str(e)}")
 
@@ -590,10 +951,10 @@ class BackupImporter:
             except Exception as e:
                 self._error(f"  {model_name}[{old_id}] Phase3 失败: {str(e)}")
 
-    def import_from_file(self, file_path: str) -> Dict[str, Any]:
+    def import_from_file(self, file_path: str, selected_modules: Optional[List[str]] = None) -> Dict[str, Any]:
         """从 gzip 压缩的 JSON 文件恢复"""
         with gzip.open(file_path, 'rt', encoding='utf-8') as f:
             backup_data = json.load(f)
         self.data = backup_data.get('data', {})
         self.metadata = backup_data.get('metadata', {})
-        return self.import_all()
+        return self.import_all(selected_modules=selected_modules)

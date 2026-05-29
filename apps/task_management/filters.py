@@ -3,10 +3,11 @@ from apps.task_management.models import AnsibleExecution, AnsibleTask, AnsibleSc
 
 class AnsibleTaskFilter(django_filters.FilterSet):
     name = django_filters.CharFilter(lookup_expr='icontains')
+    create_type = django_filters.CharFilter(lookup_expr='exact')
 
     class Meta:
         model = AnsibleTask
-        fields = ['task_type', 'resource_pool']
+        fields = ['task_type', 'resource_pool', 'create_type']
 
 class AnsibleExecutionFilter(django_filters.FilterSet):
     task_name = django_filters.CharFilter(field_name='task__name', lookup_expr='icontains')

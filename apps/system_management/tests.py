@@ -27,6 +27,16 @@ class GetNotificationConfigTest(TestCase):
 
     @patch('apps.system_management.notifiers.ConfigCache')
     @patch('os.getenv')
+    def test_fallback_to_env_var_when_db_empty_string(self, mock_getenv, mock_cache):
+        """ConfigCache 为空字符串时回退到环境变量"""
+        mock_cache.get.return_value = ""
+        mock_getenv.return_value = 'https://env.feishu.cn/webhook'
+        from apps.system_management.notifiers import get_notification_config
+        result = get_notification_config('feishu.webhook_url')
+        self.assertEqual(result, 'https://env.feishu.cn/webhook')
+
+    @patch('apps.system_management.notifiers.ConfigCache')
+    @patch('os.getenv')
     def test_return_default_when_both_empty(self, mock_getenv, mock_cache):
         """ConfigCache 和环境变量都为空时返回 default"""
         mock_cache.get.return_value = None
@@ -74,16 +84,23 @@ class IsNotificationEnabledTest(TestCase):
         self.assertFalse(self._call('pipeline_result', {'level': 'none'}))
 
     def test_level_error_only_allows_failures(self):
-        """level=error_only 只允许 pipeline_result / approval_result"""
+        """level=error_only 只允许 pipeline_result / approval_result / alert_firing / alert_resolved"""
         self.assertFalse(self._call('pipeline_start', {'level': 'error_only'}))
         self.assertFalse(self._call('approval_requested', {'level': 'error_only'}))
         self.assertTrue(self._call('pipeline_result', {'level': 'error_only'}))
         self.assertTrue(self._call('approval_result', {'level': 'error_only'}))
+        self.assertTrue(self._call('alert_firing', {'level': 'error_only'}))
+        self.assertTrue(self._call('alert_resolved', {'level': 'error_only'}))
 
     def test_notify_on_whitelist(self):
         """notify_on 白名单过滤"""
         self.assertTrue(self._call('pipeline_start', {'notify_on': ['pipeline_start']}))
         self.assertFalse(self._call('pipeline_result', {'notify_on': ['pipeline_start']}))
+
+    def test_notify_on_empty_list_disables_all(self):
+        """当 notify_on 为空列表时，禁用所有类型通知"""
+        self.assertFalse(self._call('pipeline_start', {'notify_on': []}))
+        self.assertFalse(self._call('pipeline_result', {'notify_on': []}))
 
     def test_combined_rules(self):
         """组合：总开关开 + error_only + 白名单"""
@@ -222,3 +239,37 @@ class NotificationConfigSubscriberTest(TestCase):
         self.assertTrue(subscriber.should_handle('notification'))
         self.assertFalse(subscriber.should_handle('redis'))
         self.assertFalse(subscriber.should_handle('logging'))
+
+
+class NotifyAlertTest(TestCase):
+    """测试告警通知函数"""
+
+    def _make_alert(self, name='CPU Usage Alert', severity='warning'):
+        alert = MagicMock()
+        alert.id = 456
+        alert.alert_name = name
+        alert.severity = severity
+        alert.labels = {'instance': 'host-1', 'job': 'node-exporter'}
+        alert.annotations = {'description': 'CPU usage is above 80%'}
+        return alert
+
+    @patch('apps.system_management.notifiers._send_notification')
+    def test_notify_alert_firing(self, mock_send):
+        from apps.system_management.notifiers import notify_alert_firing
+        alert = self._make_alert()
+        notify_alert_firing(alert)
+        mock_send.assert_called_once()
+        args, kwargs = mock_send.call_args
+        self.assertEqual(args[0], 'alert_firing')
+        self.assertIn('告警触发', args[1])
+        self.assertIn('CPU Usage Alert', args[2])
+
+    @patch('apps.system_management.notifiers._send_notification')
+    def test_notify_alert_resolved(self, mock_send):
+        from apps.system_management.notifiers import notify_alert_resolved
+        alert = self._make_alert()
+        notify_alert_resolved(alert)
+        mock_send.assert_called_once()
+        args, kwargs = mock_send.call_args
+        self.assertEqual(args[0], 'alert_resolved')
+        self.assertIn('告警恢复', args[1])

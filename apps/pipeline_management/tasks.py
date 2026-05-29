@@ -144,29 +144,37 @@ def execute_pipeline_node(self, node_run_id):
     import shutil
     
     # 统一工作区路径：基于 PipelineRun 的 ID，所有容器和脚本挂载都在此进行
-    # 重试时复用父 run 的工作目录，避免重新 clone 代码
+    # 并行隔离：为每个节点分配独立的子目录
     parent_run_id = node_run.run.parent_run_id
-    if parent_run_id:
-        workspace_dir = f"/tmp/ansflow_workspaces/run_{parent_run_id}"
-    else:
-        workspace_dir = f"/tmp/ansflow_workspaces/run_{run_id}"
-    os.makedirs(workspace_dir, exist_ok=True)
-    source_dir = os.path.join(workspace_dir, 'source')
+    base_workspace = f"/tmp/ansflow_workspaces/run_{parent_run_id or run_id}"
+    node_workspace = os.path.join(base_workspace, f"node_{node_run.node_id}")
+    os.makedirs(node_workspace, exist_ok=True)
+    
+    # 源代码目录（共享或按需克隆）
+    source_dir = os.path.join(base_workspace, 'source')
+    
+    # 准备节点配置数据
+    pipeline_graph = node_run.run.pipeline.graph_data
+    if isinstance(pipeline_graph, str):
+        import json
+        pipeline_graph = json.loads(pipeline_graph)
+    nodes_config = pipeline_graph.get('nodes', [])
+    current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
+    
+    # --- 核心：变量解析与注入 ---
+    from .utils import resolve_pipeline_vars
+    raw_node_data = current_node_config.get('data', {})
+    node_data = resolve_pipeline_vars(raw_node_data, run_id)
     
     try:
         # ---- 根据 node_type 进行不同业务分流 ----
         node_type = node_run.node_type
         
-        if node_type == 'input':
+        if node_type in ('input', 'event'):
             node_run.logs = "起点触发完成。"
             success = True
             
         elif node_type == 'git_clone':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             repo_url = node_data.get('git_repo')
             branch = node_data.get('git_branch', 'main')
             
@@ -186,16 +194,32 @@ def execute_pipeline_node(self, node_run_id):
             success = run_command_with_streaming_logs(cmd, node_run)
             if success:
                 finish_msg = "\n✨ 代码拉取成功！已放入统一工作区。"
+                
+                # --- 核心：检测并解析 .ansflow-ci.yml ---
+                ci_yaml_path = os.path.join(source_dir, '.ansflow-ci.yml')
+                if os.path.exists(ci_yaml_path):
+                    try:
+                        with open(ci_yaml_path, 'r') as f:
+                            yaml_content = f.read()
+                        
+                        from .yaml_parser import YAMLToGraphParser
+                        parser = YAMLToGraphParser(yaml_content)
+                        new_graph_data = parser.parse()
+                        
+                        # 更新运行快照
+                        node_run.run.graph_data = new_graph_data
+                        node_run.run.yaml_definition = yaml_content
+                        node_run.run.save(update_fields=['graph_data', 'yaml_definition'])
+                        
+                        finish_msg += f"\n[GitOps] 检测到 .ansflow-ci.yml，已成功同步声明式流水线定义。"
+                    except Exception as ye:
+                        finish_msg += f"\n[GitOps] 警告: 解析 .ansflow-ci.yml 失败: {str(ye)}"
+                
                 node_run.logs += finish_msg
                 node_run.save(update_fields=['logs'])
                 push_node_log_to_ws(node_run.run_id, node_run.node_id, finish_msg)
                 
         elif node_type == 'docker_build':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             ci_env_id = node_data.get('ci_env_id')
             build_script = node_data.get('build_script')
             
@@ -240,11 +264,6 @@ def execute_pipeline_node(self, node_run_id):
                 push_node_log_to_ws(node_run.run_id, node_run.node_id, fail_msg)
 
         elif node_type == 'kaniko_build':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             registry_id = node_data.get('registry_id')
             image_name = node_data.get('image_name')
             image_tag = node_data.get('image_tag', f"v{run_id}")
@@ -273,22 +292,16 @@ def execute_pipeline_node(self, node_run_id):
                 auth_url = registry_url_clean
                 push_host = registry_url_clean
 
-            # 格式化镜像名称与 Tag，防止出现双冒号或非法标签
-            # 如果 image_name 中已经包含了标签 (例如 my-app:v1)，则优先处理
+            # 格式化镜像名称与 Tag
             if ":" in image_name:
                 parts = image_name.split(":", 1)
                 real_name = parts[0]
-                # 如果在界面上也填了 tag，或者有默认 tag，需要进行抉择
-                # 这里我们采取策略：如果 image_name 带了 tag，且 tag 字段也是有效的，则可能发生了误填，我们尝试修复
                 if image_tag and image_tag != f"v{run_id}":
-                    # 此时 image_name="a:b", image_tag="c" -> 使用 image_tag 作为最终版本
                     image_name = real_name
                 else:
-                    # 如果 tag 字段是默认的，就用 name 里的 tag
                     image_name = real_name
                     image_tag = parts[1]
 
-            # 清理可能存在的首尾冒号
             image_name = image_name.strip(":")
             image_tag = image_tag.strip(":")
 
@@ -296,14 +309,15 @@ def execute_pipeline_node(self, node_run_id):
                 full_image = f"{push_host}/{registry.namespace}/{image_name}:{image_tag}"
             else:
                 full_image = f"{push_host}/{image_name}:{image_tag}"
-                
+            
+            init_msg = f"🚀 正在启动 Kaniko 容器进行镜像构建并推送...\n> 目标镜像: {full_image}\n> Dockerfile: {dockerfile_path}\n"
             node_run.logs = (node_run.logs or "") + init_msg
             node_run.save(update_fields=['logs'])
             push_node_log_to_ws(node_run.run_id, node_run.node_id, init_msg)
             
             auth_string = f"{registry.username}:{registry.password}"
             auth_b64 = base64.b64encode(auth_string.encode('utf-8')).decode('utf-8')
-            kaniko_dir = os.path.join(workspace_dir, '.kaniko')
+            kaniko_dir = os.path.join(node_workspace, '.kaniko') # 使用隔离目录
             os.makedirs(kaniko_dir, exist_ok=True)
             config_json_path = os.path.join(kaniko_dir, 'config.json')
             
@@ -380,12 +394,6 @@ def execute_pipeline_node(self, node_run_id):
                 success = False
             
         elif node_type == 'ansible':
-            # 获取配置
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-            
             ansible_task_id = node_data.get('ansible_task_id')
             if not ansible_task_id:
                 raise ValueError("Ansible 节点未配置关联的任务 ID")
@@ -431,63 +439,90 @@ def execute_pipeline_node(self, node_run_id):
                 node_run.logs += "\n".join([f"[{l.host}] {l.output}" for l in logs])
                 success = (execution.status == 'success')
                 
+            # 收集结果并回填到 output_data
+            execution.refresh_from_db()
+            logs_qs = TaskLog.objects.filter(execution=execution).exclude(host__in=['SYSTEM', 'SUMMARY']).order_by('create_time')
+            stdout_val = "\n".join([l.output for l in logs_qs])
+            node_run.output_data = {
+                'ansible_execution_id': execution.id,
+                'stdout': stdout_val,
+                'output': stdout_val,
+                'rc': 0 if success else 1,
+                'status': 'success' if success else 'failed'
+            }
+            node_run.save(update_fields=['output_data'])
+                
         elif node_type == 'k8s_deploy':
-            pipeline_graph = node_run.run.pipeline.graph_data
-            nodes_config = pipeline_graph.get('nodes', [])
-            current_node_config = next((n for n in nodes_config if n.get('id') == node_run.node_id), {})
-            node_data = current_node_config.get('data', {})
-
             cluster_id = node_data.get('k8s_cluster_id')
             release_name = node_data.get('k8s_release_name')
             namespace = node_data.get('k8s_namespace', 'default')
-            chart_name = node_data.get('k8s_chart_name') # 新增 Chart 选择
+            chart_name = node_data.get('k8s_chart_name')
+            repo_id = node_data.get('k8s_repo_id') # 新增仓库 ID
 
             if not all([cluster_id, release_name]):
                 raise ValueError("K8s 节点未配置完整的集群或 Release 名称")
 
-            from apps.k8s_management.models import K8sCluster
+            from apps.k8s_management.models import K8sCluster, HelmRepository
             from apps.k8s_management.utils.helm_runner import run_helm_upgrade
-            
+
             cluster = K8sCluster.objects.get(id=cluster_id)
             node_run.logs = f"集群: {cluster.name}, 正在执行 Helm Upgrade: {release_name} (Namespace: {namespace})...\n"
+
+            # 处理远程仓库信息
+            repo_url = None
+            repo_auth = None
+            if repo_id:
+                try:
+                    repo_obj = HelmRepository.objects.get(id=repo_id)
+                    repo_url = repo_obj.url
+                    if repo_obj.username:
+                        repo_auth = {'username': repo_obj.username, 'password': repo_obj.password}
+                    node_run.logs += f"使用远程仓库: {repo_obj.name} ({repo_url})\n"
+                except HelmRepository.DoesNotExist:
+                    node_run.logs += f"警告: 指定的 Helm 仓库 (ID:{repo_id}) 不存在，尝试回退到本地/自动探测模式。\n"
+
             node_run.save()
-            
-            # 尝试从上游节点获取动态生成的镜像信息
-            upstream_nodes = PipelineNodeRun.objects.filter(run_id=run_id, status='success').exclude(output_data={})
-            dynamic_repository = None
-            dynamic_tag = None
-            for un in upstream_nodes:
-                if un.output_data and 'tag' in un.output_data:
-                    dynamic_tag = un.output_data.get('tag')
-                    dynamic_repository = un.output_data.get('repository')
-                    node_run.logs += f"已扫描到上游镜像制品：{dynamic_repository}:{dynamic_tag}\n"
-                    break
-                    
+
+            # 变量注入与智能扫描 (保持原有逻辑)
+            dynamic_tag = node_data.get('image_tag')
+            dynamic_repository = node_data.get('image_repository')
+
+            if not dynamic_tag:
+                upstream_nodes = PipelineNodeRun.objects.filter(run_id=run_id, status='success').exclude(output_data={})
+                for un in upstream_nodes:
+                    if un.output_data and 'tag' in un.output_data:
+                        dynamic_tag = un.output_data.get('tag')
+                        dynamic_repository = un.output_data.get('repository')
+                        node_run.logs += f"已通过智能扫描获取到上游镜像：{dynamic_repository}:{dynamic_tag}\n"
+                        break
+
             import time
             import yaml
-            extra_values_dict = {
-                "pipeline_redeploy_ts": int(time.time())
-            }
-            
+            extra_values_dict = { "pipeline_redeploy_ts": int(time.time()) }
             if dynamic_tag:
-                extra_values_dict['image'] = {
-                    'tag': dynamic_tag
-                }
-                if dynamic_repository:
-                    extra_values_dict['image']['repository'] = dynamic_repository
-            
-            extra_values = yaml.dump(extra_values_dict)
-            
+                extra_values_dict['image'] = { 'tag': dynamic_tag }
+                if dynamic_repository: extra_values_dict['image']['repository'] = dynamic_repository
+
+            # 合并用户自定义 values
+            custom_values = node_data.get('k8s_values', '')
+            if custom_values:
+                node_run.logs += f"\n[审计] 注入自定义 Values:\n{custom_values}\n"
+
+            full_values = yaml.dump(extra_values_dict) + "\n" + custom_values
+
             ok, output = run_helm_upgrade(
                 cluster, 
                 release_name, 
                 namespace=namespace, 
                 chart=chart_name, 
-                values=extra_values,
-                force=node_data.get('k8s_force', False)
+                values=full_values,
+                force=node_data.get('k8s_force', False),
+                repo_url=repo_url,
+                repo_auth=repo_auth
             )
             node_run.logs += output
             success = ok
+
             
         elif node_type == 'http_webhook':
             pipeline_graph = node_run.run.pipeline.graph_data
@@ -518,7 +553,100 @@ def execute_pipeline_node(self, node_run_id):
             except Exception as e:
                 node_run.logs += f"请求触发异常: {str(e)}"
                 success = False
+        
+        elif node_type == 'host_deploy':
+            pool_id = node_data.get('resource_pool_id')
+            artifact_rel_path = node_data.get('artifact_path', '') # 相对 source_dir 的路径
+            deploy_path = node_data.get('deploy_path', '/tmp/ansflow_deploy')
+            post_script = node_data.get('post_deploy_script', '')
+
+            if not pool_id:
+                raise ValueError("Host Deploy 节点未配置目标资源池 (resource_pool_id)")
             
+            from apps.host_management.models import ResourcePool
+            from apps.task_management.models import AnsibleTask, AnsibleExecution
+            from apps.task_management.tasks import run_ansible_task
+            import yaml
+            
+            pool = ResourcePool.objects.get(id=pool_id)
+            node_run.logs = f"正在准备分发产物至资源池: {pool.name} (目标路径: {deploy_path})...\n"
+            
+            # 构造绝对路径的产物位置
+            local_artifact_full = os.path.join(source_dir, artifact_rel_path)
+            if not os.path.exists(local_artifact_full):
+                raise ValueError(f"找不到构建产物文件: {local_artifact_full}")
+
+            # 动态构造 Playbook
+            deploy_playbook = [
+                {
+                    "hosts": "all",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": "确保目标目录存在",
+                            "file": {"path": deploy_path, "state": "directory", "mode": "0755"}
+                        },
+                        {
+                            "name": "分发产物文件/目录",
+                            "copy": {"src": local_artifact_full, "dest": deploy_path + "/"}
+                        }
+                    ]
+                }
+            ]
+            
+            if post_script:
+                deploy_playbook[0]["tasks"].append({
+                    "name": "执行部署后脚本",
+                    "shell": post_script,
+                    "args": {"chdir": deploy_path}
+                })
+
+            # 创建一个临时任务定义
+            temp_task = AnsibleTask.objects.create(
+                name=f"PipelineDeploy_{run_id}_{node_run.node_id}",
+                task_type='playbook',
+                resource_pool=pool,
+                content=yaml.dump(deploy_playbook),
+                creator=node_run.run.trigger_user
+            )
+            
+            # 创建执行记录
+            execution = AnsibleExecution.objects.create(
+                task=temp_task,
+                status='pending',
+                executor=node_run.run.trigger_user,
+                from_pipeline=True
+            )
+            
+            node_run.output_data = {'ansible_execution_id': execution.id, 'temp_task_id': temp_task.id}
+            node_run.save(update_fields=['output_data'])
+
+            # 执行 Ansible
+            result = run_ansible_task(execution.id)
+            
+            if isinstance(result, dict):
+                node_run.logs += result.get('logs', '')
+                success = (result.get('status') == 'success')
+            else:
+                success = False
+                
+            # 收集结果并回填到 output_data
+            execution.refresh_from_db()
+            logs_qs = TaskLog.objects.filter(execution=execution).exclude(host__in=['SYSTEM', 'SUMMARY']).order_by('create_time')
+            stdout_val = "\n".join([l.output for l in logs_qs])
+            node_run.output_data = {
+                'ansible_execution_id': execution.id,
+                'temp_task_id': temp_task.id,
+                'stdout': stdout_val,
+                'output': stdout_val,
+                'rc': 0 if success else 1,
+                'status': 'success' if success else 'failed'
+            }
+            node_run.save(update_fields=['output_data'])
+            
+            # 清理临时任务定义
+            temp_task.delete()
+
         else:
             node_run.logs = f"未知类型的节点: {node_type}，直接跳过或者当做正常处理"
             success = True
@@ -612,8 +740,14 @@ def advance_pipeline_engine(self, run_id):
         if run.status in ['success', 'failed', 'cancelled']:
             return 
         
-        pipeline = run.pipeline
-        graph_data = pipeline.graph_data or {}
+        # 优先使用 Run 级别的图数据（支持 YAML 动态解析后的快照）
+        graph_data = run.graph_data
+        if not graph_data:
+            graph_data = run.pipeline.graph_data or {}
+            # 初始化快照
+            run.graph_data = graph_data
+            run.save(update_fields=['graph_data'])
+
         if not isinstance(graph_data, dict):
             import json
             if isinstance(graph_data, str):
@@ -684,13 +818,10 @@ def advance_pipeline_engine(self, run_id):
         # ... (后续逻辑不变，但放入 try 中)
         # 寻找就绪节点
         ready_nodes = []
-        has_running_or_pending = False
+        has_active = any(nr.status in ('running', 'waiting') for nr in node_runs)
 
         for nr in node_runs:
-            if nr.status == 'running':
-                has_running_or_pending = True
-            elif nr.status == 'pending':
-                has_running_or_pending = True
+            if nr.status == 'pending':
                 incoming_edges = [e for e in edges_config if e.get('target') == nr.node_id]
                 
                 if not incoming_edges:
@@ -710,14 +841,39 @@ def advance_pipeline_engine(self, run_id):
         if ready_nodes:
             pipeline_timeout = run.pipeline.timeout or 3600
             for nr in ready_nodes:
-                nr.status = 'running'
-                nr.save(update_fields=['status'])
-                execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
+                if nr.node_type == 'approval':
+                    # 审批节点：置为等待状态，暂停执行，等待人工通过 API 恢复
+                    nr.status = 'waiting'
+                    nr.save(update_fields=['status'])
+                    logger.info(f"⏳ 节点 {nr.node_id} (Approval) 进入等待审批状态")
+                else:
+                    nr.status = 'running'
+                    nr.save(update_fields=['status'])
+                    execute_pipeline_node.apply_async(args=[nr.id], soft_time_limit=pipeline_timeout)
             push_pipeline_status_to_ws(run)
                 
-        elif not has_running_or_pending:
-            # 全部成功结束
-            run.status = 'success'
+        elif not has_active:
+            # Determine final status of the pipeline run
+            has_failed = any(nr.status == 'failed' for nr in node_runs)
+            has_cancelled = any(nr.status == 'cancelled' for nr in node_runs)
+            has_pending = any(nr.status == 'pending' for nr in node_runs)
+            
+            if has_failed or (has_pending and not has_cancelled):
+                run.status = 'failed'
+            elif has_cancelled:
+                run.status = 'cancelled'
+            else:
+                run.status = 'success'
+                # --- AI 知识闭环：自动摘要 ---
+                if run.pipeline.auto_kb_summary:
+                    try:
+                        from apps.ai_engine.tasks import auto_summarize_run_task
+                        auto_summarize_run_task.delay(run.id)
+                        logger.info(f"✨ 已触发流水线 #{run_id} 自动知识总结")
+                    except Exception as ai_err:
+                        logger.error(f"无法触发 AI 总结: {str(ai_err)}")
+                # --- End AI ---
+
             run.end_time = timezone.now()
             run.save(update_fields=['status', 'end_time'])
             push_pipeline_status_to_ws(run)
@@ -786,3 +942,28 @@ def cleanup_old_workspaces(days=1):
                 logger.error(f"[Cleanup] Failed to delete {dir_path}: {str(e)}")
                 
     return f"Cleaned up {cleaned_count} workspaces."
+
+
+@shared_task(name='apps.pipeline_management.tasks.cleanup_expired_ai_drafts')
+def cleanup_expired_ai_drafts():
+    """
+    定期清理过期的 AI 暂存区资产 (超过 7 天且未转正的草稿)。
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+    from apps.pipeline_management.models import Pipeline
+    from apps.task_management.models import AnsibleTask
+
+    threshold = timezone.now() - timedelta(days=7)
+
+    # 清理流水线草稿
+    expired_pipelines = Pipeline.objects.filter(create_type='ai', create_time__lt=threshold)
+    pipelines_count, _ = expired_pipelines.delete()
+
+    # 清理 Ansible 剧本草稿
+    expired_tasks = AnsibleTask.objects.filter(create_type='ai', create_time__lt=threshold)
+    tasks_count, _ = expired_tasks.delete()
+
+    logger.info(f"[Cleanup] Deleted {pipelines_count} expired AI pipeline drafts and {tasks_count} expired AI task drafts created before {threshold}.")
+    return f"Deleted {pipelines_count} pipelines and {tasks_count} tasks."
+

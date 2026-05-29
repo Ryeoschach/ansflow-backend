@@ -27,6 +27,8 @@ env/
 local_settings.py
 db.sqlite3
 *.sqlite3
+db.sqlite3-wal
+db.sqlite3-shm
 /media
 /staticfiles
 logs/
@@ -49,7 +51,7 @@ logs/
 # ============================
 test.js
 check_pipeline.py
-test_helm.py
+test_*.py
  AnsFlow/settings.py
  AnsFlow/wsgi.py
  AnsFlow/asgi.py
@@ -75,7 +77,16 @@ node_modules/
 *.tmp
 *.temp
 
-# Claude Code
-.claude/settings.local.json
+# ============================
+# AI Tools (Claude & Gemini)
+# ============================
+.claude/
 memory/
+.gemini/
+*-skills/
+*.prompt
+CLAUDE.md
+GEMINI.md
 
+.model_cache/
+chroma_db/

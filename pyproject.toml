@@ -36,8 +36,33 @@ dependencies = [
     "django-auth-ldap>=5.3.0",
     "croniter>=6.2.2",
     "psycopg[binary]>=3.2.4",
+    "psycopg2-binary>=2.9.10",
+    "flashrank>=0.2.9",
     "gunicorn>=23.0.0",
+    "langchain>=1.2.17",
+    "langchain-community>=0.4.1",
+    "openai>=2.35.1",
+    "chromadb>=1.5.9",
+    "tiktoken>=0.12.0",
+    "langchain-openai>=1.2.1",
+    "langchain-huggingface>=1.2.2",
+    "langchain-chroma>=1.1.0",
+    "fastembed>=0.8.0",
+    "rank-bm25>=0.2.2",
+    "markdown>=3.10.2",
+    "jieba>=0.42.1",
+    "langchain-postgres>=0.0.17",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+onnxruntime = { index = "pytorch-cpu" }
 
 [dependency-groups]
 dev = [
