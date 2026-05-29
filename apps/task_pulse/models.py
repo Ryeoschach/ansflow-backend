@@ -55,6 +55,7 @@ class TaskPulse(BaseModel):
     
     state = models.CharField(max_length=20, choices=STATE_CHOICES, default='PENDING', verbose_name="任务状态")
     worker = models.ForeignKey(WorkerNode, on_delete=models.SET_NULL, null=True, related_name='tasks', verbose_name="执行节点")
+    worker_hostname = models.CharField(max_length=255, null=True, blank=True, db_index=True, verbose_name="执行节点名称")
     
     runtime = models.FloatField(null=True, blank=True, verbose_name="运行耗时(秒)")
     

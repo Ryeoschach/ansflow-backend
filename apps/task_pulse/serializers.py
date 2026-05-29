@@ -7,7 +7,10 @@ class WorkerNodeSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class TaskPulseSerializer(serializers.ModelSerializer):
-    worker_name = serializers.CharField(source='worker.hostname', read_only=True)
+    worker_name = serializers.SerializerMethodField()
+
+    def get_worker_name(self, obj):
+        return obj.worker_hostname or (obj.worker.hostname if obj.worker else None)
     
     class Meta:
         model = TaskPulse

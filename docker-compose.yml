@@ -6,21 +6,25 @@
 # 3. 部署安全：强制 CPU 模式，环境隔离
 # ============================================================
 
+# Compose container names are generated as <project>-<service>-<index>.
+# Keep service names short so containers become ansflow-api-1, ansflow-worker-1, etc.
+name: ansflow
+
 # --- 复用构建块 ---
 x-backend-build: &backend-build
   context: .
   dockerfile: Dockerfile.worker
   args:
-    - http_proxy=${HTTP_PROXY}
-    - https_proxy=${HTTPS_PROXY}
-    - no_proxy=${NO_PROXY}
+    http_proxy: ${HTTP_PROXY:-}
+    https_proxy: ${HTTPS_PROXY:-}
+    no_proxy: ${NO_PROXY:-}
 
 # --- 复用环境变量 ---
 x-backend-env: &backend-env
   DJANGO_SETTINGS_MODULE: config.settings.production
-  DATABASE_URL: postgres://ansflow_user:ansflow_password@ansflow-db:5432/ansflow
-  CELERY_BROKER_URL: redis://ansflow-redis:6379/6
-  REDIS_URL: redis://ansflow-redis:6379/0
+  DATABASE_URL: postgres://ansflow_user:ansflow_password@db:5432/ansflow
+  CELERY_BROKER_URL: redis://redis:6379/6
+  REDIS_URL: redis://redis:6379/0
   SECRET_KEY: ${SECRET_KEY:-django-insecure-test-key}
   BACKEND_URL: ${BACKEND_URL:-http://localhost:8000}
   VECTOR_STORE_TYPE: pgvector
@@ -32,19 +36,26 @@ x-backend-env: &backend-env
 
 services:
   # --- 数据库初始化 (所有后端服务共享 ansflow-backend:latest) ---
-  ansflow-init:
+  init:
     image: ansflow-backend:latest
     build: *backend-build
     command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py collectstatic --noinput &&
-             if [ \"${INIT_SYSTEM_DATA}\" = \"true\" ]; then
-               echo 'Starting heavy system initialization...' &&
-               python manage.py createsuperuser --noinput || true &&
-               python manage.py sync_perms &&
-               python manage.py init_rbac &&
-               python manage.py init_notification_config;
-             fi"
+      sh -c "
+        set -e;
+        python manage.py migrate --noinput;
+        python manage.py collectstatic --noinput;
+        if [ \"${INIT_SYSTEM_DATA:-false}\" = \"true\" ]; then
+          echo 'Starting system initialization...';
+          python manage.py createsuperuser --noinput || true;
+          python manage.py sync_perms;
+          python manage.py init_rbac --force;
+          python manage.py init_notification_config;
+          python manage.py init_sre_config;
+          python manage.py init_ai_config;
+          python manage.py seed_compliance;
+          python manage.py seed_compliance_baselines;
+        fi
+      "
     environment:
       <<: *backend-env
       INIT_SYSTEM_DATA: ${INIT_SYSTEM_DATA:-false}
@@ -56,12 +67,12 @@ services:
       - ansflow-static:/app/static
       - ./.model_cache:/app/.model_cache
     depends_on:
-      ansflow-db: { condition: service_healthy }
-      ansflow-redis: { condition: service_healthy }
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
     networks: [ ansflow-common-network ]
 
   # --- 核心后端 API ---
-  ansflow-api:
+  api:
     image: ansflow-backend:latest
     build: *backend-build
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
@@ -75,12 +86,12 @@ services:
       - ./logs:/app/logs
       - ./.model_cache:/app/.model_cache
     depends_on:
-      ansflow-init: { condition: service_completed_successfully }
+      init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
     restart: always
 
   # --- Celery Worker ---
-  ansflow-worker:
+  worker:
     image: ansflow-backend:latest
     build: *backend-build
     command: ["celery", "-A", "config", "worker", "-l", "info", "-P", "solo"]
@@ -95,12 +106,12 @@ services:
       - ./logs:/app/logs
       - ./.model_cache:/app/.model_cache
     depends_on:
-      ansflow-init: { condition: service_completed_successfully }
+      init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
     restart: always
 
   # --- Celery Beat ---
-  ansflow-beat:
+  beat:
     image: ansflow-backend:latest
     build: *backend-build
     command: ["celery", "-A", "config", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
@@ -110,12 +121,12 @@ services:
     volumes: 
       - "./logs:/app/logs"
     depends_on:
-      ansflow-init: { condition: service_completed_successfully }
+      init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
     restart: always
 
   # --- TaskPulse 监控器 ---
-  ansflow-monitor:
+  monitor:
     image: ansflow-backend:latest
     build: *backend-build
     command: ["python", "manage.py", "pulse_monitor"]
@@ -123,25 +134,25 @@ services:
       <<: *backend-env
     env_file: [ .env ]
     depends_on:
-      ansflow-init: { condition: service_completed_successfully }
+      init: { condition: service_completed_successfully }
     networks: [ ansflow-common-network ]
     restart: always
 
   # --- 前端服务 & Nginx 网关 ---
-  ansflow-frontend:
+  frontend:
     build:
-      context: ../ansflow-frontend
+      context: ../frontend
       dockerfile: Dockerfile
     ports: [ "80:80" ]
     volumes:
       - ansflow-media:/usr/share/nginx/media:ro
       - ansflow-static:/usr/share/nginx/static:ro
-    depends_on: [ ansflow-api ]
+    depends_on: [ api ]
     networks: [ ansflow-common-network ]
     restart: always
 
   # --- PostgreSQL ---
-  ansflow-db:
+  db:
     image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_DB=ansflow
@@ -158,7 +169,7 @@ services:
     restart: always
 
   # --- Redis ---
-  ansflow-redis:
+  redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
     volumes:

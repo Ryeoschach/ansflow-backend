@@ -54,6 +54,7 @@ class PulseMonitor:
         defaults = {
             'state': state,
             'worker': worker,
+            'worker_hostname': hostname,
         }
         
         # 基础元数据

@@ -290,6 +290,21 @@ CELERY_SEND_EVENTS = True
 CELERY_TASK_SEND_SENT_EVENT = True
 CELERY_WORKER_SEND_TASK_EVENTS = True
 
+# TaskPulse worker lifecycle.
+# Online workers without a heartbeat after this window are treated as offline.
+TASK_PULSE_WORKER_HEARTBEAT_TIMEOUT_SECONDS = env(
+    'TASK_PULSE_WORKER_HEARTBEAT_TIMEOUT_SECONDS',
+    default=120,
+    cast=int,
+)
+# Offline workers older than this window are pruned to avoid unbounded growth
+# when container/pod hostnames change on each restart. Set 0 to disable pruning.
+TASK_PULSE_OFFLINE_WORKER_RETENTION_HOURS = env(
+    'TASK_PULSE_OFFLINE_WORKER_RETENTION_HOURS',
+    default=24,
+    cast=int,
+)
+
 # Spectacular 的具体配置
 SPECTACULAR_SETTINGS = {
     'TITLE': 'AnsFlow 运维平台 API',

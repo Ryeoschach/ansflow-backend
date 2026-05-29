@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import WorkerNode, TaskPulse
 from .serializers import WorkerNodeSerializer, TaskPulseSerializer
+from .lifecycle import refresh_worker_lifecycle
 from utils.rbac_permission import SmartRBACPermission
 from utils.pagination import MyCustomPagination
 from config.celery import app as celery_app
@@ -93,6 +94,10 @@ class WorkerNodeViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet)
     permission_classes = [SmartRBACPermission]
     resource_code = "task:worker"
 
+    def get_queryset(self):
+        refresh_worker_lifecycle()
+        return super().get_queryset()
+
     @action(detail=True, methods=['get'])
     def detail_info(self, request, pk=None):
         """获取 Worker 实时详细信息 (通过 Inspect)"""
@@ -113,6 +118,7 @@ class WorkerNodeViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet)
     @action(detail=False, methods=['get'])
     def stats(self, request):
         """集群概览"""
+        refresh_worker_lifecycle()
         return Response({
             'total_workers': WorkerNode.objects.count(),
             'online_workers': WorkerNode.objects.filter(status='online').count(),

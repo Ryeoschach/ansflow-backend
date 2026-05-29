@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.utils import timezone
 from celery import shared_task
 from .models import WorkerNode, TaskPulse
+from .lifecycle import refresh_worker_lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -12,19 +13,12 @@ def pulse_maintenance_task():
     TaskPulse 核心维护任务：
     1. 清理过期的数据 (避免 TaskPulse 表无限膨胀)
     2. 识别并标记僵尸 Worker (心跳超时)
+    3. 清理长时间离线的临时 Worker 节点
     """
     now = timezone.now()
     
-    # --- 1. 僵尸节点清理 ---
-    # 如果超过 2 分钟未收到心跳，强制标记为离线
-    offline_threshold = now - timedelta(minutes=2)
-    zombie_workers = WorkerNode.objects.filter(
-        status='online', 
-        last_heartbeat__lt=offline_threshold
-    )
-    zombie_count = zombie_workers.update(status='offline')
-    if zombie_count > 0:
-        logger.warning(f"[TaskPulse] 发现 {zombie_count} 个僵尸 Worker，已将其状态标记为 offline。")
+    # --- 1. Worker 生命周期维护 ---
+    lifecycle_result = refresh_worker_lifecycle(now)
 
     # --- 2. 历史数据清理 ---
     # 清理 7 天前的任务执行记录
@@ -37,6 +31,6 @@ def pulse_maintenance_task():
         logger.info(f"[TaskPulse] 数据清理：已删除 {deleted_count} 条超过 {retention_days} 天的旧任务记录。")
 
     return {
-        "zombie_workers_marked": zombie_count,
+        **lifecycle_result,
         "old_tasks_deleted": deleted_count
     }
