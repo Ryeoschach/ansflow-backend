@@ -11,6 +11,7 @@ from .serializers import (
     ConfigChangeLogSerializer,
     ConfigRollbackSerializer
 )
+from .registry import SYSTEM_CATEGORIES, get_category_definition, get_item_definition, iter_registered_items
 from utils.rbac_permission import SmartRBACPermission
 
 
@@ -48,7 +49,8 @@ class ConfigCategoryViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.name in ['notification', 'system']:
+        definition = get_category_definition(instance.name)
+        if definition and not definition.allow_delete:
             return Response({'detail': f'系统保留分类 [{instance.label}] 不允许被删除'}, status=400)
         return super().destroy(request, *args, **kwargs)
 
@@ -79,15 +81,21 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
         if category_id:
             try:
                 category = ConfigCategory.objects.get(id=category_id)
-                if category.name in ['notification', 'system']:
-                    return Response({'detail': f'系统保留分类 [{category.label}] 不允许添加新的配置项'}, status=400)
+                key = request.data.get('key')
+                definition = get_category_definition(category.name)
+                item_definition = get_item_definition(category.name, key) if key else None
+                if definition and not definition.allow_custom_items and not item_definition:
+                    return Response({
+                        'detail': f'系统注册分类 [{category.label}] 不允许添加未注册配置项。该 key 不会被后端业务识别，请在自定义分类中创建自定义变量。'
+                    }, status=400)
             except ConfigCategory.DoesNotExist:
                 pass
         return super().create(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.category.name in ['notification', 'system']:
+        definition = get_item_definition(instance.category.name, instance.key)
+        if definition and not definition.allow_delete:
             return Response({'detail': f'系统保留配置项 [{instance.key}] 不允许被删除'}, status=400)
         return super().destroy(request, *args, **kwargs)
 
@@ -152,6 +160,49 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
         config_changed.send(sender=self.__class__, category=category, key=key, value=value)
 
     @action(detail=False, methods=['get'])
+    def registry(self, request):
+        """获取后端识别的系统配置注册表"""
+        existing_items = {
+            (item.category.name, item.key): item
+            for item in ConfigItem.objects.select_related('category').filter(
+                category__name__in=SYSTEM_CATEGORIES.keys(),
+                is_active=True,
+            )
+        }
+
+        categories = [
+            {
+                'name': definition.name,
+                'label': definition.label,
+                'description': definition.description,
+                'module': definition.module,
+                'allow_custom_items': definition.allow_custom_items,
+                'allow_delete': definition.allow_delete,
+            }
+            for definition in SYSTEM_CATEGORIES.values()
+        ]
+        items = [
+            {
+                'category': definition.category,
+                'key': definition.key,
+                'default_value': definition.default_value,
+                'value_type': definition.value_type,
+                'description': definition.description,
+                'module': definition.module,
+                'is_encrypted': definition.is_encrypted,
+                'allow_delete': definition.allow_delete,
+                'exists': (definition.category, definition.key) in existing_items,
+                'item_id': getattr(existing_items.get((definition.category, definition.key)), 'id', None),
+            }
+            for definition in iter_registered_items()
+        ]
+
+        return Response({
+            'categories': categories,
+            'items': items,
+        })
+
+    @action(detail=False, methods=['get'])
     def by_category(self, request):
         """获取指定分类下的所有配置"""
         category_name = request.query_params.get('name')
@@ -179,7 +230,8 @@ class ConfigItemViewSet(viewsets.ModelViewSet):
         if value is None:
             return Response({'valid': False, 'error': '缺少 value 字段'}, status=400)
 
-        value_type = item.value_type
+        definition = get_item_definition(item.category.name, item.key)
+        value_type = definition.value_type if definition else item.value_type
         try:
             if value_type == 'int':
                 int(value)

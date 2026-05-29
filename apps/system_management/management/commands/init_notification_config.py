@@ -3,18 +3,21 @@
 """
 from django.core.management.base import BaseCommand
 from apps.config_center.models import ConfigCategory, ConfigItem
+from apps.config_center.registry import SYSTEM_CATEGORIES, iter_category_items
 
 
 class Command(BaseCommand):
     help = '初始化通知配置（notification 分类）到配置中心'
 
     def handle(self, *args, **options):
+        definition = SYSTEM_CATEGORIES['notification']
+
         # 创建 notification 分类
         category, created = ConfigCategory.objects.get_or_create(
-            name='notification',
+            name=definition.name,
             defaults={
-                'label': '通知配置',
-                'description': '钉钉/飞书等通知渠道的配置'
+                'label': definition.label,
+                'description': definition.description
             }
         )
         if created:
@@ -22,41 +25,21 @@ class Command(BaseCommand):
         else:
             self.stdout.write('Category "notification" already exists')
 
-        # 初始化配置项
-        items = [
-            # 基础开关
-            ('enabled', True, 'bool', False, '总开关：是否启用通知'),
-            ('level', 'all', 'string', False, '通知级别：all=全部, error_only=仅失败, none=禁用'),
-            # Webhook URL
-            ('feishu.webhook_url', '', 'string', False, '飞书机器人 Webhook 地址'),
-            ('dingtalk.webhook_url', '', 'string', False, '钉钉机器人 Webhook 地址'),
-            # 渠道开关
-            ('feishu.enabled', True, 'bool', False, '是否启用飞书通知'),
-            ('dingtalk.enabled', True, 'bool', False, '是否启用钉钉通知'),
-            # 前端地址
-            ('frontend_url', 'http://localhost:3000', 'string', False, '前端根地址，用于生成详情页链接'),
-            # 事件类型白名单
-            ('notify_on', ['pipeline_start', 'pipeline_result', 'approval_requested', 'approval_result', 'task_result', 'alert_firing', 'alert_resolved'], 'json', False, '触发通知的事件类型列表'),
-            # 鉴权相关
-            ('webhook_token', '', 'string', False, '告警接收 Webhook 鉴权 Token（留空表示不启用鉴权）'),
-        ]
-
-
-        for key, value, value_type, is_encrypted, description in items:
+        for item_definition in iter_category_items('notification'):
             item, created = ConfigItem.objects.get_or_create(
                 category=category,
-                key=key,
+                key=item_definition.key,
                 defaults={
-                    'value': value,
-                    'value_type': value_type,
-                    'is_encrypted': is_encrypted,
-                    'description': description,
+                    'value': item_definition.default_value,
+                    'value_type': item_definition.value_type,
+                    'is_encrypted': item_definition.is_encrypted,
+                    'description': item_definition.description,
                 }
             )
             if created:
-                self.stdout.write(self.style.SUCCESS(f'  Created: notification.{key}'))
+                self.stdout.write(self.style.SUCCESS(f'  Created: notification.{item_definition.key}'))
             else:
-                if key == 'notify_on':
+                if item_definition.key == 'notify_on':
                     current_list = item.value
                     if not isinstance(current_list, list):
                         current_list = []
@@ -70,8 +53,22 @@ class Command(BaseCommand):
                     if updated:
                         item.value = current_list
                         item.save(update_fields=['value'])
-                        self.stdout.write(self.style.SUCCESS(f'  Updated notification.{key} with new event types.'))
-                self.stdout.write(f'  Already exists: notification.{key}')
+                        self.stdout.write(self.style.SUCCESS(f'  Updated notification.{item_definition.key} with new event types.'))
+
+                changed_fields = []
+                if item.value_type != item_definition.value_type:
+                    item.value_type = item_definition.value_type
+                    changed_fields.append('value_type')
+                if item.is_encrypted != item_definition.is_encrypted:
+                    item.is_encrypted = item_definition.is_encrypted
+                    changed_fields.append('is_encrypted')
+                if item.description != item_definition.description:
+                    item.description = item_definition.description
+                    changed_fields.append('description')
+                if changed_fields:
+                    item.save(update_fields=changed_fields)
+                    self.stdout.write(self.style.SUCCESS(f'  Synced metadata: notification.{item_definition.key}'))
+                self.stdout.write(f'  Already exists: notification.{item_definition.key}')
 
         self.stdout.write(self.style.SUCCESS('\n通知配置初始化完成！'))
         self.stdout.write('配置路径: /api/v1/config/categories/ (找到 notification 分类)')

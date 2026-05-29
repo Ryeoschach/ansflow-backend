@@ -15,6 +15,7 @@ RBAC_ACTION_MAP = {
     'patch': 'edit',
     'destroy': 'delete',
     'delete': 'delete',
+    'registry': 'view',
     'promote': 'edit',
 }
 
