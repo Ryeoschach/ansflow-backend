@@ -27,13 +27,35 @@ class ConfigCache:
     def _get_cache_key(category: str, key: str) -> str:
         return f'{CACHE_KEY_PREFIX}{category}:{key}'
 
+    @staticmethod
+    def _cache_get(cache_key: str, default=None):
+        try:
+            return cache.get(cache_key, default)
+        except Exception as exc:
+            logger.warning("Config cache get failed for %s: %s", cache_key, exc)
+            return default
+
+    @staticmethod
+    def _cache_set(cache_key: str, value: Any, timeout: int = CACHE_TIMEOUT):
+        try:
+            cache.set(cache_key, value, timeout)
+        except Exception as exc:
+            logger.warning("Config cache set failed for %s: %s", cache_key, exc)
+
+    @staticmethod
+    def _cache_delete(cache_key: str):
+        try:
+            cache.delete(cache_key)
+        except Exception as exc:
+            logger.warning("Config cache delete failed for %s: %s", cache_key, exc)
+
     @classmethod
     def get(cls, category: str, key: str, default: Any = None) -> Any:
         """
         获取单个配置项
         """
         cache_key = cls._get_cache_key(category, key)
-        value = cache.get(cache_key)
+        value = cls._cache_get(cache_key)
         if value is not None:
             return value
 
@@ -46,7 +68,7 @@ class ConfigCache:
                 is_active=True
             )
             value = item.get_value()
-            cache.set(cache_key, value, CACHE_TIMEOUT)
+            cls._cache_set(cache_key, value, CACHE_TIMEOUT)
             return value
         except ConfigItem.DoesNotExist:
             return default
@@ -57,7 +79,7 @@ class ConfigCache:
         获取指定分类下的所有配置项
         """
         cache_key = f'{CACHE_KEY_CATEGORY_PREFIX}{category_name}'
-        items = cache.get(cache_key)
+        items = cls._cache_get(cache_key)
         if items is not None:
             return items
 
@@ -68,7 +90,7 @@ class ConfigCache:
                 item.key: item.get_value()
                 for item in ConfigItem.objects.filter(category=category, is_active=True)
             }
-            cache.set(cache_key, items, CACHE_TIMEOUT)
+            cls._cache_set(cache_key, items, CACHE_TIMEOUT)
             return items
         except ConfigCategory.DoesNotExist:
             return {}
@@ -78,7 +100,7 @@ class ConfigCache:
         """
         获取所有配置（按分类组织）
         """
-        cached = cache.get(CACHE_KEY_ALL_ITEMS)
+        cached = cls._cache_get(CACHE_KEY_ALL_ITEMS)
         if cached is not None:
             return cached
 
@@ -89,7 +111,7 @@ class ConfigCache:
                 item.key: item.get_value()
                 for item in ConfigItem.objects.filter(category=category, is_active=True)
             }
-        cache.set(CACHE_KEY_ALL_ITEMS, result, CACHE_TIMEOUT)
+        cls._cache_set(CACHE_KEY_ALL_ITEMS, result, CACHE_TIMEOUT)
         return result
 
     @classmethod
@@ -108,10 +130,10 @@ class ConfigCache:
             item.save()
 
             # 更新缓存
-            cache.set(cls._get_cache_key(category, key), item.get_value(), CACHE_TIMEOUT)
+            cls._cache_set(cls._get_cache_key(category, key), item.get_value(), CACHE_TIMEOUT)
             # 清除分类缓存
-            cache.delete(f'{CACHE_KEY_CATEGORY_PREFIX}{category}')
-            cache.delete(CACHE_KEY_ALL_ITEMS)
+            cls._cache_delete(f'{CACHE_KEY_CATEGORY_PREFIX}{category}')
+            cls._cache_delete(CACHE_KEY_ALL_ITEMS)
 
             logger.info(f'Config updated: {category}.{key} = {value}')
         except ConfigItem.DoesNotExist:
@@ -122,9 +144,9 @@ class ConfigCache:
         """
         清除指定配置的缓存
         """
-        cache.delete(cls._get_cache_key(category, key))
-        cache.delete(f'{CACHE_KEY_CATEGORY_PREFIX}{category}')
-        cache.delete(CACHE_KEY_ALL_ITEMS)
+        cls._cache_delete(cls._get_cache_key(category, key))
+        cls._cache_delete(f'{CACHE_KEY_CATEGORY_PREFIX}{category}')
+        cls._cache_delete(CACHE_KEY_ALL_ITEMS)
 
     @classmethod
     def invalidate_all(cls):
@@ -133,7 +155,7 @@ class ConfigCache:
         """
         # 注意：这里无法清除所有 Redis keys，所以依赖 TTL 过期
         # 生产环境建议使用 Redis 的 SCAN + DEL 或版本号机制
-        cache.delete(CACHE_KEY_ALL_ITEMS)
+        cls._cache_delete(CACHE_KEY_ALL_ITEMS)
         logger.info('All config cache invalidated')
 
 

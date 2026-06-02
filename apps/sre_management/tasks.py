@@ -1,7 +1,7 @@
 import logging
 import os
 from celery import shared_task
-from .models import AlertEvent, SelfHealingPolicy
+from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, SelfHealingPolicy
 from apps.ai_engine.rag_service import RAGService
 from django.utils import timezone
 
@@ -687,17 +687,128 @@ def export_alert_report_task(user_id, start_time_str, end_time_str):
     # Broadcast via websocket group
     channel_layer = get_channel_layer()
     if channel_layer:
-        async_to_sync(channel_layer.group_send)(
-            f"user_notifications_{user_id}",
-            {
-                "type": "send_notification",
-                "data": {
-                    "id": notification.id,
-                    "title": notification.title,
-                    "content": notification.content,
-                    "is_read": notification.is_read,
-                    "create_time": notification.create_time.isoformat(),
-                    "extra_data": notification.extra_data
+        try:
+            async_to_sync(channel_layer.group_send)(
+                f"user_notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "id": notification.id,
+                        "title": notification.title,
+                        "content": notification.content,
+                        "is_read": notification.is_read,
+                        "create_time": notification.create_time.isoformat(),
+                        "extra_data": notification.extra_data
+                    }
                 }
+            )
+        except Exception as exc:
+            logger.warning("[SRE] Failed to broadcast alert report notification: %s", exc)
+
+
+@shared_task(name="apps.sre_management.tasks.run_timepoint_diagnosis", bind=True, max_retries=2)
+def run_timepoint_diagnosis(self, diagnosis_id):
+    """异步执行时间点诊断。"""
+    import json
+    from apps.approval_center.models import ApprovalTicket
+    from apps.pipeline_management.models import PipelineRun
+    from apps.task_management.models import AnsibleExecution
+    from .observability import VictoriaClient
+
+    run = DiagnosisRun.objects.select_related('service', 'project', 'alert').filter(id=diagnosis_id).first()
+    if not run:
+        logger.warning("[SRE Diagnosis] DiagnosisRun %s not found", diagnosis_id)
+        return
+
+    run.status = 'running'
+    run.started_at = timezone.now()
+    run.error_message = None
+    run.save(update_fields=['status', 'started_at', 'error_message'])
+
+    try:
+        service = run.service
+        start = run.diagnosis_time - timezone.timedelta(minutes=run.window_minutes)
+        end = run.diagnosis_time + timezone.timedelta(minutes=run.window_minutes)
+        context = {
+            'diagnosis': {
+                'id': run.id,
+                'title': run.title,
+                'time': run.diagnosis_time.isoformat(),
+                'window_minutes': run.window_minutes,
+                'trigger_type': run.trigger_type,
+            },
+            'project': {
+                'id': run.project_id,
+                'name': getattr(run.project, 'name', None),
+                'code': getattr(run.project, 'code', None),
+            },
+            'service': None,
+            'metrics': [],
+            'logs': None,
+            'ansflow_events': {},
+        }
+
+        if service:
+            metric_ds = service.metric_datasource or ObservabilityDataSource.objects.filter(type='victoriametrics', is_default=True, is_active=True).first()
+            log_ds = service.log_datasource or ObservabilityDataSource.objects.filter(type='victorialogs', is_default=True, is_active=True).first()
+            context['service'] = {
+                'id': service.id,
+                'name': service.name,
+                'code': service.code,
+                'namespace': service.namespace,
+                'metric_label_selector': service.metric_label_selector,
+                'log_label_selector': service.log_label_selector,
             }
+            if metric_ds:
+                context['metrics'] = VictoriaClient(metric_ds).query_metrics(service, start, end)
+            if log_ds:
+                context['logs'] = VictoriaClient(log_ds).query_logs(service, start, end)
+
+        pipeline_filter = {'pipeline__project_id': run.project_id} if run.project_id else {}
+        ansible_filter = {'task__project_id': run.project_id} if run.project_id else {}
+        context['ansflow_events'] = {
+            'alerts': list(AlertEvent.objects.filter(create_time__range=(start, end)).values(
+                'id', 'alert_name', 'severity', 'status', 'source', 'labels', 'annotations', 'healing_status', 'create_time'
+            )[:20]),
+            'pipeline_runs': list(PipelineRun.objects.filter(create_time__range=(start, end), **pipeline_filter).values(
+                'id', 'pipeline_id', 'status', 'trigger_type', 'create_time', 'update_time'
+            )[:20]),
+            'ansible_executions': list(AnsibleExecution.objects.filter(create_time__range=(start, end), **ansible_filter).values(
+                'id', 'task_id', 'status', 'create_time', 'update_time'
+            )[:20]),
+            'approval_tickets': list(ApprovalTicket.objects.filter(create_time__range=(start, end)).values(
+                'id', 'title', 'status', 'resource_type', 'create_time', 'audit_time'
+            )[:20]),
+        }
+        if run.alert:
+            context['source_alert'] = {
+                'id': run.alert_id,
+                'alert_name': run.alert.alert_name,
+                'severity': run.alert.severity,
+                'labels': run.alert.labels,
+                'annotations': run.alert.annotations,
+            }
+
+        prompt_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
+        prompt = (
+            "你是资深 SRE。请基于以下时间点诊断上下文，分析系统或项目在该时间窗口的异常现象、"
+            "可能根因、需要继续验证的证据、建议处置步骤。请优先关联日志、指标、告警、流水线和任务记录。\n\n"
+            f"{prompt_context}"
         )
+
+        rag_service = RAGService()
+        chain = rag_service.get_chat_chain()
+        ai_result = chain.invoke(prompt)
+
+        run.context_snapshot = context
+        run.ai_result = ai_result
+        run.status = 'success'
+        run.finished_at = timezone.now()
+        run.save(update_fields=['context_snapshot', 'ai_result', 'status', 'finished_at'])
+    except Exception as exc:
+        logger.exception("[SRE Diagnosis] Failed to run diagnosis %s", diagnosis_id)
+        run.status = 'failed'
+        run.error_message = str(exc)
+        run.finished_at = timezone.now()
+        run.save(update_fields=['status', 'error_message', 'finished_at'])
+        raise

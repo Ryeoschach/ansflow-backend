@@ -5,8 +5,19 @@ from rest_framework.permissions import AllowAny
 from django.core.cache import cache
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
-from .models import AlertEvent, SelfHealingPolicy
-from .serializers import AlertEventSerializer, SelfHealingPolicySerializer
+from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService, SelfHealingPolicy
+from .observability import VictoriaClient
+from .rule_templates import list_templates, render_template
+from .serializers import (
+    AlertEventSerializer,
+    AlertRuleTemplateRenderRequestSerializer,
+    AlertRuleTemplateRenderSerializer,
+    AlertRuleTemplateSerializer,
+    DiagnosisRunSerializer,
+    ObservabilityDataSourceSerializer,
+    ObservedServiceSerializer,
+    SelfHealingPolicySerializer,
+)
 from .permissions import AlertWebhookPermission
 import logging
 
@@ -302,6 +313,7 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             annotations = alert.get('annotations', {})
             alert_name = labels.get('alertname', 'Unknown Alert')
             severity = labels.get('severity', 'warning')
+            source = self._detect_alert_source(data, labels)
 
             # 存入数据库
             old_obj = AlertEvent.objects.filter(fingerprint=fingerprint).first()
@@ -326,6 +338,7 @@ class AlertEventViewSet(viewsets.ModelViewSet):
                     'alert_name': alert_name,
                     'severity': severity,
                     'status': alert_status,
+                    'source': source,
                     'labels': labels,
                     'annotations': annotations,
                 }
@@ -352,11 +365,22 @@ class AlertEventViewSet(viewsets.ModelViewSet):
             # 触发 AI 分析 Celery 任务 (引入 Redis 防抖)
             if should_analyze:
                 lock_key = f"alert_analysis_lock_{fingerprint}"
-                if cache.add(lock_key, True, timeout=300):
+                try:
+                    lock_acquired = cache.add(lock_key, True, timeout=300)
+                except Exception as ce:
+                    logger.warning("[SRE] Alert analysis debounce cache unavailable: %s", ce)
+                    lock_acquired = True
+                if lock_acquired:
                     obj.healing_status = 'analyzing'
                     obj.save(update_fields=['healing_status'])
                     from .tasks import analyze_alert_event
-                    analyze_alert_event.delay(obj.id)
+                    try:
+                        analyze_alert_event.delay(obj.id)
+                    except Exception as task_exc:
+                        logger.warning("[SRE] Failed to enqueue alert analysis task: %s", task_exc)
+                        obj.healing_status = 'failed'
+                        obj.ai_analysis = f"AI 分析任务提交失败：{task_exc}"
+                        obj.save(update_fields=['healing_status', 'ai_analysis'])
                 else:
                     print(f"[SRE] Skipped analysis for fingerprint {fingerprint} due to debouncing.")
             
@@ -408,6 +432,22 @@ class AlertEventViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    def _detect_alert_source(self, payload, labels):
+        source = (labels.get('source') or labels.get('datasource') or labels.get('generator') or '').lower()
+        if source in {'vmalert', 'victoriametrics'}:
+            return source
+        generator_url = ''
+        alerts = payload.get('alerts') or []
+        if alerts and isinstance(alerts[0], dict):
+            generator_url = alerts[0].get('generatorURL', '') or ''
+        external_url = payload.get('externalURL', '') or ''
+        combined = f'{generator_url} {external_url}'.lower()
+        if 'vmalert' in combined:
+            return 'vmalert'
+        if 'victoriametrics' in combined:
+            return 'victoriametrics'
+        return 'prometheus'
+
 @extend_schema(tags=["SRE 自愈策略"])
 class SelfHealingPolicyViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = SelfHealingPolicy.objects.all().order_by('-create_time')
@@ -436,3 +476,128 @@ class SelfHealingPolicyViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(project=getattr(self.request, 'project', None))
+
+
+@extend_schema(tags=["SRE 观测数据源"])
+class ObservabilityDataSourceViewSet(viewsets.ModelViewSet):
+    queryset = ObservabilityDataSource.objects.all()
+    serializer_class = ObservabilityDataSourceSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:observability"
+    resource_type = "sre"
+    filterset_fields = {
+        'name': ['icontains'],
+        'type': ['exact'],
+        'is_active': ['exact'],
+        'is_default': ['exact'],
+    }
+
+    @action(detail=True, methods=['post'], url_path='test-connection')
+    def test_connection(self, request, pk=None):
+        datasource = self.get_object()
+        try:
+            result = VictoriaClient(datasource).test_connection()
+            return Response(result, status=status.HTTP_200_OK)
+        except Exception as exc:
+            return Response({'ok': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        self._ensure_single_default(instance)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._ensure_single_default(instance)
+
+    def _ensure_single_default(self, instance):
+        if instance.is_default:
+            ObservabilityDataSource.objects.filter(type=instance.type, is_default=True).exclude(id=instance.id).update(is_default=False)
+
+
+@extend_schema(tags=["SRE 可观测服务"])
+class ObservedServiceViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    queryset = ObservedService.objects.select_related(
+        'project', 'environment', 'resource_pool', 'k8s_cluster', 'metric_datasource', 'log_datasource'
+    ).prefetch_related('hosts')
+    serializer_class = ObservedServiceSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:observed-service"
+    resource_type = "sre"
+    filterset_fields = {
+        'name': ['icontains'],
+        'code': ['icontains'],
+        'project': ['exact'],
+        'is_active': ['exact'],
+    }
+
+
+@extend_schema(tags=["SRE 时间点诊断"])
+class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    queryset = DiagnosisRun.objects.select_related('project', 'service', 'alert', 'created_by')
+    serializer_class = DiagnosisRunSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:diagnosis"
+    resource_type = "sre"
+    resource_owner_field = "created_by"
+    filterset_fields = {
+        'status': ['exact'],
+        'trigger_type': ['exact'],
+        'project': ['exact'],
+        'service': ['exact'],
+        'alert': ['exact'],
+        'diagnosis_time': ['gte', 'lte'],
+    }
+
+    def perform_create(self, serializer):
+        instance = serializer.save(created_by=self.request.user)
+        from .tasks import run_timepoint_diagnosis
+        try:
+            run_timepoint_diagnosis.delay(instance.id)
+        except Exception as task_exc:
+            logger.warning("[SRE Diagnosis] Failed to enqueue diagnosis task: %s", task_exc)
+            instance.status = 'failed'
+            instance.error_message = f"诊断任务提交失败：{task_exc}"
+            instance.save(update_fields=['status', 'error_message'])
+
+    @action(detail=True, methods=['post'], url_path='retry')
+    def retry(self, request, pk=None):
+        obj = self.get_object()
+        obj.status = 'pending'
+        obj.error_message = None
+        obj.trigger_type = 'retry'
+        obj.save(update_fields=['status', 'error_message', 'trigger_type'])
+        from .tasks import run_timepoint_diagnosis
+        try:
+            run_timepoint_diagnosis.delay(obj.id)
+        except Exception as task_exc:
+            logger.warning("[SRE Diagnosis] Failed to enqueue diagnosis retry: %s", task_exc)
+            obj.status = 'failed'
+            obj.error_message = f"诊断任务提交失败：{task_exc}"
+            obj.save(update_fields=['status', 'error_message'])
+        return Response({'message': 'Diagnosis retry submitted'}, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=["SRE 告警规则模板"])
+class AlertRuleTemplateViewSet(viewsets.ViewSet):
+    serializer_class = AlertRuleTemplateSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:alert-rule-template"
+    resource_type = "sre"
+
+    @extend_schema(responses=AlertRuleTemplateSerializer(many=True))
+    def list(self, request):
+        return Response(list_templates(), status=status.HTTP_200_OK)
+
+    @extend_schema(request=AlertRuleTemplateRenderRequestSerializer, responses=AlertRuleTemplateRenderSerializer)
+    @action(detail=False, methods=['post'], url_path='render')
+    def render(self, request):
+        template_id = request.data.get('template_id')
+        variables = request.data.get('variables') or {}
+        if not template_id:
+            return Response({'error': 'template_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            rendered = render_template(template_id, variables)
+        except KeyError:
+            return Response({'error': 'Template not found'}, status=status.HTTP_404_NOT_FOUND)
+        rendered['alertmanager_webhook_example'] = '/api/v1/sre/alerts/receive/?token=<webhook_token>'
+        return Response(rendered, status=status.HTTP_200_OK)

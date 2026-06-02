@@ -19,7 +19,14 @@ from apps.ai_engine.views import (
     AIProviderViewSet, AIModelViewSet, AIConfigViewSet,
     KnowledgeDocumentViewSet, KnowledgeChunkViewSet, AIPromptTemplateViewSet
 )
-from apps.sre_management.views import AlertEventViewSet, SelfHealingPolicyViewSet
+from apps.sre_management.views import (
+    AlertEventViewSet,
+    AlertRuleTemplateViewSet,
+    DiagnosisRunViewSet,
+    ObservabilityDataSourceViewSet,
+    ObservedServiceViewSet,
+    SelfHealingPolicyViewSet,
+)
 from apps.task_pulse.views import TaskPulseViewSet, WorkerNodeViewSet
 from utils.auth_views import CookieTokenObtainPairView, CookieTokenRefreshView
 
@@ -82,6 +89,10 @@ router.register(r'ai/prompts', AIPromptTemplateViewSet, basename='ai-prompts')
 # SRE Management
 router.register(r'sre/alerts', AlertEventViewSet, basename='sre-alerts')
 router.register(r'sre/policies', SelfHealingPolicyViewSet, basename='sre-policies')
+router.register(r'sre/observability-datasources', ObservabilityDataSourceViewSet, basename='sre-observability-datasources')
+router.register(r'sre/observed-services', ObservedServiceViewSet, basename='sre-observed-services')
+router.register(r'sre/diagnosis-runs', DiagnosisRunViewSet, basename='sre-diagnosis-runs')
+router.register(r'sre/alert-rule-templates', AlertRuleTemplateViewSet, basename='sre-alert-rule-templates')
 
 # Task Pulse
 router.register(r'pulse/tasks', TaskPulseViewSet, basename='pulse-tasks')
