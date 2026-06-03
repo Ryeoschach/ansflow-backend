@@ -135,8 +135,13 @@ class ObservabilityDataSource(BaseModel):
             self.provider = self.type
         if not self.type:
             self.type = self.provider
+        log_providers = {'victorialogs', 'elasticsearch', 'loki', 'aliyun_sls', 'tencent_cls', 'generic_http'}
         if not self.kind:
             self.kind = 'metric' if self.provider == 'victoriametrics' else 'log'
+        elif self.provider in log_providers and self.kind == 'metric':
+            self.kind = 'log'
+        elif self.provider == 'victoriametrics' and self.kind == 'log':
+            self.kind = 'metric'
         super().save(*args, **kwargs)
 
 

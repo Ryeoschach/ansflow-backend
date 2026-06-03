@@ -6,6 +6,7 @@ from django.core.cache import cache
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService, SelfHealingPolicy
+from .diagnosis_utils import match_services_for_alert
 from .observability import get_observability_adapter
 from .rule_templates import list_templates, render_template
 from .serializers import (
@@ -532,6 +533,18 @@ class ObservedServiceViewSet(DataScopeMixin, viewsets.ModelViewSet):
         'is_active': ['exact'],
     }
 
+    @action(detail=False, methods=['get'], url_path='match-alert')
+    def match_alert(self, request):
+        alert_id = request.query_params.get('alert_id')
+        project_id = request.query_params.get('project')
+        if not alert_id:
+            return Response({'error': 'alert_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        alert = AlertEvent.objects.filter(id=alert_id).first()
+        if not alert:
+            return Response({'error': 'Alert not found'}, status=status.HTTP_404_NOT_FOUND)
+        result = match_services_for_alert(alert, project_id=project_id)
+        return Response(result, status=status.HTTP_200_OK)
+
 
 @extend_schema(tags=["SRE 时间点诊断"])
 class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
@@ -551,7 +564,25 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
     }
 
     def perform_create(self, serializer):
-        instance = serializer.save(created_by=self.request.user)
+        alert = serializer.validated_data.get('alert')
+        service = serializer.validated_data.get('service')
+        project = serializer.validated_data.get('project')
+        service_match = None
+        save_kwargs = {'created_by': self.request.user}
+        if alert and not service:
+            service_match = match_services_for_alert(alert, project_id=getattr(project, 'id', None))
+            best_match = service_match.get('best_match')
+            if best_match:
+                matched_service = ObservedService.objects.filter(id=best_match['id']).first()
+                if matched_service:
+                    save_kwargs['service'] = matched_service
+
+        instance = serializer.save(**save_kwargs)
+        if service_match is not None:
+            query_params = dict(instance.query_params or {})
+            query_params['service_match'] = service_match
+            instance.query_params = query_params
+            instance.save(update_fields=['query_params'])
         from .tasks import run_timepoint_diagnosis
         try:
             run_timepoint_diagnosis.delay(instance.id)

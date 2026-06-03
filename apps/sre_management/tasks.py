@@ -713,6 +713,7 @@ def run_timepoint_diagnosis(self, diagnosis_id):
     from apps.approval_center.models import ApprovalTicket
     from apps.pipeline_management.models import PipelineRun
     from apps.task_management.models import AnsibleExecution
+    from .diagnosis_utils import extract_log_highlights
     from .observability import get_log_adapter, get_metric_adapter
 
     run = DiagnosisRun.objects.select_related('service', 'project', 'alert').filter(id=diagnosis_id).first()
@@ -745,10 +746,13 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             'service': None,
             'metrics': [],
             'logs': None,
+            'log_highlights': [],
+            'service_match': (run.query_params or {}).get('service_match'),
             'warnings': [],
             'collection_summary': {
                 'metrics': {'status': 'skipped', 'datasource': None, 'count': 0},
                 'logs': {'status': 'skipped', 'datasource': None, 'count': 0},
+                'log_highlights': {'status': 'skipped', 'count': 0},
                 'ansflow_events': {'status': 'pending', 'count': 0},
             },
             'ansflow_events': {},
@@ -796,11 +800,17 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                     log_items = context['logs'].get('items') if isinstance(context['logs'], dict) else []
                     context['collection_summary']['logs']['status'] = 'success'
                     context['collection_summary']['logs']['count'] = len(log_items or [])
+                    context['log_highlights'] = extract_log_highlights(context['logs'])
+                    context['collection_summary']['log_highlights'] = {
+                        'status': 'success',
+                        'count': len(context['log_highlights']),
+                    }
                 except Exception as log_exc:
                     warning = f"日志数据源 {log_ds.name} 采集失败：{log_exc}"
                     warnings.append(warning)
                     context['collection_summary']['logs']['status'] = 'failed'
                     context['collection_summary']['logs']['error'] = str(log_exc)
+                    context['collection_summary']['log_highlights']['status'] = 'skipped'
                     logger.warning("[SRE Diagnosis] %s", warning)
             else:
                 warnings.append("未配置日志数据源，本次诊断将跳过日志上下文。")
