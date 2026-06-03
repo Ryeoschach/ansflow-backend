@@ -39,8 +39,9 @@ class ObservabilityDataSourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = ObservabilityDataSource
         fields = [
-            'id', 'name', 'type', 'base_url', 'auth_type', 'username',
+            'id', 'name', 'kind', 'provider', 'type', 'base_url', 'auth_type', 'username',
             'password', 'token', 'has_password', 'has_token',
+            'query_config', 'field_mapping', 'response_mapping',
             'is_default', 'is_active', 'timeout_seconds', 'remark',
             'create_time', 'update_time',
         ]
@@ -55,6 +56,13 @@ class ObservabilityDataSourceSerializer(serializers.ModelSerializer):
         auth_type = attrs.get('auth_type', getattr(self.instance, 'auth_type', 'none'))
         if auth_type == 'basic' and not attrs.get('username') and not getattr(self.instance, 'username', None):
             raise serializers.ValidationError({'username': 'Basic auth requires username.'})
+        provider = attrs.get('provider') or attrs.get('type') or getattr(self.instance, 'provider', None) or getattr(self.instance, 'type', None)
+        if provider:
+            attrs.setdefault('provider', provider)
+            attrs.setdefault('type', provider)
+        if not attrs.get('kind'):
+            current_kind = getattr(self.instance, 'kind', None)
+            attrs['kind'] = current_kind or ('metric' if provider == 'victoriametrics' else 'log')
         return attrs
 
 

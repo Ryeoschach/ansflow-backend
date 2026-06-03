@@ -6,7 +6,7 @@ from django.core.cache import cache
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService, SelfHealingPolicy
-from .observability import VictoriaClient
+from .observability import get_observability_adapter
 from .rule_templates import list_templates, render_template
 from .serializers import (
     AlertEventSerializer,
@@ -487,6 +487,8 @@ class ObservabilityDataSourceViewSet(viewsets.ModelViewSet):
     resource_type = "sre"
     filterset_fields = {
         'name': ['icontains'],
+        'kind': ['exact'],
+        'provider': ['exact'],
         'type': ['exact'],
         'is_active': ['exact'],
         'is_default': ['exact'],
@@ -496,7 +498,7 @@ class ObservabilityDataSourceViewSet(viewsets.ModelViewSet):
     def test_connection(self, request, pk=None):
         datasource = self.get_object()
         try:
-            result = VictoriaClient(datasource).test_connection()
+            result = get_observability_adapter(datasource).test_connection()
             return Response(result, status=status.HTTP_200_OK)
         except Exception as exc:
             return Response({'ok': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -511,7 +513,7 @@ class ObservabilityDataSourceViewSet(viewsets.ModelViewSet):
 
     def _ensure_single_default(self, instance):
         if instance.is_default:
-            ObservabilityDataSource.objects.filter(type=instance.type, is_default=True).exclude(id=instance.id).update(is_default=False)
+            ObservabilityDataSource.objects.filter(kind=instance.kind, is_default=True).exclude(id=instance.id).update(is_default=False)
 
 
 @extend_schema(tags=["SRE 可观测服务"])

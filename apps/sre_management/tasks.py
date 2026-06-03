@@ -713,7 +713,7 @@ def run_timepoint_diagnosis(self, diagnosis_id):
     from apps.approval_center.models import ApprovalTicket
     from apps.pipeline_management.models import PipelineRun
     from apps.task_management.models import AnsibleExecution
-    from .observability import VictoriaClient
+    from .observability import get_log_adapter, get_metric_adapter
 
     run = DiagnosisRun.objects.select_related('service', 'project', 'alert').filter(id=diagnosis_id).first()
     if not run:
@@ -745,12 +745,19 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             'service': None,
             'metrics': [],
             'logs': None,
+            'warnings': [],
+            'collection_summary': {
+                'metrics': {'status': 'skipped', 'datasource': None, 'count': 0},
+                'logs': {'status': 'skipped', 'datasource': None, 'count': 0},
+                'ansflow_events': {'status': 'pending', 'count': 0},
+            },
             'ansflow_events': {},
         }
+        warnings = context['warnings']
 
         if service:
-            metric_ds = service.metric_datasource or ObservabilityDataSource.objects.filter(type='victoriametrics', is_default=True, is_active=True).first()
-            log_ds = service.log_datasource or ObservabilityDataSource.objects.filter(type='victorialogs', is_default=True, is_active=True).first()
+            metric_ds = service.metric_datasource or ObservabilityDataSource.objects.filter(kind='metric', is_default=True, is_active=True).first()
+            log_ds = service.log_datasource or ObservabilityDataSource.objects.filter(kind='log', is_default=True, is_active=True).first()
             context['service'] = {
                 'id': service.id,
                 'name': service.name,
@@ -760,9 +767,45 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                 'log_label_selector': service.log_label_selector,
             }
             if metric_ds:
-                context['metrics'] = VictoriaClient(metric_ds).query_metrics(service, start, end)
+                context['collection_summary']['metrics']['datasource'] = {
+                    'id': metric_ds.id,
+                    'name': metric_ds.name,
+                    'provider': metric_ds.provider,
+                }
+                try:
+                    context['metrics'] = get_metric_adapter(metric_ds).query_metrics(service, start, end)
+                    context['collection_summary']['metrics']['status'] = 'success'
+                    context['collection_summary']['metrics']['count'] = len(context['metrics'])
+                except Exception as metric_exc:
+                    warning = f"指标数据源 {metric_ds.name} 采集失败：{metric_exc}"
+                    warnings.append(warning)
+                    context['collection_summary']['metrics']['status'] = 'failed'
+                    context['collection_summary']['metrics']['error'] = str(metric_exc)
+                    logger.warning("[SRE Diagnosis] %s", warning)
+            else:
+                warnings.append("未配置指标数据源，本次诊断将跳过指标上下文。")
+
             if log_ds:
-                context['logs'] = VictoriaClient(log_ds).query_logs(service, start, end)
+                context['collection_summary']['logs']['datasource'] = {
+                    'id': log_ds.id,
+                    'name': log_ds.name,
+                    'provider': log_ds.provider,
+                }
+                try:
+                    context['logs'] = get_log_adapter(log_ds).query_logs(service, start, end)
+                    log_items = context['logs'].get('items') if isinstance(context['logs'], dict) else []
+                    context['collection_summary']['logs']['status'] = 'success'
+                    context['collection_summary']['logs']['count'] = len(log_items or [])
+                except Exception as log_exc:
+                    warning = f"日志数据源 {log_ds.name} 采集失败：{log_exc}"
+                    warnings.append(warning)
+                    context['collection_summary']['logs']['status'] = 'failed'
+                    context['collection_summary']['logs']['error'] = str(log_exc)
+                    logger.warning("[SRE Diagnosis] %s", warning)
+            else:
+                warnings.append("未配置日志数据源，本次诊断将跳过日志上下文。")
+        else:
+            warnings.append("未选择可观测服务，本次诊断仅使用 AnsFlow 内部上下文。")
 
         pipeline_filter = {'pipeline__project_id': run.project_id} if run.project_id else {}
         ansible_filter = {'task__project_id': run.project_id} if run.project_id else {}
@@ -780,6 +823,10 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                 'id', 'title', 'status', 'resource_type', 'create_time', 'audit_time'
             )[:20]),
         }
+        context['collection_summary']['ansflow_events'] = {
+            'status': 'success',
+            'count': sum(len(value) for value in context['ansflow_events'].values()),
+        }
         if run.alert:
             context['source_alert'] = {
                 'id': run.alert_id,
@@ -792,7 +839,8 @@ def run_timepoint_diagnosis(self, diagnosis_id):
         prompt_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
         prompt = (
             "你是资深 SRE。请基于以下时间点诊断上下文，分析系统或项目在该时间窗口的异常现象、"
-            "可能根因、需要继续验证的证据、建议处置步骤。请优先关联日志、指标、告警、流水线和任务记录。\n\n"
+            "可能根因、需要继续验证的证据、建议处置步骤。请优先关联日志、指标、告警、流水线和任务记录。"
+            "如果某类上下文缺失，请明确说明本次诊断的证据限制。\n\n"
             f"{prompt_context}"
         )
 

@@ -73,23 +73,50 @@ class SelfHealingPolicy(BaseModel):
 class ObservabilityDataSource(BaseModel):
     """外部观测数据源配置。"""
 
+    KIND_CHOICES = (
+        ('metric', '指标'),
+        ('log', '日志'),
+        ('trace', '链路追踪'),
+    )
+    PROVIDER_CHOICES = (
+        ('victoriametrics', 'VictoriaMetrics'),
+        ('victorialogs', 'VictoriaLogs'),
+        ('elasticsearch', 'Elasticsearch'),
+        ('loki', 'Loki'),
+        ('aliyun_sls', '阿里云 SLS'),
+        ('tencent_cls', '腾讯云 CLS'),
+        ('generic_http', '通用 HTTP'),
+    )
     TYPE_CHOICES = (
         ('victoriametrics', 'VictoriaMetrics'),
         ('victorialogs', 'VictoriaLogs'),
+        ('elasticsearch', 'Elasticsearch'),
+        ('loki', 'Loki'),
+        ('aliyun_sls', '阿里云 SLS'),
+        ('tencent_cls', '腾讯云 CLS'),
+        ('generic_http', '通用 HTTP'),
     )
     AUTH_CHOICES = (
         ('none', '无认证'),
         ('bearer', 'Bearer Token'),
         ('basic', 'Basic Auth'),
+        ('header', '自定义请求头'),
+        ('query', '查询参数'),
+        ('cloud_signature', '云厂商签名'),
     )
 
     name = models.CharField(max_length=100, unique=True, verbose_name="数据源名称")
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES, default='metric', verbose_name="数据类别")
+    provider = models.CharField(max_length=30, choices=PROVIDER_CHOICES, default='victoriametrics', verbose_name="数据源提供方")
     type = models.CharField(max_length=30, choices=TYPE_CHOICES, verbose_name="数据源类型")
     base_url = models.URLField(max_length=500, verbose_name="访问地址")
     auth_type = models.CharField(max_length=20, choices=AUTH_CHOICES, default='none', verbose_name="认证方式")
     username = models.CharField(max_length=100, blank=True, null=True, verbose_name="用户名")
     password = EncryptedCharField(max_length=512, blank=True, null=True, verbose_name="密码")
     token = EncryptedTextField(blank=True, null=True, verbose_name="Token")
+    query_config = JSONField(default=dict, blank=True, verbose_name="查询配置")
+    field_mapping = JSONField(default=dict, blank=True, verbose_name="字段映射")
+    response_mapping = JSONField(default=dict, blank=True, verbose_name="响应映射")
     is_default = models.BooleanField(default=False, verbose_name="是否默认")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     timeout_seconds = models.PositiveIntegerField(default=10, verbose_name="请求超时秒数")
@@ -103,6 +130,15 @@ class ObservabilityDataSource(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.type})"
 
+    def save(self, *args, **kwargs):
+        if not self.provider:
+            self.provider = self.type
+        if not self.type:
+            self.type = self.provider
+        if not self.kind:
+            self.kind = 'metric' if self.provider == 'victoriametrics' else 'log'
+        super().save(*args, **kwargs)
+
 
 class ObservedService(BaseModel):
     """项目内可诊断的服务与观测标签映射。"""
@@ -115,8 +151,8 @@ class ObservedService(BaseModel):
     hosts = models.ManyToManyField('host_management.Host', blank=True, related_name='observed_services', verbose_name="关联主机")
     k8s_cluster = models.ForeignKey('k8s_management.K8sCluster', on_delete=models.SET_NULL, null=True, blank=True, related_name='observed_services', verbose_name="K8s 集群")
     namespace = models.CharField(max_length=120, blank=True, null=True, verbose_name="K8s 命名空间")
-    metric_datasource = models.ForeignKey(ObservabilityDataSource, on_delete=models.SET_NULL, null=True, blank=True, related_name='metric_services', limit_choices_to={'type': 'victoriametrics'}, verbose_name="指标数据源")
-    log_datasource = models.ForeignKey(ObservabilityDataSource, on_delete=models.SET_NULL, null=True, blank=True, related_name='log_services', limit_choices_to={'type': 'victorialogs'}, verbose_name="日志数据源")
+    metric_datasource = models.ForeignKey(ObservabilityDataSource, on_delete=models.SET_NULL, null=True, blank=True, related_name='metric_services', limit_choices_to={'kind': 'metric'}, verbose_name="指标数据源")
+    log_datasource = models.ForeignKey(ObservabilityDataSource, on_delete=models.SET_NULL, null=True, blank=True, related_name='log_services', limit_choices_to={'kind': 'log'}, verbose_name="日志数据源")
     metric_label_selector = JSONField(default=dict, blank=True, verbose_name="指标标签选择器")
     log_label_selector = JSONField(default=dict, blank=True, verbose_name="日志标签选择器")
     metric_queries = JSONField(default=list, blank=True, verbose_name="自定义指标查询")
