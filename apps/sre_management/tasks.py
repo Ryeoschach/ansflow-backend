@@ -713,7 +713,7 @@ def run_timepoint_diagnosis(self, diagnosis_id):
     from apps.approval_center.models import ApprovalTicket
     from apps.pipeline_management.models import PipelineRun
     from apps.task_management.models import AnsibleExecution
-    from .diagnosis_utils import extract_log_highlights
+    from .diagnosis_utils import build_evidence_index, extract_log_highlights, extract_structured_report
     from .observability import get_log_adapter, get_metric_adapter
 
     run = DiagnosisRun.objects.select_related('service', 'project', 'alert').filter(id=diagnosis_id).first()
@@ -845,18 +845,30 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                 'labels': run.alert.labels,
                 'annotations': run.alert.annotations,
             }
+        context['evidence_index'] = build_evidence_index(context)
+        context['structured_report'] = {}
 
         prompt_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
         prompt = (
             "你是资深 SRE。请基于以下时间点诊断上下文，分析系统或项目在该时间窗口的异常现象、"
             "可能根因、需要继续验证的证据、建议处置步骤。请优先关联日志、指标、告警、流水线和任务记录。"
-            "如果某类上下文缺失，请明确说明本次诊断的证据限制。\n\n"
+            "如果某类上下文缺失，请明确说明本次诊断的证据限制。"
+            "请先输出一段固定格式的结构化 JSON，格式为 __STRUCTURED_REPORT__:{...}。"
+            "JSON 必须包含 summary、impact_scope、evidence、possible_causes、recommended_actions、risks、next_checks。"
+            "其中 evidence 使用 {ref, finding}，possible_causes 使用 {title, confidence, evidence_refs}，"
+            "recommended_actions 使用 {action, priority, evidence_refs}。"
+            "所有 evidence_refs 尽量引用 evidence_index 中的 ref，例如 LOG-1、METRIC-1、ALERT-1。"
+            "结构化 JSON 后面再输出 Markdown 诊断报告。\n\n"
             f"{prompt_context}"
         )
 
         rag_service = RAGService()
         chain = rag_service.get_chat_chain()
-        ai_result = chain.invoke(prompt)
+        raw_ai_result = chain.invoke(prompt)
+        structured_report, ai_result, parse_warning = extract_structured_report(raw_ai_result)
+        context['structured_report'] = structured_report
+        if parse_warning:
+            context['warnings'].append(parse_warning)
 
         run.context_snapshot = context
         run.ai_result = ai_result

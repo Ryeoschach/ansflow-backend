@@ -93,11 +93,22 @@ class SREObservabilityTestCase(TestCase):
         metric_adapter = MagicMock()
         log_adapter = MagicMock()
         metric_adapter.query_metrics.return_value = [{'name': 'up', 'query': 'up', 'result': []}]
-        log_adapter.query_logs.return_value = {'query': '{service="order-api"}', 'items': [], 'result': {'data': []}}
+        log_adapter.query_logs.return_value = {
+            'query': '{service="order-api"}',
+            'items': [{'timestamp': 't1', 'level': 'error', 'message': 'Exception timeout failed', 'service': 'order-api'}],
+            'result': {'data': []},
+        }
         mock_get_metric_adapter.return_value = metric_adapter
         mock_get_log_adapter.return_value = log_adapter
         chain = MagicMock()
-        chain.invoke.return_value = '诊断结论：服务指标和日志已分析。'
+        chain.invoke.return_value = (
+            '__STRUCTURED_REPORT__:{"summary":"订单服务异常","impact_scope":["订单接口"],'
+            '"evidence":[{"ref":"LOG-1","finding":"日志出现异常"}],'
+            '"possible_causes":[{"title":"服务超时","confidence":"high","evidence_refs":["LOG-1"]}],'
+            '"recommended_actions":[{"action":"检查依赖服务","priority":"high","evidence_refs":["LOG-1"]}],'
+            '"risks":["证据窗口有限"],"next_checks":["检查 JVM 指标"]}\n\n'
+            '## 诊断结论\n服务指标和日志已分析。'
+        )
         mock_chain_factory.return_value = chain
         run = DiagnosisRun.objects.create(
             title='订单服务时间点诊断',
@@ -117,6 +128,9 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(run.context_snapshot['metrics'][0]['name'], 'up')
         self.assertEqual(run.context_snapshot['collection_summary']['metrics']['status'], 'success')
         self.assertEqual(run.context_snapshot['collection_summary']['logs']['status'], 'success')
+        self.assertEqual(run.context_snapshot['structured_report']['summary'], '订单服务异常')
+        self.assertEqual(run.context_snapshot['evidence_index'][0]['ref'], 'LOG-1')
+        self.assertNotIn('__STRUCTURED_REPORT__', run.ai_result)
 
     def test_alert_service_label_matches_observed_service_code(self):
         alert = AlertEvent.objects.create(
@@ -244,3 +258,33 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(len(highlights), 30)
         self.assertIn('exception', highlights[0]['matched_keywords'])
         self.assertGreater(highlights[0]['score'], 0)
+
+    @patch('apps.sre_management.observability.get_metric_adapter')
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_invalid_structured_report_degrades_to_markdown(self, mock_chain_factory, mock_get_metric_adapter):
+        metric_adapter = MagicMock()
+        metric_adapter.query_metrics.return_value = []
+        mock_get_metric_adapter.return_value = metric_adapter
+        self.service.log_datasource = None
+        self.service.save(update_fields=['log_datasource'])
+        self.log_ds.is_default = False
+        self.log_ds.save(update_fields=['is_default'])
+        chain = MagicMock()
+        chain.invoke.return_value = '__STRUCTURED_REPORT__:{invalid json}\n\n## 诊断结论\n仅 Markdown 可用。'
+        mock_chain_factory.return_value = chain
+        run = DiagnosisRun.objects.create(
+            title='非法结构化报告诊断',
+            project=self.project,
+            service=self.service,
+            diagnosis_time=timezone.now(),
+            window_minutes=10,
+            created_by=self.user,
+        )
+
+        run_timepoint_diagnosis(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'success')
+        self.assertEqual(run.context_snapshot['structured_report']['summary'], '')
+        self.assertIn('结构化诊断报告解析失败', run.context_snapshot['warnings'][-1])
+        self.assertNotIn('__STRUCTURED_REPORT__', run.ai_result)
