@@ -848,21 +848,20 @@ def run_timepoint_diagnosis(self, diagnosis_id):
         context['evidence_index'] = build_evidence_index(context)
         context['structured_report'] = {}
 
-        prompt_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
-        prompt = (
-            "你是资深 SRE。请基于以下时间点诊断上下文，分析系统或项目在该时间窗口的异常现象、"
-            "可能根因、需要继续验证的证据、建议处置步骤。请优先关联日志、指标、告警、流水线和任务记录。"
-            "如果某类上下文缺失，请明确说明本次诊断的证据限制。"
-            "请先输出一段固定格式的结构化 JSON，格式为 __STRUCTURED_REPORT__:{...}。"
-            "JSON 必须包含 summary、impact_scope、evidence、possible_causes、recommended_actions、risks、next_checks。"
-            "其中 evidence 使用 {ref, finding}，possible_causes 使用 {title, confidence, evidence_refs}，"
-            "recommended_actions 使用 {action, priority, evidence_refs}。"
-            "所有 evidence_refs 尽量引用 evidence_index 中的 ref，例如 LOG-1、METRIC-1、ALERT-1。"
-            "结构化 JSON 后面再输出 Markdown 诊断报告。\n\n"
-            f"{prompt_context}"
-        )
-
         rag_service = RAGService()
+        prompt_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
+        prompt_vars = {
+            'prefix': rag_service.personality.get('prefix', ''),
+            'diagnosis_context': prompt_context,
+        }
+        prompt_template = rag_service._get_prompt("timepoint_diagnosis")
+        try:
+            prompt = prompt_template.format(**prompt_vars)
+        except Exception as prompt_exc:
+            from apps.ai_engine.prompt_defaults import DEFAULT_PROMPTS
+            logger.warning("[SRE Diagnosis] Failed to format custom timepoint diagnosis prompt: %s", prompt_exc)
+            context['warnings'].append(f"时间点诊断提示词格式化失败，已使用默认模板：{prompt_exc}")
+            prompt = DEFAULT_PROMPTS["timepoint_diagnosis"]["template"].format(**prompt_vars)
         chain = rag_service.get_chat_chain()
         raw_ai_result = chain.invoke(prompt)
         structured_report, ai_result, parse_warning = extract_structured_report(raw_ai_result)

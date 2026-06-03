@@ -6,6 +6,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.ai_engine.models import AIPromptTemplate
 from apps.rbac_permission.models import Project
 from apps.sre_management.diagnosis_utils import extract_log_highlights, match_services_for_alert
 from apps.sre_management.models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService
@@ -110,6 +111,15 @@ class SREObservabilityTestCase(TestCase):
             '## 诊断结论\n服务指标和日志已分析。'
         )
         mock_chain_factory.return_value = chain
+        AIPromptTemplate.objects.update_or_create(
+            code='timepoint_diagnosis',
+            defaults={
+                'name': '自定义时间点诊断模板',
+                'description': '测试自定义时间点诊断提示词是否生效',
+                'template': '{prefix}\nCUSTOM_TIMEPOINT_PROMPT::{diagnosis_context}',
+                'is_system': True,
+            },
+        )
         run = DiagnosisRun.objects.create(
             title='订单服务时间点诊断',
             project=self.project,
@@ -131,6 +141,7 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(run.context_snapshot['structured_report']['summary'], '订单服务异常')
         self.assertEqual(run.context_snapshot['evidence_index'][0]['ref'], 'LOG-1')
         self.assertNotIn('__STRUCTURED_REPORT__', run.ai_result)
+        self.assertIn('CUSTOM_TIMEPOINT_PROMPT::', chain.invoke.call_args[0][0])
 
     def test_alert_service_label_matches_observed_service_code(self):
         alert = AlertEvent.objects.create(

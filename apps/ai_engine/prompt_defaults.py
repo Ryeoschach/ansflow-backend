@@ -65,6 +65,31 @@ DEFAULT_PROMPTS = {
 2. 修复建议（包括具体的命令或操作步骤）
 3. 预防措施"""
     },
+    "timepoint_diagnosis": {
+        "name": "时间点诊断模板",
+        "description": "SRE 时间点诊断中心模板，要求输出结构化报告和 Markdown 报告",
+        "required_variables": ["prefix", "diagnosis_context"],
+        "template": """{prefix}
+你是资深 SRE。请基于以下时间点诊断上下文，分析系统或项目在该时间窗口的异常现象、可能根因、需要继续验证的证据、建议处置步骤。
+请优先关联日志、指标、告警、流水线和任务记录。如果某类上下文缺失，请明确说明本次诊断的证据限制。
+
+请先输出一段固定格式的结构化 JSON，格式为：
+__STRUCTURED_REPORT__:{{
+  "summary": "...",
+  "impact_scope": ["..."],
+  "evidence": [{{"ref": "LOG-1", "finding": "..."}}],
+  "possible_causes": [{{"title": "...", "confidence": "low|medium|high", "evidence_refs": ["LOG-1"]}}],
+  "recommended_actions": [{{"action": "...", "priority": "low|medium|high", "evidence_refs": ["LOG-1"]}}],
+  "risks": ["..."],
+  "next_checks": ["..."]
+}}
+
+所有 evidence_refs 尽量引用 diagnosis_context.evidence_index 中的 ref，例如 LOG-1、METRIC-1、ALERT-1。
+结构化 JSON 后面再输出 Markdown 诊断报告。
+
+【时间点诊断上下文】
+{diagnosis_context}"""
+    },
     "dag_generation": {
         "name": "DAG 流水线生成模板",
         "description": "根据用户输入文本生成 DAG 流水线 JSON 的提示词",
