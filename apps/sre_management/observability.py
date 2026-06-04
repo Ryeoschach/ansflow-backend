@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from copy import deepcopy
 from urllib.parse import urljoin
 
 import requests
@@ -51,6 +52,31 @@ def _render_template(template: str, context: dict[str, Any]) -> str:
     return result
 
 
+def _template_context(service: ObservedService | None, start: datetime | None = None, end: datetime | None = None, limit: int | None = None) -> dict[str, Any]:
+    selector = service.log_label_selector if service else {}
+    context: dict[str, Any] = {
+        'start': start.isoformat() if start else '',
+        'end': end.isoformat() if end else '',
+        'limit': limit or '',
+        'query': service.log_query if service and service.log_query else '',
+        'service.code': service.code if service else '',
+        'service.name': service.name if service else '',
+        'namespace': service.namespace if service else '',
+    }
+    context.update({f'label.{key}': value for key, value in (selector or {}).items()})
+    return context
+
+
+def _render_mapping(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _render_template(value, context)
+    if isinstance(value, dict):
+        return {key: _render_mapping(item, context) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_render_mapping(item, context) for item in value]
+    return value
+
+
 class BaseObservabilityAdapter:
     def __init__(self, datasource: ObservabilityDataSource):
         self.datasource = datasource
@@ -65,10 +91,27 @@ class BaseObservabilityAdapter:
             kwargs['auth'] = (self.datasource.username or '', self.datasource.password or '')
         elif self.datasource.auth_type == 'header' and self.datasource.query_config.get('headers'):
             headers.update({str(k): str(v) for k, v in self.datasource.query_config.get('headers', {}).items()})
+        elif self.datasource.auth_type == 'query':
+            pass
+        elif self.datasource.auth_type == 'cloud_signature':
+            raise ObservabilityAdapterError(
+                f"{self.datasource.provider} cloud_signature auth is not implemented yet. "
+                "Use bearer/header auth with a proxy or generic_http gateway."
+            )
 
         if headers:
             kwargs['headers'] = headers
         return kwargs
+
+    def _query_params(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        merged = {}
+        if self.datasource.auth_type == 'query':
+            merged.update({
+                str(k): str(v)
+                for k, v in (self.datasource.query_config.get('auth_params') or {}).items()
+            })
+        merged.update(params or {})
+        return merged
 
     def test_connection(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -89,7 +132,7 @@ class BaseObservabilityAdapter:
 class VictoriaMetricsAdapter(BaseObservabilityAdapter):
     def test_connection(self) -> dict[str, Any]:
         url = _api_url(self.datasource.base_url, '/api/v1/query')
-        response = requests.get(url, params={'query': 'up'}, **self._request_kwargs())
+        response = requests.get(url, params=self._query_params({'query': 'up'}), **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
@@ -116,12 +159,12 @@ class VictoriaMetricsAdapter(BaseObservabilityAdapter):
             url = _api_url(self.datasource.base_url, '/api/v1/query_range')
             response = requests.get(
                 url,
-                params={
+                params=self._query_params({
                     'query': query,
                     'start': int(start.timestamp()),
                     'end': int(end.timestamp()),
                     'step': step,
-                },
+                }),
                 **self._request_kwargs(),
             )
             response.raise_for_status()
@@ -137,7 +180,7 @@ class VictoriaMetricsAdapter(BaseObservabilityAdapter):
 class VictoriaLogsAdapter(BaseObservabilityAdapter):
     def test_connection(self) -> dict[str, Any]:
         url = _api_url(self.datasource.base_url, '/select/logsql/query')
-        response = requests.get(url, params={'query': '*', 'limit': 1}, **self._request_kwargs())
+        response = requests.get(url, params=self._query_params({'query': '*', 'limit': 1}), **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
@@ -147,12 +190,12 @@ class VictoriaLogsAdapter(BaseObservabilityAdapter):
         url = _api_url(self.datasource.base_url, '/select/logsql/query')
         response = requests.get(
             url,
-            params={
+            params=self._query_params({
                 'query': query,
                 'start': start.isoformat(),
                 'end': end.isoformat(),
                 'limit': limit,
-            },
+            }),
             **self._request_kwargs(),
         )
         response.raise_for_status()
@@ -172,12 +215,12 @@ class LokiLogAdapter(BaseObservabilityAdapter):
         url = _api_url(self.datasource.base_url, '/loki/api/v1/query_range')
         response = requests.get(
             url,
-            params={
+            params=self._query_params({
                 'query': query,
                 'start': int(start.timestamp() * 1_000_000_000),
                 'end': int(end.timestamp() * 1_000_000_000),
                 'limit': limit,
-            },
+            }),
             **self._request_kwargs(),
         )
         response.raise_for_status()
@@ -234,13 +277,7 @@ class GenericHttpLogAdapter(BaseObservabilityAdapter):
         method = str(config.get('method') or 'GET').upper()
         path = config.get('path') or '/'
         selector = service.log_label_selector or {}
-        template_context = {
-            'start': start.isoformat(),
-            'end': end.isoformat(),
-            'limit': limit,
-            'query': service.log_query or '',
-            **{f'label.{key}': value for key, value in selector.items()},
-        }
+        template_context = _template_context(service, start, end, limit)
         params = {
             config.get('start_param', 'start'): start.isoformat(),
             config.get('end_param', 'end'): end.isoformat(),
@@ -248,23 +285,33 @@ class GenericHttpLogAdapter(BaseObservabilityAdapter):
         }
         if service.log_query:
             params[config.get('query_param', 'query')] = service.log_query
-        params.update(config.get('params') or {})
+        params.update(_render_mapping(config.get('params') or {}, template_context))
         body = config.get('body')
-        if isinstance(body, dict):
-            body = {
-                key: _render_template(str(value), template_context) if isinstance(value, str) else value
-                for key, value in body.items()
-            }
+        if isinstance(body, (dict, list, str)):
+            body = _render_mapping(body, template_context)
         response = requests.request(
             method,
             _api_url(self.datasource.base_url, path),
-            params=params if method == 'GET' else None,
+            params=self._query_params(params) if method == 'GET' else self._query_params({}),
             json=body if method != 'GET' else None,
             **self._request_kwargs(),
         )
         response.raise_for_status()
         payload = _response_payload(response)
         return _log_result(self.datasource, service.log_query or str(selector), payload)
+
+
+class AliyunSLSLogAdapter(GenericHttpLogAdapter):
+    """HTTP-compatible SLS adapter.
+
+    Direct Aliyun SLS OpenAPI signature is intentionally not embedded here.
+    Use bearer/header auth against a gateway or proxy, or add a dedicated
+    signer later without changing diagnosis task code.
+    """
+
+
+class TencentCLSLogAdapter(GenericHttpLogAdapter):
+    """HTTP-compatible CLS adapter; see AliyunSLSLogAdapter note."""
 
 
 def _response_payload(response) -> Any:
@@ -320,6 +367,166 @@ def _normalize_log_item(item: Any, field_mapping: dict[str, str]) -> dict[str, A
     }
 
 
+DATASOURCE_CAPABILITIES = {
+    'victoriametrics': {
+        'label': 'VictoriaMetrics',
+        'kind': 'metric',
+        'supports_metrics': True,
+        'supports_logs': False,
+        'auth_types': ['none', 'bearer', 'basic', 'header', 'query'],
+        'default_base_url': 'http://victoriametrics:8428',
+        'query_config': {},
+        'field_mapping': {},
+        'response_mapping': {},
+        'notes': 'PromQL query_range compatible datasource.',
+    },
+    'victorialogs': {
+        'label': 'VictoriaLogs',
+        'kind': 'log',
+        'supports_metrics': False,
+        'supports_logs': True,
+        'auth_types': ['none', 'bearer', 'basic', 'header', 'query'],
+        'default_base_url': 'http://victorialogs:9428',
+        'query_config': {},
+        'field_mapping': {
+            'timestamp': '_time',
+            'level': 'level',
+            'message': '_msg',
+            'service': 'service',
+            'instance': 'instance',
+            'labels': 'labels',
+        },
+        'response_mapping': {'items_path': 'data'},
+        'notes': 'Uses /select/logsql/query. Service log_query can override generated label selector.',
+    },
+    'elasticsearch': {
+        'label': 'Elasticsearch',
+        'kind': 'log',
+        'supports_metrics': False,
+        'supports_logs': True,
+        'auth_types': ['none', 'bearer', 'basic', 'header', 'query'],
+        'default_base_url': 'http://elasticsearch:9200',
+        'query_config': {'index': 'logs-*', 'query': '*'},
+        'field_mapping': {
+            'timestamp': '@timestamp',
+            'level': 'level',
+            'message': 'message',
+            'service': 'service.name',
+            'instance': 'host.name',
+            'labels': 'labels',
+        },
+        'response_mapping': {'items_path': 'hits.hits'},
+        'notes': 'Queries /{index}/_search and normalizes hits._source fields.',
+    },
+    'loki': {
+        'label': 'Loki',
+        'kind': 'log',
+        'supports_metrics': False,
+        'supports_logs': True,
+        'auth_types': ['none', 'bearer', 'basic', 'header', 'query'],
+        'default_base_url': 'http://loki:3100',
+        'query_config': {},
+        'field_mapping': {
+            'timestamp': 'timestamp',
+            'message': 'message',
+            'service': 'labels.service',
+            'instance': 'labels.instance',
+            'labels': 'labels',
+        },
+        'response_mapping': {},
+        'notes': 'Uses /loki/api/v1/query_range. log_label_selector is rendered as a LogQL selector.',
+    },
+    'generic_http': {
+        'label': 'Generic HTTP',
+        'kind': 'log',
+        'supports_metrics': False,
+        'supports_logs': True,
+        'auth_types': ['none', 'bearer', 'basic', 'header', 'query'],
+        'default_base_url': 'http://logs-gateway:8080',
+        'query_config': {
+            'method': 'GET',
+            'path': '/logs/search',
+            'health_path': '/health',
+            'query_param': 'query',
+            'start_param': 'start',
+            'end_param': 'end',
+            'limit_param': 'limit',
+            'params': {'service': '{{service.code}}'},
+        },
+        'field_mapping': {
+            'timestamp': 'timestamp',
+            'level': 'level',
+            'message': 'message',
+            'service': 'service',
+            'instance': 'instance',
+            'labels': 'labels',
+        },
+        'response_mapping': {'items_path': 'data.items'},
+        'notes': 'For log gateways, cloud log proxies, or any JSON API. Supports {{start}}, {{end}}, {{limit}}, {{query}}, {{service.code}}, {{label.xxx}} templates.',
+    },
+    'aliyun_sls': {
+        'label': 'Aliyun SLS',
+        'kind': 'log',
+        'supports_metrics': False,
+        'supports_logs': True,
+        'auth_types': ['bearer', 'header', 'query'],
+        'default_base_url': 'https://sls-proxy.example.com',
+        'query_config': {
+            'method': 'GET',
+            'path': '/logs/search',
+            'health_path': '/health',
+            'query_param': 'query',
+            'start_param': 'from',
+            'end_param': 'to',
+            'limit_param': 'line',
+            'params': {'project': '{{label.project}}', 'logstore': '{{label.logstore}}'},
+        },
+        'field_mapping': {
+            'timestamp': '__time__',
+            'level': 'level',
+            'message': 'message',
+            'service': 'service',
+            'instance': 'instance',
+            'labels': 'labels',
+        },
+        'response_mapping': {'items_path': 'data.items'},
+        'notes': 'Use an SLS proxy or gateway that handles Aliyun signature. Direct cloud_signature auth is reserved for a later signer plugin.',
+    },
+    'tencent_cls': {
+        'label': 'Tencent CLS',
+        'kind': 'log',
+        'supports_metrics': False,
+        'supports_logs': True,
+        'auth_types': ['bearer', 'header', 'query'],
+        'default_base_url': 'https://cls-proxy.example.com',
+        'query_config': {
+            'method': 'GET',
+            'path': '/logs/search',
+            'health_path': '/health',
+            'query_param': 'query',
+            'start_param': 'start_time',
+            'end_param': 'end_time',
+            'limit_param': 'limit',
+            'params': {'topic_id': '{{label.topic_id}}'},
+        },
+        'field_mapping': {
+            'timestamp': 'time',
+            'level': 'level',
+            'message': 'content',
+            'service': 'service',
+            'instance': 'instance',
+            'labels': 'labels',
+        },
+        'response_mapping': {'items_path': 'data.results'},
+        'notes': 'Use a CLS proxy or gateway that handles Tencent Cloud signature. Direct cloud_signature auth is reserved for a later signer plugin.',
+    },
+}
+
+
+def get_datasource_capabilities() -> dict[str, dict[str, Any]]:
+    return deepcopy(DATASOURCE_CAPABILITIES)
+
+
 METRIC_ADAPTERS = {
     'victoriametrics': VictoriaMetricsAdapter,
 }
@@ -329,6 +536,8 @@ LOG_ADAPTERS = {
     'elasticsearch': ElasticsearchLogAdapter,
     'loki': LokiLogAdapter,
     'generic_http': GenericHttpLogAdapter,
+    'aliyun_sls': AliyunSLSLogAdapter,
+    'tencent_cls': TencentCLSLogAdapter,
 }
 
 

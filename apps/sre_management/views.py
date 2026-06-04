@@ -7,7 +7,7 @@ from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService, SelfHealingPolicy
 from .diagnosis_utils import match_services_for_alert
-from .observability import get_observability_adapter
+from .observability import get_datasource_capabilities, get_observability_adapter
 from .rule_templates import list_templates, render_template
 from .serializers import (
     AlertEventSerializer,
@@ -494,6 +494,10 @@ class ObservabilityDataSourceViewSet(viewsets.ModelViewSet):
         'is_active': ['exact'],
         'is_default': ['exact'],
     }
+
+    @action(detail=False, methods=['get'], url_path='capabilities')
+    def capabilities(self, request):
+        return Response(get_datasource_capabilities(), status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='test-connection')
     def test_connection(self, request, pk=None):

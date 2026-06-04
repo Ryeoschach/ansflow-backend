@@ -10,6 +10,7 @@ from apps.ai_engine.models import AIPromptTemplate
 from apps.rbac_permission.models import Project
 from apps.sre_management.diagnosis_utils import extract_log_highlights, match_services_for_alert
 from apps.sre_management.models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService
+from apps.sre_management.observability import get_log_adapter
 from apps.sre_management.rule_templates import render_template
 from apps.sre_management.tasks import run_timepoint_diagnosis
 
@@ -86,6 +87,76 @@ class SREObservabilityTestCase(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data['ok'])
+
+    def test_datasource_capabilities_api_exposes_log_providers(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-observability-datasources-capabilities')
+
+        response = client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('generic_http', response.data)
+        self.assertTrue(response.data['generic_http']['supports_logs'])
+        self.assertIn('response_mapping', response.data['elasticsearch'])
+
+    @patch('apps.sre_management.observability.requests.request')
+    def test_generic_http_log_adapter_uses_templates_and_normalizes_items(self, mock_request):
+        datasource = ObservabilityDataSource.objects.create(
+            name='Generic Logs',
+            kind='log',
+            provider='generic_http',
+            type='generic_http',
+            base_url='http://logs-gateway:8080',
+            auth_type='query',
+            query_config={
+                'method': 'GET',
+                'path': '/search',
+                'query_param': 'q',
+                'params': {'service': '{{service.code}}', 'env': '{{label.env}}'},
+                'auth_params': {'api_key': 'secret'},
+            },
+            field_mapping={
+                'timestamp': 'ts',
+                'level': 'severity',
+                'message': 'body',
+                'service': 'svc',
+                'instance': 'host',
+            },
+            response_mapping={'items_path': 'data.items'},
+        )
+        self.service.log_label_selector = {'env': 'prod'}
+        self.service.log_query = 'error OR exception'
+        self.service.save(update_fields=['log_label_selector', 'log_query'])
+        response = MagicMock()
+        response.json.return_value = {
+            'data': {
+                'items': [{
+                    'ts': '2026-06-04T10:00:00Z',
+                    'severity': 'error',
+                    'body': 'boom',
+                    'svc': 'order-api',
+                    'host': 'pod-1',
+                }]
+            }
+        }
+        response.raise_for_status.return_value = None
+        mock_request.return_value = response
+
+        result = get_log_adapter(datasource).query_logs(
+            self.service,
+            timezone.now(),
+            timezone.now(),
+            limit=5,
+        )
+
+        self.assertEqual(result['items'][0]['message'], 'boom')
+        self.assertEqual(result['items'][0]['service'], 'order-api')
+        request_kwargs = mock_request.call_args.kwargs
+        self.assertEqual(request_kwargs['params']['service'], 'order-api')
+        self.assertEqual(request_kwargs['params']['env'], 'prod')
+        self.assertEqual(request_kwargs['params']['api_key'], 'secret')
+        self.assertEqual(request_kwargs['params']['q'], 'error OR exception')
 
     @patch('apps.sre_management.observability.get_log_adapter')
     @patch('apps.sre_management.observability.get_metric_adapter')
