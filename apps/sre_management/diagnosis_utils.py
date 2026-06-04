@@ -213,6 +213,29 @@ def build_evidence_index(context: dict[str, Any]) -> list[dict[str, Any]]:
             'raw': item,
         })
 
+    ci_cd_context = context.get('ci_cd_context') or {}
+    for index, item in enumerate(ci_cd_context.get('failed_nodes') or [], start=1):
+        evidence.append({
+            'ref': f'NODE-{index}',
+            'type': 'pipeline_node',
+            'title': item.get('node_label') or item.get('node_id') or f"NodeRun #{item.get('id')}",
+            'summary': f"status={item.get('status')}, type={item.get('node_type')}",
+            'timestamp': item.get('end_time') or item.get('create_time'),
+            'source': item.get('run_id'),
+            'raw': item,
+        })
+
+    for index, item in enumerate(ci_cd_context.get('node_log_highlights') or [], start=1):
+        evidence.append({
+            'ref': f'NODELOG-{index}',
+            'type': 'pipeline_node_log',
+            'title': item.get('node_label') or item.get('node_id') or 'Node log highlight',
+            'summary': item.get('line'),
+            'timestamp': item.get('timestamp'),
+            'source': item.get('node_id'),
+            'raw': item,
+        })
+
     for index, item in enumerate(ansflow_events.get('ansible_executions') or [], start=1):
         evidence.append({
             'ref': f'ANSIBLE-{index}',
@@ -221,6 +244,17 @@ def build_evidence_index(context: dict[str, Any]) -> list[dict[str, Any]]:
             'summary': f"status={item.get('status')}",
             'timestamp': item.get('create_time'),
             'source': item.get('task_id'),
+            'raw': item,
+        })
+
+    for index, item in enumerate(ci_cd_context.get('ansible_task_log_highlights') or [], start=1):
+        evidence.append({
+            'ref': f'TASKLOG-{index}',
+            'type': 'ansible_task_log',
+            'title': item.get('host') or f"TaskLog #{item.get('id')}",
+            'summary': item.get('line') or item.get('output'),
+            'timestamp': item.get('create_time'),
+            'source': item.get('host'),
             'raw': item,
         })
 

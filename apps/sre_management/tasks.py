@@ -1,7 +1,7 @@
 import logging
 import os
 from celery import shared_task
-from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, SelfHealingPolicy
+from .models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, SelfHealingPolicy
 from apps.ai_engine.rag_service import RAGService
 from django.utils import timezone
 
@@ -11,6 +11,161 @@ os.environ["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 logger = logging.getLogger(__name__)
+
+
+def _template_snapshot_for_run(run):
+    query_params = run.query_params or {}
+    snapshot = query_params.get('template_snapshot')
+    if snapshot:
+        return snapshot
+    if run.template_id:
+        template = DiagnosisTemplate.objects.filter(id=run.template_id).first()
+        if template:
+            snapshot = template.to_snapshot()
+            query_params['template_snapshot'] = snapshot
+            run.query_params = query_params
+            run.save(update_fields=['query_params'])
+            return snapshot
+    return None
+
+
+def _template_collection_config(template_snapshot):
+    content = (template_snapshot or {}).get('content') or {}
+    return content.get('context_collection') or {}
+
+
+def _template_log_keywords(template_snapshot):
+    content = (template_snapshot or {}).get('content') or {}
+    keywords = content.get('log_keywords') or []
+    return [str(item).lower() for item in keywords if str(item).strip()]
+
+
+def _highlight_text_lines(text, keywords, limit=30):
+    if not text:
+        return []
+    keywords = keywords or ['error', 'failed', 'exception', 'timeout']
+    highlights = []
+    for line_no, line in enumerate(str(text).splitlines(), start=1):
+        lower = line.lower()
+        matched = [keyword for keyword in keywords if keyword in lower]
+        if matched:
+            highlights.append({'line_no': line_no, 'line': line[:1000], 'matched_keywords': matched})
+        if len(highlights) >= limit:
+            break
+    return highlights
+
+
+def _collect_ci_cd_context(run, start, end, template_snapshot):
+    from apps.approval_center.models import ApprovalTicket
+    from apps.pipeline_management.models import PipelineNodeRun, PipelineRun
+    from apps.task_management.models import AnsibleExecution, TaskLog
+    from django.db.models import Q
+
+    query_params = run.query_params or {}
+    collection = _template_collection_config(template_snapshot)
+    keywords = _template_log_keywords(template_snapshot)
+    context = {
+        'target': {
+            'pipeline_run_id': query_params.get('pipeline_run_id'),
+            'pipeline_node_run_id': query_params.get('pipeline_node_run_id'),
+            'ansible_execution_id': query_params.get('ansible_execution_id'),
+        },
+        'pipeline_run': None,
+        'failed_nodes': [],
+        'node_log_highlights': [],
+        'ansible_execution': None,
+        'ansible_task_logs': [],
+        'ansible_task_log_highlights': [],
+        'approval_records': [],
+        'collection_summary': {
+            'pipeline_run': {'status': 'skipped', 'count': 0},
+            'failed_nodes': {'status': 'skipped', 'count': 0},
+            'node_logs': {'status': 'skipped', 'count': 0},
+            'ansible_execution': {'status': 'skipped', 'count': 0},
+            'ansible_task_logs': {'status': 'skipped', 'count': 0},
+            'approval_records': {'status': 'skipped', 'count': 0},
+        },
+    }
+
+    pipeline_run = None
+    pipeline_run_id = query_params.get('pipeline_run_id')
+    node_run_id = query_params.get('pipeline_node_run_id')
+    ansible_execution_id = query_params.get('ansible_execution_id')
+    if pipeline_run_id:
+        pipeline_run = PipelineRun.objects.select_related('pipeline').filter(id=pipeline_run_id).first()
+    elif node_run_id:
+        node_run = PipelineNodeRun.objects.select_related('run', 'run__pipeline').filter(id=node_run_id).first()
+        pipeline_run = node_run.run if node_run else None
+
+    if pipeline_run and collection.get('pipeline_run', True):
+        context['pipeline_run'] = {
+            'id': pipeline_run.id,
+            'pipeline_id': pipeline_run.pipeline_id,
+            'pipeline_name': getattr(pipeline_run.pipeline, 'name', None),
+            'status': pipeline_run.status,
+            'trigger_type': pipeline_run.trigger_type,
+            'start_time': pipeline_run.start_time,
+            'end_time': pipeline_run.end_time,
+            'create_time': pipeline_run.create_time,
+            'extra_vars': pipeline_run.extra_vars,
+        }
+        context['collection_summary']['pipeline_run'] = {'status': 'success', 'count': 1}
+
+    if collection.get('failed_nodes', True):
+        node_queryset = PipelineNodeRun.objects.all()
+        if node_run_id:
+            node_queryset = node_queryset.filter(id=node_run_id)
+        elif pipeline_run:
+            node_queryset = node_queryset.filter(run=pipeline_run, status='failed')
+        else:
+            node_queryset = node_queryset.filter(create_time__range=(start, end), status='failed')
+        failed_nodes = list(node_queryset.values(
+            'id', 'run_id', 'node_id', 'node_type', 'node_label', 'status',
+            'approval_time', 'approval_comment', 'start_time', 'end_time', 'create_time', 'output_data',
+        )[:20])
+        context['failed_nodes'] = failed_nodes
+        context['collection_summary']['failed_nodes'] = {'status': 'success', 'count': len(failed_nodes)}
+
+        if collection.get('node_logs', True):
+            log_nodes = PipelineNodeRun.objects.filter(id__in=[item['id'] for item in failed_nodes])
+            for node in log_nodes:
+                for item in _highlight_text_lines(node.logs, keywords, limit=10):
+                    item.update({'node_run_id': node.id, 'node_id': node.node_id, 'node_label': node.node_label})
+                    context['node_log_highlights'].append(item)
+            context['collection_summary']['node_logs'] = {'status': 'success', 'count': len(context['node_log_highlights'])}
+
+    if collection.get('ansible_execution') and ansible_execution_id:
+        execution = AnsibleExecution.objects.select_related('task').filter(id=ansible_execution_id).first()
+        if execution:
+            context['ansible_execution'] = {
+                'id': execution.id,
+                'task_id': execution.task_id,
+                'task_name': getattr(execution.task, 'name', None),
+                'status': execution.status,
+                'result_summary': execution.result_summary,
+                'extra_vars_snapshot': execution.extra_vars_snapshot,
+                'start_time': execution.start_time,
+                'end_time': execution.end_time,
+                'create_time': execution.create_time,
+            }
+            context['collection_summary']['ansible_execution'] = {'status': 'success', 'count': 1}
+            if collection.get('ansible_task_logs', True):
+                logs = list(TaskLog.objects.filter(execution=execution).values('id', 'host', 'output', 'create_time')[:50])
+                context['ansible_task_logs'] = logs
+                for log in logs:
+                    for item in _highlight_text_lines(log.get('output'), keywords, limit=5):
+                        item.update({'id': log.get('id'), 'host': log.get('host'), 'create_time': log.get('create_time')})
+                        context['ansible_task_log_highlights'].append(item)
+                context['collection_summary']['ansible_task_logs'] = {'status': 'success', 'count': len(logs)}
+
+    if collection.get('approval_records', True):
+        approvals = ApprovalTicket.objects.filter(create_time__range=(start, end))
+        if pipeline_run:
+            approvals = approvals.filter(Q(target_id=str(pipeline_run.id)) | Q(title__icontains=str(pipeline_run.id)))
+        context['approval_records'] = list(approvals.values('id', 'title', 'status', 'resource_type', 'target_id', 'create_time', 'audit_time')[:20])
+        context['collection_summary']['approval_records'] = {'status': 'success', 'count': len(context['approval_records'])}
+
+    return context
 
 @shared_task(name="apps.sre_management.tasks.analyze_alert_event", bind=True, max_retries=3)
 def analyze_alert_event(self, alert_id):
@@ -716,7 +871,7 @@ def run_timepoint_diagnosis(self, diagnosis_id):
     from .diagnosis_utils import build_evidence_index, extract_log_highlights, extract_structured_report
     from .observability import get_log_adapter, get_metric_adapter
 
-    run = DiagnosisRun.objects.select_related('service', 'project', 'alert').filter(id=diagnosis_id).first()
+    run = DiagnosisRun.objects.select_related('service', 'project', 'alert', 'template').filter(id=diagnosis_id).first()
     if not run:
         logger.warning("[SRE Diagnosis] DiagnosisRun %s not found", diagnosis_id)
         return
@@ -728,6 +883,8 @@ def run_timepoint_diagnosis(self, diagnosis_id):
 
     try:
         service = run.service
+        template_snapshot = _template_snapshot_for_run(run)
+        template_collection = _template_collection_config(template_snapshot)
         start = run.diagnosis_time - timezone.timedelta(minutes=run.window_minutes)
         end = run.diagnosis_time + timezone.timedelta(minutes=run.window_minutes)
         context = {
@@ -743,6 +900,13 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                 'name': getattr(run.project, 'name', None),
                 'code': getattr(run.project, 'code', None),
             },
+            'template': {
+                'id': (template_snapshot or {}).get('id'),
+                'code': (template_snapshot or {}).get('code'),
+                'name': (template_snapshot or {}).get('name'),
+                'category': (template_snapshot or {}).get('category'),
+                'target_type': ((template_snapshot or {}).get('content') or {}).get('target_type'),
+            } if template_snapshot else None,
             'service': None,
             'metrics': [],
             'logs': None,
@@ -754,8 +918,10 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                 'logs': {'status': 'skipped', 'datasource': None, 'count': 0},
                 'log_highlights': {'status': 'skipped', 'count': 0},
                 'ansflow_events': {'status': 'pending', 'count': 0},
+                'ci_cd_context': {'status': 'skipped', 'count': 0},
             },
             'ansflow_events': {},
+            'ci_cd_context': {},
         }
         warnings = context['warnings']
 
@@ -770,7 +936,9 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                 'metric_label_selector': service.metric_label_selector,
                 'log_label_selector': service.log_label_selector,
             }
-            if metric_ds:
+            collect_metrics = template_collection.get('metrics', True)
+            collect_service_logs = template_collection.get('service_logs', True)
+            if metric_ds and collect_metrics:
                 context['collection_summary']['metrics']['datasource'] = {
                     'id': metric_ds.id,
                     'name': metric_ds.name,
@@ -786,10 +954,13 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                     context['collection_summary']['metrics']['status'] = 'failed'
                     context['collection_summary']['metrics']['error'] = str(metric_exc)
                     logger.warning("[SRE Diagnosis] %s", warning)
+            elif not collect_metrics:
+                context['collection_summary']['metrics']['status'] = 'skipped'
+                warnings.append("当前诊断模板未启用服务指标采集。")
             else:
                 warnings.append("未配置指标数据源，本次诊断将跳过指标上下文。")
 
-            if log_ds:
+            if log_ds and collect_service_logs:
                 context['collection_summary']['logs']['datasource'] = {
                     'id': log_ds.id,
                     'name': log_ds.name,
@@ -812,6 +983,10 @@ def run_timepoint_diagnosis(self, diagnosis_id):
                     context['collection_summary']['logs']['error'] = str(log_exc)
                     context['collection_summary']['log_highlights']['status'] = 'skipped'
                     logger.warning("[SRE Diagnosis] %s", warning)
+            elif not collect_service_logs:
+                context['collection_summary']['logs']['status'] = 'skipped'
+                context['collection_summary']['log_highlights']['status'] = 'skipped'
+                warnings.append("当前诊断模板未启用服务日志采集。")
             else:
                 warnings.append("未配置日志数据源，本次诊断将跳过日志上下文。")
         else:
@@ -837,6 +1012,16 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             'status': 'success',
             'count': sum(len(value) for value in context['ansflow_events'].values()),
         }
+        if template_snapshot:
+            context['ci_cd_context'] = _collect_ci_cd_context(run, start, end, template_snapshot)
+            context['collection_summary']['ci_cd_context'] = {
+                'status': 'success',
+                'count': sum(
+                    summary.get('count', 0)
+                    for summary in (context['ci_cd_context'].get('collection_summary') or {}).values()
+                    if isinstance(summary, dict)
+                ),
+            }
         if run.alert:
             context['source_alert'] = {
                 'id': run.alert_id,
@@ -854,13 +1039,13 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             'prefix': rag_service.personality.get('prefix', ''),
             'diagnosis_context': prompt_context,
         }
-        prompt_template = rag_service._get_prompt("timepoint_diagnosis")
+        prompt_template = ((template_snapshot or {}).get('content') or {}).get('prompt_template') or rag_service._get_prompt("timepoint_diagnosis")
         try:
             prompt = prompt_template.format(**prompt_vars)
         except Exception as prompt_exc:
             from apps.ai_engine.prompt_defaults import DEFAULT_PROMPTS
-            logger.warning("[SRE Diagnosis] Failed to format custom timepoint diagnosis prompt: %s", prompt_exc)
-            context['warnings'].append(f"时间点诊断提示词格式化失败，已使用默认模板：{prompt_exc}")
+            logger.warning("[SRE Diagnosis] Failed to format diagnosis prompt: %s", prompt_exc)
+            context['warnings'].append(f"诊断模板 Prompt 格式化失败，已使用默认模板：{prompt_exc}")
             prompt = DEFAULT_PROMPTS["timepoint_diagnosis"]["template"].format(**prompt_vars)
         chain = rag_service.get_chat_chain()
         raw_ai_result = chain.invoke(prompt)

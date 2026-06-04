@@ -177,6 +177,53 @@ class ObservedService(BaseModel):
         return f"{self.project.code}/{self.code}"
 
 
+class DiagnosisTemplate(BaseModel):
+    """场景化诊断模板。"""
+
+    SCOPE_CHOICES = (
+        ('global', '全局'),
+        ('project', '项目'),
+    )
+    CATEGORY_CHOICES = (
+        ('ci_cd', 'CI/CD 发布诊断'),
+    )
+
+    scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default='global', verbose_name="模板范围")
+    project = models.ForeignKey('rbac_permission.Project', on_delete=models.CASCADE, null=True, blank=True, related_name='diagnosis_templates', verbose_name="所属项目")
+    code = models.CharField(max_length=80, verbose_name="模板编码")
+    name = models.CharField(max_length=120, verbose_name="模板名称")
+    description = models.TextField(blank=True, null=True, verbose_name="模板描述")
+    category = models.CharField(max_length=30, choices=CATEGORY_CHOICES, default='ci_cd', verbose_name="诊断分类")
+    content = JSONField(default=dict, blank=True, verbose_name="模板内容")
+    is_builtin = models.BooleanField(default=False, verbose_name="是否内置")
+    is_active = models.BooleanField(default=True, verbose_name="是否启用")
+
+    class Meta:
+        db_table = 'sre_diagnosis_template'
+        unique_together = ('scope', 'project', 'code')
+        verbose_name = "诊断模板"
+        verbose_name_plural = verbose_name
+        ordering = ['scope', 'project_id', 'code']
+
+    def __str__(self):
+        return f"{self.code} ({self.scope})"
+
+    def to_snapshot(self):
+        return {
+            'id': self.id,
+            'scope': self.scope,
+            'project': self.project_id,
+            'code': self.code,
+            'name': self.name,
+            'description': self.description,
+            'category': self.category,
+            'content': self.content,
+            'is_builtin': self.is_builtin,
+            'is_active': self.is_active,
+            'version_time': self.update_time.isoformat() if self.update_time else None,
+        }
+
+
 class DiagnosisRun(BaseModel):
     """时间点诊断任务。"""
 
@@ -196,6 +243,7 @@ class DiagnosisRun(BaseModel):
     project = models.ForeignKey('rbac_permission.Project', on_delete=models.SET_NULL, null=True, blank=True, related_name='diagnosis_runs', verbose_name="项目")
     service = models.ForeignKey(ObservedService, on_delete=models.SET_NULL, null=True, blank=True, related_name='diagnosis_runs', verbose_name="服务")
     alert = models.ForeignKey(AlertEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name='diagnosis_runs', verbose_name="关联告警")
+    template = models.ForeignKey(DiagnosisTemplate, on_delete=models.SET_NULL, null=True, blank=True, related_name='diagnosis_runs', verbose_name="诊断模板")
     trigger_type = models.CharField(max_length=20, choices=TRIGGER_CHOICES, default='manual', verbose_name="触发方式")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', verbose_name="状态")
     diagnosis_time = models.DateTimeField(verbose_name="诊断时间点")

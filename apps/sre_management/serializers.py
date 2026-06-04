@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import (
     AlertEvent,
     DiagnosisRun,
+    DiagnosisTemplate,
     ObservabilityDataSource,
     ObservedService,
     SelfHealingPolicy,
@@ -79,10 +80,38 @@ class ObservedServiceSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class DiagnosisTemplateSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source='project.name', read_only=True)
+
+    class Meta:
+        model = DiagnosisTemplate
+        fields = '__all__'
+        read_only_fields = ['is_builtin']
+
+    def validate(self, attrs):
+        scope = attrs.get('scope', getattr(self.instance, 'scope', 'global'))
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        code = attrs.get('code', getattr(self.instance, 'code', None))
+        if scope == 'project' and not project:
+            raise serializers.ValidationError({'project': 'Project template requires project.'})
+        if scope == 'global':
+            attrs['project'] = None
+            project = None
+        if code:
+            queryset = DiagnosisTemplate.objects.filter(scope=scope, project=project, code=code)
+            if self.instance:
+                queryset = queryset.exclude(id=self.instance.id)
+            if queryset.exists():
+                raise serializers.ValidationError({'code': 'Template code already exists in this scope.'})
+        return attrs
+
+
 class DiagnosisRunSerializer(serializers.ModelSerializer):
     project_name = serializers.CharField(source='project.name', read_only=True)
     service_name = serializers.CharField(source='service.name', read_only=True)
     alert_name = serializers.CharField(source='alert.alert_name', read_only=True)
+    template_name = serializers.CharField(source='template.name', read_only=True)
+    template_code = serializers.CharField(source='template.code', read_only=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
 
     class Meta:

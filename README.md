@@ -65,9 +65,12 @@ Compose 中的 `ansflow-init` 服务会根据 `.env` 设置自动处理数据库
 GET  /api/v1/sre/observability-datasources/capabilities/
 POST /api/v1/sre/observed-services/{id}/preview-logs/
 POST /api/v1/sre/observed-services/{id}/preview-metrics/
+GET  /api/v1/sre/diagnosis-templates/
+POST /api/v1/sre/diagnosis-templates/{id}/run/
 ```
 
 这些接口用于数据源能力发现、服务映射日志预览和指标预览，便于在时间点诊断前验证标签选择器、字段映射和响应映射是否正确。
+诊断模板接口用于维护全局/项目级场景诊断包；第一版内置 CI/CD 发布诊断模板，详细使用说明见 AnsFlow Web 文档门户。
 
 ## License
 

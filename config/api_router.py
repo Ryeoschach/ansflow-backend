@@ -23,6 +23,7 @@ from apps.sre_management.views import (
     AlertEventViewSet,
     AlertRuleTemplateViewSet,
     DiagnosisRunViewSet,
+    DiagnosisTemplateViewSet,
     ObservabilityDataSourceViewSet,
     ObservedServiceViewSet,
     SelfHealingPolicyViewSet,
@@ -91,6 +92,7 @@ router.register(r'sre/alerts', AlertEventViewSet, basename='sre-alerts')
 router.register(r'sre/policies', SelfHealingPolicyViewSet, basename='sre-policies')
 router.register(r'sre/observability-datasources', ObservabilityDataSourceViewSet, basename='sre-observability-datasources')
 router.register(r'sre/observed-services', ObservedServiceViewSet, basename='sre-observed-services')
+router.register(r'sre/diagnosis-templates', DiagnosisTemplateViewSet, basename='sre-diagnosis-templates')
 router.register(r'sre/diagnosis-runs', DiagnosisRunViewSet, basename='sre-diagnosis-runs')
 router.register(r'sre/alert-rule-templates', AlertRuleTemplateViewSet, basename='sre-alert-rule-templates')
 

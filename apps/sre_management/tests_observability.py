@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 from apps.ai_engine.models import AIPromptTemplate
 from apps.rbac_permission.models import Project
 from apps.sre_management.diagnosis_utils import extract_log_highlights, match_services_for_alert
-from apps.sre_management.models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService
+from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService
 from apps.sre_management.observability import get_log_adapter
 from apps.sre_management.rule_templates import render_template
 from apps.sre_management.tasks import run_timepoint_diagnosis
@@ -409,3 +409,99 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(run.context_snapshot['structured_report']['summary'], '')
         self.assertIn('结构化诊断报告解析失败', run.context_snapshot['warnings'][-1])
         self.assertNotIn('__STRUCTURED_REPORT__', run.ai_result)
+
+    def test_builtin_diagnosis_template_cannot_be_deleted(self):
+        template = DiagnosisTemplate.objects.get(code='ci_pipeline_failure', scope='global')
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-detail', args=[template.id])
+
+        response = client.delete(url)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(DiagnosisTemplate.objects.filter(id=template.id).exists())
+
+    def test_project_template_overrides_global_template_in_list(self):
+        DiagnosisTemplate.objects.create(
+            scope='project',
+            project=self.project,
+            code='ci_pipeline_failure',
+            name='项目流水线失败诊断',
+            category='ci_cd',
+            content={'target_type': 'pipeline_run'},
+        )
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.get(url, {'project': self.project.id, 'page_size': 100})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['total'], 3)
+        self.assertTrue(DiagnosisTemplate.objects.filter(
+            scope='project',
+            project=self.project,
+            code='ci_pipeline_failure',
+        ).exists())
+
+    @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
+    def test_diagnosis_create_with_template_saves_snapshot_and_targets(self, mock_delay):
+        template = DiagnosisTemplate.objects.get(code='ci_pipeline_failure', scope='global')
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-runs-list')
+
+        response = client.post(url, {
+            'title': '模板化流水线诊断',
+            'project': self.project.id,
+            'template': template.id,
+            'pipeline_run_id': 123,
+            'pipeline_node_run_id': 456,
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        run = DiagnosisRun.objects.get(id=response.data['id'])
+        self.assertEqual(run.template_id, template.id)
+        self.assertEqual(run.query_params['template_snapshot']['code'], 'ci_pipeline_failure')
+        self.assertEqual(str(run.query_params['pipeline_run_id']), '123')
+        self.assertEqual(str(run.query_params['pipeline_node_run_id']), '456')
+
+    @patch('apps.sre_management.observability.get_metric_adapter')
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_template_prompt_format_error_degrades_without_failing_run(self, mock_chain_factory, mock_get_metric_adapter):
+        template = DiagnosisTemplate.objects.create(
+            scope='project',
+            project=self.project,
+            code='bad_prompt',
+            name='坏 Prompt 模板',
+            category='ci_cd',
+            content={
+                'target_type': 'pipeline_run',
+                'context_collection': {'metrics': False, 'service_logs': False},
+                'prompt_template': '{prefix}\n{missing_variable}\n{diagnosis_context}',
+            },
+        )
+        metric_adapter = MagicMock()
+        metric_adapter.query_metrics.return_value = []
+        mock_get_metric_adapter.return_value = metric_adapter
+        chain = MagicMock()
+        chain.invoke.return_value = '诊断结论：Prompt 已降级。'
+        mock_chain_factory.return_value = chain
+        run = DiagnosisRun.objects.create(
+            title='坏 Prompt 降级诊断',
+            project=self.project,
+            service=self.service,
+            template=template,
+            diagnosis_time=timezone.now(),
+            window_minutes=10,
+            query_params={'template_snapshot': template.to_snapshot()},
+            created_by=self.user,
+        )
+
+        run_timepoint_diagnosis(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'success')
+        self.assertIn('诊断模板 Prompt 格式化失败', ''.join(run.context_snapshot['warnings']))

@@ -5,11 +5,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from django.core.cache import cache
+from django.db import models
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
-from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService, SelfHealingPolicy
+from .models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService, SelfHealingPolicy
 from .diagnosis_utils import match_services_for_alert
 from .observability import get_datasource_capabilities, get_log_adapter, get_metric_adapter, get_observability_adapter
 from .rule_templates import list_templates, render_template
@@ -19,6 +20,7 @@ from .serializers import (
     AlertRuleTemplateRenderSerializer,
     AlertRuleTemplateSerializer,
     DiagnosisRunSerializer,
+    DiagnosisTemplateSerializer,
     ObservabilityDataSourceSerializer,
     ObservedServiceSerializer,
     SelfHealingPolicySerializer,
@@ -641,7 +643,7 @@ class ObservedServiceViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
 @extend_schema(tags=["SRE 时间点诊断"])
 class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
-    queryset = DiagnosisRun.objects.select_related('project', 'service', 'alert', 'created_by')
+    queryset = DiagnosisRun.objects.select_related('project', 'service', 'alert', 'template', 'created_by')
     serializer_class = DiagnosisRunSerializer
     permission_classes = [SmartRBACPermission]
     resource_code = "sre:diagnosis"
@@ -660,6 +662,7 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         alert = serializer.validated_data.get('alert')
         service = serializer.validated_data.get('service')
         project = serializer.validated_data.get('project')
+        template = serializer.validated_data.get('template')
         service_match = None
         save_kwargs = {'created_by': self.request.user}
         if alert and not service:
@@ -671,9 +674,16 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
                     save_kwargs['service'] = matched_service
 
         instance = serializer.save(**save_kwargs)
+        query_params = dict(instance.query_params or {})
+        for key in ('pipeline_run_id', 'pipeline_node_run_id', 'ansible_execution_id'):
+            value = self.request.data.get(key)
+            if value not in (None, ''):
+                query_params[key] = value
+        if template:
+            query_params['template_snapshot'] = template.to_snapshot()
         if service_match is not None:
-            query_params = dict(instance.query_params or {})
             query_params['service_match'] = service_match
+        if query_params != (instance.query_params or {}):
             instance.query_params = query_params
             instance.save(update_fields=['query_params'])
         from .tasks import run_timepoint_diagnosis
@@ -701,6 +711,92 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             obj.error_message = f"诊断任务提交失败：{task_exc}"
             obj.save(update_fields=['status', 'error_message'])
         return Response({'message': 'Diagnosis retry submitted'}, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=["SRE 诊断模板"])
+class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    queryset = DiagnosisTemplate.objects.select_related('project')
+    serializer_class = DiagnosisTemplateSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:diagnosis-template"
+    resource_type = "sre"
+    filterset_fields = {
+        'scope': ['exact'],
+        'code': ['exact'],
+        'category': ['exact'],
+        'is_active': ['exact'],
+        'is_builtin': ['exact'],
+    }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        project_id = self.request.query_params.get('project')
+        include_inactive = self.request.query_params.get('include_inactive') in ('1', 'true', 'True')
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        if project_id:
+            queryset = queryset.filter(models.Q(scope='global') | models.Q(project_id=project_id))
+            project_codes = list(DiagnosisTemplate.objects.filter(project_id=project_id).values_list('code', flat=True))
+            if project_codes:
+                queryset = queryset.exclude(scope='global', code__in=project_codes)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(is_builtin=False)
+
+    def update(self, request, *args, **kwargs):
+        template = self.get_object()
+        if template.is_builtin:
+            allowed = {'is_active'}
+            if any(key not in allowed for key in request.data.keys()):
+                return Response({'error': 'Built-in templates can only be enabled or disabled. Copy them before editing content.'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        template = self.get_object()
+        if template.is_builtin:
+            allowed = {'is_active'}
+            if any(key not in allowed for key in request.data.keys()):
+                return Response({'error': 'Built-in templates can only be enabled or disabled. Copy them before editing content.'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().partial_update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        template = self.get_object()
+        if template.is_builtin:
+            return Response({'error': 'Built-in templates cannot be deleted. Disable or copy them instead.'}, status=status.HTTP_400_BAD_REQUEST)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='copy')
+    def copy(self, request, pk=None):
+        source = self.get_object()
+        data = {
+            'scope': request.data.get('scope') or 'project',
+            'project': request.data.get('project') or source.project_id,
+            'code': request.data.get('code') or source.code,
+            'name': request.data.get('name') or f"{source.name} Copy",
+            'description': request.data.get('description') or source.description,
+            'category': source.category,
+            'content': source.content,
+            'is_active': True,
+        }
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        template = serializer.save(is_builtin=False)
+        return Response(self.get_serializer(template).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='run')
+    def run(self, request, pk=None):
+        template = self.get_object()
+        payload = request.data.copy()
+        payload['template'] = template.id
+        if not payload.get('title'):
+            payload['title'] = template.name
+        serializer = DiagnosisRunSerializer(data=payload, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        view = DiagnosisRunViewSet()
+        view.request = request
+        view.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 @extend_schema(tags=["SRE 告警规则模板"])
