@@ -100,6 +100,45 @@ class SREObservabilityTestCase(TestCase):
         self.assertTrue(response.data['generic_http']['supports_logs'])
         self.assertIn('response_mapping', response.data['elasticsearch'])
 
+    @patch('apps.sre_management.views.get_log_adapter')
+    def test_observed_service_preview_logs_api(self, mock_get_log_adapter):
+        adapter = MagicMock()
+        adapter.query_logs.return_value = {
+            'query': '{service="order-api"}',
+            'items': [{'timestamp': 't1', 'level': 'error', 'message': 'boom', 'service': 'order-api'}],
+            'result': {'data': []},
+        }
+        mock_get_log_adapter.return_value = adapter
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-observed-services-preview-logs', args=[self.service.id])
+
+        response = client.post(url, {'window_minutes': 5, 'limit': 5}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['ok'])
+        self.assertEqual(response.data['type'], 'logs')
+        self.assertEqual(response.data['query'], '{service="order-api"}')
+        self.assertEqual(response.data['items'][0]['message'], 'boom')
+        self.assertEqual(response.data['datasource']['provider'], 'victorialogs')
+
+    @patch('apps.sre_management.views.get_metric_adapter')
+    def test_observed_service_preview_metrics_api(self, mock_get_metric_adapter):
+        adapter = MagicMock()
+        adapter.query_metrics.return_value = [{'name': 'up', 'query': 'up{job="order-api"}', 'result': []}]
+        mock_get_metric_adapter.return_value = adapter
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-observed-services-preview-metrics', args=[self.service.id])
+
+        response = client.post(url, {'window_minutes': 5, 'step': '30s'}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['ok'])
+        self.assertEqual(response.data['type'], 'metrics')
+        self.assertEqual(response.data['metrics'][0]['name'], 'up')
+        self.assertEqual(response.data['datasource']['provider'], 'victoriametrics')
+
     @patch('apps.sre_management.observability.requests.request')
     def test_generic_http_log_adapter_uses_templates_and_normalizes_items(self, mock_request):
         datasource = ObservabilityDataSource.objects.create(

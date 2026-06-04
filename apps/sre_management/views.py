@@ -1,13 +1,17 @@
+from datetime import timedelta
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from django.core.cache import cache
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
 from .models import AlertEvent, DiagnosisRun, ObservabilityDataSource, ObservedService, SelfHealingPolicy
 from .diagnosis_utils import match_services_for_alert
-from .observability import get_datasource_capabilities, get_observability_adapter
+from .observability import get_datasource_capabilities, get_log_adapter, get_metric_adapter, get_observability_adapter
 from .rule_templates import list_templates, render_template
 from .serializers import (
     AlertEventSerializer,
@@ -548,6 +552,91 @@ class ObservedServiceViewSet(DataScopeMixin, viewsets.ModelViewSet):
             return Response({'error': 'Alert not found'}, status=status.HTTP_404_NOT_FOUND)
         result = match_services_for_alert(alert, project_id=project_id)
         return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='preview-logs')
+    def preview_logs(self, request, pk=None):
+        service = self.get_object()
+        datasource = service.log_datasource or ObservabilityDataSource.objects.filter(
+            kind='log', is_default=True, is_active=True
+        ).first()
+        if not datasource:
+            return Response({'ok': False, 'error': 'No log datasource configured'}, status=status.HTTP_400_BAD_REQUEST)
+        start, end = self._preview_time_window(request)
+        limit = min(max(int(request.data.get('limit') or 5), 1), 50)
+        try:
+            result = get_log_adapter(datasource).query_logs(service, start, end, limit=limit)
+            items = result.get('items') if isinstance(result, dict) else []
+            return Response({
+                'ok': True,
+                'type': 'logs',
+                'service': {'id': service.id, 'name': service.name, 'code': service.code},
+                'datasource': self._datasource_summary(datasource),
+                'time_range': {'start': start.isoformat(), 'end': end.isoformat()},
+                'query': result.get('query') if isinstance(result, dict) else None,
+                'count': len(items or []),
+                'items': (items or [])[:limit],
+                'raw': result.get('result') if isinstance(result, dict) else result,
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            return Response({
+                'ok': False,
+                'type': 'logs',
+                'service': {'id': service.id, 'name': service.name, 'code': service.code},
+                'datasource': self._datasource_summary(datasource),
+                'time_range': {'start': start.isoformat(), 'end': end.isoformat()},
+                'error': str(exc),
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'], url_path='preview-metrics')
+    def preview_metrics(self, request, pk=None):
+        service = self.get_object()
+        datasource = service.metric_datasource or ObservabilityDataSource.objects.filter(
+            kind='metric', is_default=True, is_active=True
+        ).first()
+        if not datasource:
+            return Response({'ok': False, 'error': 'No metric datasource configured'}, status=status.HTTP_400_BAD_REQUEST)
+        start, end = self._preview_time_window(request)
+        step = request.data.get('step') or '60s'
+        try:
+            metrics = get_metric_adapter(datasource).query_metrics(service, start, end, step=step)
+            return Response({
+                'ok': True,
+                'type': 'metrics',
+                'service': {'id': service.id, 'name': service.name, 'code': service.code},
+                'datasource': self._datasource_summary(datasource),
+                'time_range': {'start': start.isoformat(), 'end': end.isoformat(), 'step': step},
+                'count': len(metrics or []),
+                'metrics': metrics or [],
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            return Response({
+                'ok': False,
+                'type': 'metrics',
+                'service': {'id': service.id, 'name': service.name, 'code': service.code},
+                'datasource': self._datasource_summary(datasource),
+                'time_range': {'start': start.isoformat(), 'end': end.isoformat(), 'step': step},
+                'error': str(exc),
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+    def _preview_time_window(self, request):
+        raw_time = request.data.get('diagnosis_time')
+        center = parse_datetime(raw_time) if raw_time else None
+        if center is None:
+            center = timezone.now()
+        elif timezone.is_naive(center):
+            center = timezone.make_aware(center, timezone.get_current_timezone())
+        window_minutes = min(max(int(request.data.get('window_minutes') or 10), 1), 120)
+        delta = timedelta(minutes=window_minutes)
+        return center - delta, center + delta
+
+    def _datasource_summary(self, datasource):
+        return {
+            'id': datasource.id,
+            'name': datasource.name,
+            'kind': datasource.kind,
+            'provider': datasource.provider,
+            'type': datasource.type,
+        }
 
 
 @extend_schema(tags=["SRE 时间点诊断"])

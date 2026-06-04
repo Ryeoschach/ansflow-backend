@@ -131,7 +131,9 @@ class ObservabilityDataSource(BaseModel):
         return f"{self.name} ({self.type})"
 
     def save(self, *args, **kwargs):
-        if not self.provider:
+        if self.type and (not self.provider or (self.provider == 'victoriametrics' and self.type != self.provider)):
+            self.provider = self.type
+        elif not self.provider:
             self.provider = self.type
         if not self.type:
             self.type = self.provider
