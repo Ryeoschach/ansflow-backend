@@ -13,6 +13,7 @@
 AnsFlow Backend 是 AnsFlow 的 Django 服务端，负责 REST API、WebSocket 实时推送、Celery 异步任务、SmartRBAC 权限、AI/RAG 编排、SRE 自愈以及 Ansible/Kubernetes 执行能力。
 
 - 产品展示与完整文档：[https://ansflow.cyfee.com](https://ansflow.cyfee.com)
+- SRE 诊断中心支持 VictoriaMetrics、VictoriaLogs、Elasticsearch、Loki 与通用 HTTP 日志网关接入，并提供服务映射的日志/指标查询预览接口。
 
 ### GitHub 仓库
 - 门户网站：[Ryeoschach/ansflow-web](https://github.com/Ryeoschach/ansflow-web)
@@ -57,6 +58,16 @@ docker compose logs -f ansflow-api ansflow-worker ansflow-init
 ```
 
 Compose 中的 `ansflow-init` 服务会根据 `.env` 设置自动处理数据库迁移、静态文件收集和可选系统初始化。详细部署与使用说明统一维护在 AnsFlow Web 文档门户中。
+
+## SRE 观测调试接口
+
+```bash
+GET  /api/v1/sre/observability-datasources/capabilities/
+POST /api/v1/sre/observed-services/{id}/preview-logs/
+POST /api/v1/sre/observed-services/{id}/preview-metrics/
+```
+
+这些接口用于数据源能力发现、服务映射日志预览和指标预览，便于在时间点诊断前验证标签选择器、字段映射和响应映射是否正确。
 
 ## License
 
