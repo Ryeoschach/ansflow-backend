@@ -122,6 +122,22 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
         report_schema = content.get('report_schema', {})
         if report_schema and not isinstance(report_schema, dict):
             raise serializers.ValidationError({'content': 'Template report_schema must be an object.'})
+        log_datasource_ids = content.get('log_datasource_ids', [])
+        if log_datasource_ids:
+            if not isinstance(log_datasource_ids, list):
+                raise serializers.ValidationError({'content': 'Template log_datasource_ids must be a list.'})
+            try:
+                normalized_log_datasource_ids = [int(item) for item in log_datasource_ids]
+            except (TypeError, ValueError):
+                raise serializers.ValidationError({'content': 'Template log_datasource_ids must contain numeric datasource ids.'})
+            active_log_datasource_count = ObservabilityDataSource.objects.filter(
+                id__in=normalized_log_datasource_ids,
+                kind='log',
+                is_active=True,
+            ).count()
+            if active_log_datasource_count != len(set(normalized_log_datasource_ids)):
+                raise serializers.ValidationError({'content': 'Template log_datasource_ids must reference active log datasources.'})
+            content['log_datasource_ids'] = normalized_log_datasource_ids
         return attrs
 
 

@@ -180,6 +180,22 @@ def build_evidence_index(context: dict[str, Any]) -> list[dict[str, Any]]:
             'raw': item,
         })
 
+    for log_context in context.get('log_contexts') or []:
+        datasource = log_context.get('datasource') or {}
+        datasource_id = datasource.get('id') or 'unknown'
+        datasource_name = datasource.get('name') or datasource_id
+        for index, item in enumerate(log_context.get('highlights') or [], start=1):
+            ref = item.get('evidence_id') or f'log:{datasource_id}:{index}'
+            evidence.append({
+                'ref': ref,
+                'type': 'log',
+                'title': item.get('message') or f'Log highlight from {datasource_name}',
+                'summary': item.get('message'),
+                'timestamp': item.get('timestamp'),
+                'source': datasource_name,
+                'raw': item,
+            })
+
     for index, item in enumerate(context.get('metrics') or [], start=1):
         evidence.append({
             'ref': f'METRIC-{index}',

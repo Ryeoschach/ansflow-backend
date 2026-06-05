@@ -287,10 +287,73 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(run.context_snapshot['metrics'][0]['name'], 'up')
         self.assertEqual(run.context_snapshot['collection_summary']['metrics']['status'], 'success')
         self.assertEqual(run.context_snapshot['collection_summary']['logs']['status'], 'success')
+        self.assertEqual(run.context_snapshot['log_contexts'][0]['datasource']['id'], self.log_ds.id)
         self.assertEqual(run.context_snapshot['structured_report']['summary'], '订单服务异常')
         self.assertEqual(run.context_snapshot['evidence_index'][0]['ref'], 'LOG-1')
         self.assertNotIn('__STRUCTURED_REPORT__', run.ai_result)
         self.assertIn('CUSTOM_TIMEPOINT_PROMPT::', chain.invoke.call_args[0][0])
+
+    @patch('apps.sre_management.observability.get_log_adapter')
+    @patch('apps.sre_management.observability.get_metric_adapter')
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_timepoint_diagnosis_collects_multiple_log_datasources(self, mock_chain_factory, mock_get_metric_adapter, mock_get_log_adapter):
+        second_log_ds = ObservabilityDataSource.objects.create(
+            name='Loki',
+            type='loki',
+            provider='loki',
+            kind='log',
+            base_url='http://loki:3100',
+            is_active=True,
+        )
+        template = DiagnosisTemplate.objects.create(
+            scope='global',
+            code='multi_log_template',
+            name='多日志源诊断',
+            category='ci_cd',
+            content={
+                'target_type': 'service_regression',
+                'context_collection': {'metrics': False, 'service_logs': True},
+                'log_datasource_ids': [self.log_ds.id, second_log_ds.id],
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        )
+        first_adapter = MagicMock()
+        first_adapter.query_logs.return_value = {
+            'query': '{service="order-api"}',
+            'items': [{'timestamp': 't1', 'level': 'error', 'message': 'VictoriaLogs exception', 'service': 'order-api'}],
+            'result': {'data': []},
+        }
+        second_adapter = MagicMock()
+        second_adapter.query_logs.return_value = {
+            'query': '{service="order-api"}',
+            'items': [{'timestamp': 't2', 'level': 'fatal', 'message': 'Loki timeout failed', 'service': 'order-api'}],
+            'result': {'data': []},
+        }
+        mock_get_log_adapter.side_effect = [first_adapter, second_adapter]
+        chain = MagicMock()
+        chain.invoke.return_value = '## 诊断结论\n多日志源已分析。'
+        mock_chain_factory.return_value = chain
+        run = DiagnosisRun.objects.create(
+            title='多日志源诊断',
+            project=self.project,
+            service=self.service,
+            template=template,
+            diagnosis_time=timezone.now(),
+            window_minutes=10,
+            created_by=self.user,
+            query_params={'template_snapshot': template.to_snapshot()},
+        )
+
+        run_timepoint_diagnosis(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'success')
+        self.assertEqual(run.context_snapshot['collection_summary']['logs']['status'], 'success')
+        self.assertEqual(run.context_snapshot['collection_summary']['logs']['source_count'], 2)
+        self.assertEqual(len(run.context_snapshot['log_contexts']), 2)
+        evidence_refs = [item['ref'] for item in run.context_snapshot['evidence_index']]
+        self.assertIn(f'log:{self.log_ds.id}:1', evidence_refs)
+        self.assertIn(f'log:{second_log_ds.id}:1', evidence_refs)
 
     def test_alert_service_label_matches_observed_service_code(self):
         alert = AlertEvent.objects.create(
@@ -497,6 +560,47 @@ class SREObservabilityTestCase(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('content', response.data['message'])
+
+    def test_diagnosis_template_accepts_active_log_datasources(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.post(url, {
+            'scope': 'global',
+            'code': 'valid_log_datasource_template',
+            'name': '有效日志源模板',
+            'category': 'ci_cd',
+            'content': {
+                'target_type': 'service_regression',
+                'log_datasource_ids': [self.log_ds.id],
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        template = DiagnosisTemplate.objects.get(code='valid_log_datasource_template')
+        self.assertEqual(template.content['log_datasource_ids'], [self.log_ds.id])
+
+    def test_diagnosis_template_rejects_non_log_datasources(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.post(url, {
+            'scope': 'global',
+            'code': 'invalid_log_datasource_template',
+            'name': '非法日志源模板',
+            'category': 'ci_cd',
+            'content': {
+                'target_type': 'service_regression',
+                'log_datasource_ids': [self.metric_ds.id],
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('log_datasource_ids', response.data['message'])
 
     def test_project_template_overrides_global_template_in_list(self):
         DiagnosisTemplate.objects.create(

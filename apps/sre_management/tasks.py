@@ -40,6 +40,77 @@ def _template_log_keywords(template_snapshot):
     return [str(item).lower() for item in keywords if str(item).strip()]
 
 
+def _template_log_datasource_ids(template_snapshot):
+    content = (template_snapshot or {}).get('content') or {}
+    raw_ids = content.get('log_datasource_ids') or content.get('log_sources') or []
+    ids = []
+    for item in raw_ids:
+        value = item.get('id') if isinstance(item, dict) else item
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _select_log_datasources(service, template_snapshot):
+    datasource_ids = _template_log_datasource_ids(template_snapshot)
+    if datasource_ids:
+        return list(ObservabilityDataSource.objects.filter(
+            id__in=datasource_ids,
+            kind='log',
+            is_active=True,
+        ).order_by('-is_default', 'id'))
+
+    selected = []
+    seen = set()
+    if service and service.log_datasource_id and service.log_datasource and service.log_datasource.is_active:
+        selected.append(service.log_datasource)
+        seen.add(service.log_datasource_id)
+
+    defaults = ObservabilityDataSource.objects.filter(kind='log', is_default=True, is_active=True).order_by('id')
+    for datasource in defaults:
+        if datasource.id in seen:
+            continue
+        selected.append(datasource)
+        seen.add(datasource.id)
+    return selected
+
+
+def _normalize_log_context(datasource, logs, highlights, start, end):
+    items = logs.get('items') if isinstance(logs, dict) else []
+    query = logs.get('query') if isinstance(logs, dict) else None
+    normalized_highlights = []
+    for index, item in enumerate(highlights or [], start=1):
+        enriched = {
+            **item,
+            'datasource': {
+                'id': datasource.id,
+                'name': datasource.name,
+                'provider': datasource.provider,
+            },
+            'evidence_id': f'log:{datasource.id}:{index}',
+        }
+        normalized_highlights.append(enriched)
+    return {
+        'datasource': {
+            'id': datasource.id,
+            'name': datasource.name,
+            'kind': datasource.kind,
+            'provider': datasource.provider,
+        },
+        'query': query,
+        'time_range': {
+            'start': start.isoformat(),
+            'end': end.isoformat(),
+        },
+        'items': items or [],
+        'count': len(items or []),
+        'highlights': normalized_highlights,
+        'highlight_count': len(normalized_highlights),
+    }
+
+
 def _highlight_text_lines(text, keywords, limit=30):
     if not text:
         return []
@@ -910,12 +981,13 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             'service': None,
             'metrics': [],
             'logs': None,
+            'log_contexts': [],
             'log_highlights': [],
             'service_match': (run.query_params or {}).get('service_match'),
             'warnings': [],
             'collection_summary': {
                 'metrics': {'status': 'skipped', 'datasource': None, 'count': 0},
-                'logs': {'status': 'skipped', 'datasource': None, 'count': 0},
+                'logs': {'status': 'skipped', 'datasource': None, 'datasources': [], 'count': 0},
                 'log_highlights': {'status': 'skipped', 'count': 0},
                 'ansflow_events': {'status': 'pending', 'count': 0},
                 'ci_cd_context': {'status': 'skipped', 'count': 0},
@@ -927,7 +999,7 @@ def run_timepoint_diagnosis(self, diagnosis_id):
 
         if service:
             metric_ds = service.metric_datasource or ObservabilityDataSource.objects.filter(kind='metric', is_default=True, is_active=True).first()
-            log_ds = service.log_datasource or ObservabilityDataSource.objects.filter(kind='log', is_default=True, is_active=True).first()
+            log_datasources = _select_log_datasources(service, template_snapshot)
             context['service'] = {
                 'id': service.id,
                 'name': service.name,
@@ -960,28 +1032,54 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             else:
                 warnings.append("未配置指标数据源，本次诊断将跳过指标上下文。")
 
-            if log_ds and collect_service_logs:
-                context['collection_summary']['logs']['datasource'] = {
-                    'id': log_ds.id,
-                    'name': log_ds.name,
-                    'provider': log_ds.provider,
-                }
+            if log_datasources and collect_service_logs:
+                context['collection_summary']['logs']['datasources'] = [
+                    {'id': ds.id, 'name': ds.name, 'provider': ds.provider}
+                    for ds in log_datasources
+                ]
+                context['collection_summary']['logs']['datasource'] = context['collection_summary']['logs']['datasources'][0]
+                total_log_count = 0
+                total_highlight_count = 0
+                successful_sources = 0
+                failed_sources = 0
                 try:
-                    context['logs'] = get_log_adapter(log_ds).query_logs(service, start, end)
-                    log_items = context['logs'].get('items') if isinstance(context['logs'], dict) else []
-                    context['collection_summary']['logs']['status'] = 'success'
-                    context['collection_summary']['logs']['count'] = len(log_items or [])
-                    context['log_highlights'] = extract_log_highlights(context['logs'])
+                    for log_ds in log_datasources:
+                        try:
+                            logs = get_log_adapter(log_ds).query_logs(service, start, end)
+                            highlights = extract_log_highlights(logs)
+                            log_context = _normalize_log_context(log_ds, logs, highlights, start, end)
+                            context['log_contexts'].append(log_context)
+                            total_log_count += log_context['count']
+                            total_highlight_count += log_context['highlight_count']
+                            successful_sources += 1
+                            if context['logs'] is None:
+                                context['logs'] = logs
+                                context['log_highlights'] = log_context['highlights']
+                        except Exception as log_exc:
+                            failed_sources += 1
+                            warning = f"日志数据源 {log_ds.name} 采集失败：{log_exc}"
+                            warnings.append(warning)
+                            logger.warning("[SRE Diagnosis] %s", warning)
+
+                    if successful_sources and failed_sources:
+                        context['collection_summary']['logs']['status'] = 'partial'
+                    elif successful_sources:
+                        context['collection_summary']['logs']['status'] = 'success'
+                    else:
+                        context['collection_summary']['logs']['status'] = 'failed'
+                    context['collection_summary']['logs']['count'] = total_log_count
+                    context['collection_summary']['logs']['source_count'] = successful_sources
+                    context['collection_summary']['logs']['failed_source_count'] = failed_sources
                     context['collection_summary']['log_highlights'] = {
-                        'status': 'success',
-                        'count': len(context['log_highlights']),
+                        'status': 'success' if total_highlight_count else ('skipped' if successful_sources else 'failed'),
+                        'count': total_highlight_count,
                     }
                 except Exception as log_exc:
-                    warning = f"日志数据源 {log_ds.name} 采集失败：{log_exc}"
+                    warning = f"服务日志采集失败：{log_exc}"
                     warnings.append(warning)
                     context['collection_summary']['logs']['status'] = 'failed'
                     context['collection_summary']['logs']['error'] = str(log_exc)
-                    context['collection_summary']['log_highlights']['status'] = 'skipped'
+                    context['collection_summary']['log_highlights']['status'] = 'failed'
                     logger.warning("[SRE Diagnosis] %s", warning)
             elif not collect_service_logs:
                 context['collection_summary']['logs']['status'] = 'skipped'
