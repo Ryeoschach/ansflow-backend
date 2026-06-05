@@ -53,6 +53,43 @@ def _template_log_datasource_ids(template_snapshot):
     return ids
 
 
+def _template_metric_datasource_ids(template_snapshot):
+    content = (template_snapshot or {}).get('content') or {}
+    raw_ids = content.get('metric_datasource_ids') or content.get('metric_sources') or []
+    ids = []
+    for item in raw_ids:
+        value = item.get('id') if isinstance(item, dict) else item
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _select_metric_datasources(service, template_snapshot):
+    datasource_ids = _template_metric_datasource_ids(template_snapshot)
+    if datasource_ids:
+        return list(ObservabilityDataSource.objects.filter(
+            id__in=datasource_ids,
+            kind='metric',
+            is_active=True,
+        ).order_by('-is_default', 'id'))
+
+    selected = []
+    seen = set()
+    if service and service.metric_datasource_id and service.metric_datasource and service.metric_datasource.is_active:
+        selected.append(service.metric_datasource)
+        seen.add(service.metric_datasource_id)
+
+    defaults = ObservabilityDataSource.objects.filter(kind='metric', is_default=True, is_active=True).order_by('id')
+    for datasource in defaults:
+        if datasource.id in seen:
+            continue
+        selected.append(datasource)
+        seen.add(datasource.id)
+    return selected
+
+
 def _select_log_datasources(service, template_snapshot):
     datasource_ids = _template_log_datasource_ids(template_snapshot)
     if datasource_ids:
@@ -75,6 +112,35 @@ def _select_log_datasources(service, template_snapshot):
         selected.append(datasource)
         seen.add(datasource.id)
     return selected
+
+
+def _normalize_metric_context(datasource, metrics, start, end):
+    normalized_metrics = []
+    for index, item in enumerate(metrics or [], start=1):
+        metric_name = item.get('name') or item.get('query') or f'metric_{index}'
+        normalized_metrics.append({
+            **item,
+            'datasource': {
+                'id': datasource.id,
+                'name': datasource.name,
+                'provider': datasource.provider,
+            },
+            'evidence_id': f'metric:{datasource.id}:{metric_name}',
+        })
+    return {
+        'datasource': {
+            'id': datasource.id,
+            'name': datasource.name,
+            'kind': datasource.kind,
+            'provider': datasource.provider,
+        },
+        'time_range': {
+            'start': start.isoformat(),
+            'end': end.isoformat(),
+        },
+        'metrics': normalized_metrics,
+        'count': len(normalized_metrics),
+    }
 
 
 def _normalize_log_context(datasource, logs, highlights, start, end):
@@ -980,13 +1046,14 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             } if template_snapshot else None,
             'service': None,
             'metrics': [],
+            'metric_contexts': [],
             'logs': None,
             'log_contexts': [],
             'log_highlights': [],
             'service_match': (run.query_params or {}).get('service_match'),
             'warnings': [],
             'collection_summary': {
-                'metrics': {'status': 'skipped', 'datasource': None, 'count': 0},
+                'metrics': {'status': 'skipped', 'datasource': None, 'datasources': [], 'count': 0},
                 'logs': {'status': 'skipped', 'datasource': None, 'datasources': [], 'count': 0},
                 'log_highlights': {'status': 'skipped', 'count': 0},
                 'ansflow_events': {'status': 'pending', 'count': 0},
@@ -998,7 +1065,7 @@ def run_timepoint_diagnosis(self, diagnosis_id):
         warnings = context['warnings']
 
         if service:
-            metric_ds = service.metric_datasource or ObservabilityDataSource.objects.filter(kind='metric', is_default=True, is_active=True).first()
+            metric_datasources = _select_metric_datasources(service, template_snapshot)
             log_datasources = _select_log_datasources(service, template_snapshot)
             context['service'] = {
                 'id': service.id,
@@ -1010,18 +1077,42 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             }
             collect_metrics = template_collection.get('metrics', True)
             collect_service_logs = template_collection.get('service_logs', True)
-            if metric_ds and collect_metrics:
-                context['collection_summary']['metrics']['datasource'] = {
-                    'id': metric_ds.id,
-                    'name': metric_ds.name,
-                    'provider': metric_ds.provider,
-                }
+            if metric_datasources and collect_metrics:
+                context['collection_summary']['metrics']['datasources'] = [
+                    {'id': ds.id, 'name': ds.name, 'provider': ds.provider}
+                    for ds in metric_datasources
+                ]
+                context['collection_summary']['metrics']['datasource'] = context['collection_summary']['metrics']['datasources'][0]
+                total_metric_count = 0
+                successful_sources = 0
+                failed_sources = 0
                 try:
-                    context['metrics'] = get_metric_adapter(metric_ds).query_metrics(service, start, end)
-                    context['collection_summary']['metrics']['status'] = 'success'
-                    context['collection_summary']['metrics']['count'] = len(context['metrics'])
+                    for metric_ds in metric_datasources:
+                        try:
+                            metrics = get_metric_adapter(metric_ds).query_metrics(service, start, end)
+                            metric_context = _normalize_metric_context(metric_ds, metrics, start, end)
+                            context['metric_contexts'].append(metric_context)
+                            total_metric_count += metric_context['count']
+                            successful_sources += 1
+                            if not context['metrics']:
+                                context['metrics'] = metric_context['metrics']
+                        except Exception as metric_exc:
+                            failed_sources += 1
+                            warning = f"指标数据源 {metric_ds.name} 采集失败：{metric_exc}"
+                            warnings.append(warning)
+                            logger.warning("[SRE Diagnosis] %s", warning)
+
+                    if successful_sources and failed_sources:
+                        context['collection_summary']['metrics']['status'] = 'partial'
+                    elif successful_sources:
+                        context['collection_summary']['metrics']['status'] = 'success'
+                    else:
+                        context['collection_summary']['metrics']['status'] = 'failed'
+                    context['collection_summary']['metrics']['count'] = total_metric_count
+                    context['collection_summary']['metrics']['source_count'] = successful_sources
+                    context['collection_summary']['metrics']['failed_source_count'] = failed_sources
                 except Exception as metric_exc:
-                    warning = f"指标数据源 {metric_ds.name} 采集失败：{metric_exc}"
+                    warning = f"服务指标采集失败：{metric_exc}"
                     warnings.append(warning)
                     context['collection_summary']['metrics']['status'] = 'failed'
                     context['collection_summary']['metrics']['error'] = str(metric_exc)

@@ -285,6 +285,7 @@ class SREObservabilityTestCase(TestCase):
         self.assertIn('诊断结论', run.ai_result)
         self.assertEqual(run.context_snapshot['service']['code'], 'order-api')
         self.assertEqual(run.context_snapshot['metrics'][0]['name'], 'up')
+        self.assertEqual(run.context_snapshot['metric_contexts'][0]['datasource']['id'], self.metric_ds.id)
         self.assertEqual(run.context_snapshot['collection_summary']['metrics']['status'], 'success')
         self.assertEqual(run.context_snapshot['collection_summary']['logs']['status'], 'success')
         self.assertEqual(run.context_snapshot['log_contexts'][0]['datasource']['id'], self.log_ds.id)
@@ -354,6 +355,60 @@ class SREObservabilityTestCase(TestCase):
         evidence_refs = [item['ref'] for item in run.context_snapshot['evidence_index']]
         self.assertIn(f'log:{self.log_ds.id}:1', evidence_refs)
         self.assertIn(f'log:{second_log_ds.id}:1', evidence_refs)
+
+    @patch('apps.sre_management.observability.get_log_adapter')
+    @patch('apps.sre_management.observability.get_metric_adapter')
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_timepoint_diagnosis_collects_multiple_metric_datasources(self, mock_chain_factory, mock_get_metric_adapter, mock_get_log_adapter):
+        second_metric_ds = ObservabilityDataSource.objects.create(
+            name='VictoriaMetrics Backup',
+            type='victoriametrics',
+            provider='victoriametrics',
+            kind='metric',
+            base_url='http://victoriametrics-backup:8428',
+            is_active=True,
+        )
+        template = DiagnosisTemplate.objects.create(
+            scope='global',
+            code='multi_metric_template',
+            name='多指标源诊断',
+            category='ci_cd',
+            content={
+                'target_type': 'service_regression',
+                'context_collection': {'metrics': True, 'service_logs': False},
+                'metric_datasource_ids': [self.metric_ds.id, second_metric_ds.id],
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        )
+        first_adapter = MagicMock()
+        first_adapter.query_metrics.return_value = [{'name': 'up', 'query': 'up', 'result': []}]
+        second_adapter = MagicMock()
+        second_adapter.query_metrics.return_value = [{'name': 'cpu_usage', 'query': 'rate(cpu[5m])', 'result': []}]
+        mock_get_metric_adapter.side_effect = [first_adapter, second_adapter]
+        chain = MagicMock()
+        chain.invoke.return_value = '## 诊断结论\n多指标源已分析。'
+        mock_chain_factory.return_value = chain
+        run = DiagnosisRun.objects.create(
+            title='多指标源诊断',
+            project=self.project,
+            service=self.service,
+            template=template,
+            diagnosis_time=timezone.now(),
+            window_minutes=10,
+            created_by=self.user,
+            query_params={'template_snapshot': template.to_snapshot()},
+        )
+
+        run_timepoint_diagnosis(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'success')
+        self.assertEqual(run.context_snapshot['collection_summary']['metrics']['status'], 'success')
+        self.assertEqual(run.context_snapshot['collection_summary']['metrics']['source_count'], 2)
+        self.assertEqual(len(run.context_snapshot['metric_contexts']), 2)
+        evidence_refs = [item['ref'] for item in run.context_snapshot['evidence_index']]
+        self.assertIn(f'metric:{self.metric_ds.id}:up', evidence_refs)
+        self.assertIn(f'metric:{second_metric_ds.id}:cpu_usage', evidence_refs)
 
     def test_alert_service_label_matches_observed_service_code(self):
         alert = AlertEvent.objects.create(
@@ -601,6 +656,47 @@ class SREObservabilityTestCase(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('log_datasource_ids', response.data['message'])
+
+    def test_diagnosis_template_accepts_active_metric_datasources(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.post(url, {
+            'scope': 'global',
+            'code': 'valid_metric_datasource_template',
+            'name': '有效指标源模板',
+            'category': 'ci_cd',
+            'content': {
+                'target_type': 'service_regression',
+                'metric_datasource_ids': [self.metric_ds.id],
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        template = DiagnosisTemplate.objects.get(code='valid_metric_datasource_template')
+        self.assertEqual(template.content['metric_datasource_ids'], [self.metric_ds.id])
+
+    def test_diagnosis_template_rejects_non_metric_datasources(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.post(url, {
+            'scope': 'global',
+            'code': 'invalid_metric_datasource_template',
+            'name': '非法指标源模板',
+            'category': 'ci_cd',
+            'content': {
+                'target_type': 'service_regression',
+                'metric_datasource_ids': [self.log_ds.id],
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('metric_datasource_ids', response.data['message'])
 
     def test_project_template_overrides_global_template_in_list(self):
         DiagnosisTemplate.objects.create(

@@ -206,6 +206,21 @@ def build_evidence_index(context: dict[str, Any]) -> list[dict[str, Any]]:
             'raw': item,
         })
 
+    for metric_context in context.get('metric_contexts') or []:
+        datasource = metric_context.get('datasource') or {}
+        datasource_id = datasource.get('id') or 'unknown'
+        datasource_name = datasource.get('name') or datasource_id
+        for index, item in enumerate(metric_context.get('metrics') or [], start=1):
+            ref = item.get('evidence_id') or f'metric:{datasource_id}:{index}'
+            evidence.append({
+                'ref': ref,
+                'type': 'metric',
+                'title': item.get('name') or item.get('query') or f'Metric from {datasource_name}',
+                'summary': item.get('query'),
+                'source': datasource_name,
+                'raw': item,
+            })
+
     ansflow_events = context.get('ansflow_events') or {}
     for index, item in enumerate(ansflow_events.get('alerts') or [], start=1):
         evidence.append({

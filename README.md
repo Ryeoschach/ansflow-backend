@@ -13,7 +13,7 @@
 AnsFlow Backend 是 AnsFlow 的 Django 服务端，负责 REST API、WebSocket 实时推送、Celery 异步任务、SmartRBAC 权限、AI/RAG 编排、SRE 自愈以及 Ansible/Kubernetes 执行能力。
 
 - 产品展示与完整文档：[https://ansflow.cyfee.com](https://ansflow.cyfee.com)
-- SRE 诊断中心支持 VictoriaMetrics、VictoriaLogs、Elasticsearch、Loki 与通用 HTTP 日志网关接入，并提供服务映射的日志/指标查询预览接口。
+- SRE 诊断中心支持模板化诊断、多日志源/多指标源采集、CI/CD 与 Ansible 上下文分析，并提供服务映射的日志/指标查询预览接口。
 
 ### GitHub 仓库
 - 门户网站：[Ryeoschach/ansflow-web](https://github.com/Ryeoschach/ansflow-web)
@@ -70,7 +70,7 @@ POST /api/v1/sre/diagnosis-templates/{id}/run/
 ```
 
 这些接口用于数据源能力发现、服务映射日志预览和指标预览，便于在时间点诊断前验证标签选择器、字段映射和响应映射是否正确。
-诊断模板接口用于维护全局/项目级场景诊断包；第一版内置 CI/CD 发布诊断模板，详细使用说明见 AnsFlow Web 文档门户。
+诊断模板接口用于维护全局/项目级场景诊断包。模板可配置 CI/CD、Ansible、服务日志、服务指标、告警和审批等上下文采集策略；运行时会保存模板快照，并把多日志源、多指标源归一为 `log_contexts`、`metric_contexts` 和统一 `evidence_index`。详细使用说明见 AnsFlow Web 文档门户。
 
 ## License
 

@@ -13,7 +13,7 @@ English | [中文说明](./README.md)
 AnsFlow Backend is the Django service layer for AnsFlow, providing REST APIs, WebSocket streams, Celery tasks, SmartRBAC permissions, AI/RAG orchestration, SRE self-healing, and Ansible/Kubernetes execution.
 
 - Product site and full documentation: [https://ansflow.cyfee.com](https://ansflow.cyfee.com)
-- SRE Diagnosis Center supports VictoriaMetrics, VictoriaLogs, Elasticsearch, Loki, and generic HTTP log gateways, with log/metric query preview APIs for service mappings.
+- SRE Diagnosis Center supports template-based diagnosis, multi-source log and metric collection, CI/CD and Ansible context analysis, plus log/metric query preview APIs for service mappings.
 
 ### GitHub Repositories
 - Portal Web: [Ryeoschach/ansflow-web](https://github.com/Ryeoschach/ansflow-web)
@@ -65,9 +65,12 @@ The compose `ansflow-init` service handles database migrations, static file coll
 GET  /api/v1/sre/observability-datasources/capabilities/
 POST /api/v1/sre/observed-services/{id}/preview-logs/
 POST /api/v1/sre/observed-services/{id}/preview-metrics/
+GET  /api/v1/sre/diagnosis-templates/
+POST /api/v1/sre/diagnosis-templates/{id}/run/
 ```
 
 These endpoints are used for datasource capability discovery, service log preview, and metric preview before running a timepoint diagnosis.
+Diagnosis templates maintain global/project scenario packages. A template can configure CI/CD, Ansible, service log, service metric, alert, and approval context collection; each run stores a template snapshot and normalizes multi-source logs and metrics into `log_contexts`, `metric_contexts`, and a unified `evidence_index`. See the AnsFlow Web documentation portal for the full workflow.
 
 ## License
 
