@@ -177,6 +177,114 @@ def _normalize_log_context(datasource, logs, highlights, start, end):
     }
 
 
+def _collect_metric_contexts(context, service, metric_datasources, collect_metrics, start, end, get_metric_adapter):
+    warnings = context['warnings']
+    if metric_datasources and collect_metrics:
+        context['collection_summary']['metrics']['datasources'] = [
+            {'id': ds.id, 'name': ds.name, 'provider': ds.provider}
+            for ds in metric_datasources
+        ]
+        context['collection_summary']['metrics']['datasource'] = context['collection_summary']['metrics']['datasources'][0]
+        total_metric_count = 0
+        successful_sources = 0
+        failed_sources = 0
+        try:
+            for metric_ds in metric_datasources:
+                try:
+                    metrics = get_metric_adapter(metric_ds).query_metrics(service, start, end)
+                    metric_context = _normalize_metric_context(metric_ds, metrics, start, end)
+                    context['metric_contexts'].append(metric_context)
+                    total_metric_count += metric_context['count']
+                    successful_sources += 1
+                    if not context['metrics']:
+                        context['metrics'] = metric_context['metrics']
+                except Exception as metric_exc:
+                    failed_sources += 1
+                    warning = f"指标数据源 {metric_ds.name} 采集失败：{metric_exc}"
+                    warnings.append(warning)
+                    logger.warning("[SRE Diagnosis] %s", warning)
+
+            if successful_sources and failed_sources:
+                context['collection_summary']['metrics']['status'] = 'partial'
+            elif successful_sources:
+                context['collection_summary']['metrics']['status'] = 'success'
+            else:
+                context['collection_summary']['metrics']['status'] = 'failed'
+            context['collection_summary']['metrics']['count'] = total_metric_count
+            context['collection_summary']['metrics']['source_count'] = successful_sources
+            context['collection_summary']['metrics']['failed_source_count'] = failed_sources
+        except Exception as metric_exc:
+            warning = f"服务指标采集失败：{metric_exc}"
+            warnings.append(warning)
+            context['collection_summary']['metrics']['status'] = 'failed'
+            context['collection_summary']['metrics']['error'] = str(metric_exc)
+            logger.warning("[SRE Diagnosis] %s", warning)
+    elif not collect_metrics:
+        context['collection_summary']['metrics']['status'] = 'skipped'
+        warnings.append("当前诊断模板未启用服务指标采集。")
+    else:
+        warnings.append("未配置指标数据源，本次诊断将跳过指标上下文。")
+
+
+def _collect_log_contexts(context, service, log_datasources, collect_service_logs, start, end, get_log_adapter, extract_log_highlights):
+    warnings = context['warnings']
+    if log_datasources and collect_service_logs:
+        context['collection_summary']['logs']['datasources'] = [
+            {'id': ds.id, 'name': ds.name, 'provider': ds.provider}
+            for ds in log_datasources
+        ]
+        context['collection_summary']['logs']['datasource'] = context['collection_summary']['logs']['datasources'][0]
+        total_log_count = 0
+        total_highlight_count = 0
+        successful_sources = 0
+        failed_sources = 0
+        try:
+            for log_ds in log_datasources:
+                try:
+                    logs = get_log_adapter(log_ds).query_logs(service, start, end)
+                    highlights = extract_log_highlights(logs)
+                    log_context = _normalize_log_context(log_ds, logs, highlights, start, end)
+                    context['log_contexts'].append(log_context)
+                    total_log_count += log_context['count']
+                    total_highlight_count += log_context['highlight_count']
+                    successful_sources += 1
+                    if context['logs'] is None:
+                        context['logs'] = logs
+                        context['log_highlights'] = log_context['highlights']
+                except Exception as log_exc:
+                    failed_sources += 1
+                    warning = f"日志数据源 {log_ds.name} 采集失败：{log_exc}"
+                    warnings.append(warning)
+                    logger.warning("[SRE Diagnosis] %s", warning)
+
+            if successful_sources and failed_sources:
+                context['collection_summary']['logs']['status'] = 'partial'
+            elif successful_sources:
+                context['collection_summary']['logs']['status'] = 'success'
+            else:
+                context['collection_summary']['logs']['status'] = 'failed'
+            context['collection_summary']['logs']['count'] = total_log_count
+            context['collection_summary']['logs']['source_count'] = successful_sources
+            context['collection_summary']['logs']['failed_source_count'] = failed_sources
+            context['collection_summary']['log_highlights'] = {
+                'status': 'success' if total_highlight_count else ('skipped' if successful_sources else 'failed'),
+                'count': total_highlight_count,
+            }
+        except Exception as log_exc:
+            warning = f"服务日志采集失败：{log_exc}"
+            warnings.append(warning)
+            context['collection_summary']['logs']['status'] = 'failed'
+            context['collection_summary']['logs']['error'] = str(log_exc)
+            context['collection_summary']['log_highlights']['status'] = 'failed'
+            logger.warning("[SRE Diagnosis] %s", warning)
+    elif not collect_service_logs:
+        context['collection_summary']['logs']['status'] = 'skipped'
+        context['collection_summary']['log_highlights']['status'] = 'skipped'
+        warnings.append("当前诊断模板未启用服务日志采集。")
+    else:
+        warnings.append("未配置日志数据源，本次诊断将跳过日志上下文。")
+
+
 def _highlight_text_lines(text, keywords, limit=30):
     if not text:
         return []
@@ -1077,107 +1185,8 @@ def run_timepoint_diagnosis(self, diagnosis_id):
             }
             collect_metrics = template_collection.get('metrics', True)
             collect_service_logs = template_collection.get('service_logs', True)
-            if metric_datasources and collect_metrics:
-                context['collection_summary']['metrics']['datasources'] = [
-                    {'id': ds.id, 'name': ds.name, 'provider': ds.provider}
-                    for ds in metric_datasources
-                ]
-                context['collection_summary']['metrics']['datasource'] = context['collection_summary']['metrics']['datasources'][0]
-                total_metric_count = 0
-                successful_sources = 0
-                failed_sources = 0
-                try:
-                    for metric_ds in metric_datasources:
-                        try:
-                            metrics = get_metric_adapter(metric_ds).query_metrics(service, start, end)
-                            metric_context = _normalize_metric_context(metric_ds, metrics, start, end)
-                            context['metric_contexts'].append(metric_context)
-                            total_metric_count += metric_context['count']
-                            successful_sources += 1
-                            if not context['metrics']:
-                                context['metrics'] = metric_context['metrics']
-                        except Exception as metric_exc:
-                            failed_sources += 1
-                            warning = f"指标数据源 {metric_ds.name} 采集失败：{metric_exc}"
-                            warnings.append(warning)
-                            logger.warning("[SRE Diagnosis] %s", warning)
-
-                    if successful_sources and failed_sources:
-                        context['collection_summary']['metrics']['status'] = 'partial'
-                    elif successful_sources:
-                        context['collection_summary']['metrics']['status'] = 'success'
-                    else:
-                        context['collection_summary']['metrics']['status'] = 'failed'
-                    context['collection_summary']['metrics']['count'] = total_metric_count
-                    context['collection_summary']['metrics']['source_count'] = successful_sources
-                    context['collection_summary']['metrics']['failed_source_count'] = failed_sources
-                except Exception as metric_exc:
-                    warning = f"服务指标采集失败：{metric_exc}"
-                    warnings.append(warning)
-                    context['collection_summary']['metrics']['status'] = 'failed'
-                    context['collection_summary']['metrics']['error'] = str(metric_exc)
-                    logger.warning("[SRE Diagnosis] %s", warning)
-            elif not collect_metrics:
-                context['collection_summary']['metrics']['status'] = 'skipped'
-                warnings.append("当前诊断模板未启用服务指标采集。")
-            else:
-                warnings.append("未配置指标数据源，本次诊断将跳过指标上下文。")
-
-            if log_datasources and collect_service_logs:
-                context['collection_summary']['logs']['datasources'] = [
-                    {'id': ds.id, 'name': ds.name, 'provider': ds.provider}
-                    for ds in log_datasources
-                ]
-                context['collection_summary']['logs']['datasource'] = context['collection_summary']['logs']['datasources'][0]
-                total_log_count = 0
-                total_highlight_count = 0
-                successful_sources = 0
-                failed_sources = 0
-                try:
-                    for log_ds in log_datasources:
-                        try:
-                            logs = get_log_adapter(log_ds).query_logs(service, start, end)
-                            highlights = extract_log_highlights(logs)
-                            log_context = _normalize_log_context(log_ds, logs, highlights, start, end)
-                            context['log_contexts'].append(log_context)
-                            total_log_count += log_context['count']
-                            total_highlight_count += log_context['highlight_count']
-                            successful_sources += 1
-                            if context['logs'] is None:
-                                context['logs'] = logs
-                                context['log_highlights'] = log_context['highlights']
-                        except Exception as log_exc:
-                            failed_sources += 1
-                            warning = f"日志数据源 {log_ds.name} 采集失败：{log_exc}"
-                            warnings.append(warning)
-                            logger.warning("[SRE Diagnosis] %s", warning)
-
-                    if successful_sources and failed_sources:
-                        context['collection_summary']['logs']['status'] = 'partial'
-                    elif successful_sources:
-                        context['collection_summary']['logs']['status'] = 'success'
-                    else:
-                        context['collection_summary']['logs']['status'] = 'failed'
-                    context['collection_summary']['logs']['count'] = total_log_count
-                    context['collection_summary']['logs']['source_count'] = successful_sources
-                    context['collection_summary']['logs']['failed_source_count'] = failed_sources
-                    context['collection_summary']['log_highlights'] = {
-                        'status': 'success' if total_highlight_count else ('skipped' if successful_sources else 'failed'),
-                        'count': total_highlight_count,
-                    }
-                except Exception as log_exc:
-                    warning = f"服务日志采集失败：{log_exc}"
-                    warnings.append(warning)
-                    context['collection_summary']['logs']['status'] = 'failed'
-                    context['collection_summary']['logs']['error'] = str(log_exc)
-                    context['collection_summary']['log_highlights']['status'] = 'failed'
-                    logger.warning("[SRE Diagnosis] %s", warning)
-            elif not collect_service_logs:
-                context['collection_summary']['logs']['status'] = 'skipped'
-                context['collection_summary']['log_highlights']['status'] = 'skipped'
-                warnings.append("当前诊断模板未启用服务日志采集。")
-            else:
-                warnings.append("未配置日志数据源，本次诊断将跳过日志上下文。")
+            _collect_metric_contexts(context, service, metric_datasources, collect_metrics, start, end, get_metric_adapter)
+            _collect_log_contexts(context, service, log_datasources, collect_service_logs, start, end, get_log_adapter, extract_log_highlights)
         else:
             warnings.append("未选择可观测服务，本次诊断仅使用 AnsFlow 内部上下文。")
 
