@@ -670,6 +670,129 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
+    @action(detail=False, methods=['post'], url_path='preview')
+    def preview(self, request):
+        from .tasks import _select_log_datasources, _select_metric_datasources, _template_collection_config
+
+        data = request.data.copy()
+        error = self._prepare_template_diagnosis_payload(data)
+        if error:
+            return error
+
+        warnings = []
+        template = DiagnosisTemplate.objects.filter(id=data.get('template')).first() if data.get('template') else None
+        template_snapshot = template.to_snapshot() if template else None
+        collection = _template_collection_config(template_snapshot)
+        service = ObservedService.objects.filter(id=data.get('service')).first() if data.get('service') else None
+        alert = AlertEvent.objects.filter(id=data.get('alert')).first() if data.get('alert') else None
+        service_match = None
+        if alert and not service:
+            service_match = match_services_for_alert(alert, project_id=data.get('project') or None)
+            best_match = service_match.get('best_match')
+            if best_match:
+                service = ObservedService.objects.filter(id=best_match['id']).first()
+            else:
+                warnings.extend(service_match.get('warnings') or ['未匹配到可观测服务，将跳过服务日志和指标采集。'])
+
+        start, end = self._preview_time_window_from_payload(data)
+        collect_metrics = collection.get('metrics', True)
+        collect_service_logs = collection.get('service_logs', True)
+        metric_datasources = []
+        log_datasources = []
+        metric_skipped_reason = None
+        log_skipped_reason = None
+        if not collect_metrics:
+            metric_skipped_reason = '当前模板未启用指标采集。'
+        if not collect_service_logs:
+            log_skipped_reason = '当前模板未启用服务日志采集。'
+
+        if service:
+            if collect_metrics:
+                metric_datasources = _select_metric_datasources(service, template_snapshot)
+                if not metric_datasources:
+                    warnings.append('未找到可用指标数据源，将跳过指标采集。')
+            if collect_service_logs:
+                log_datasources = _select_log_datasources(service, template_snapshot)
+                if not log_datasources:
+                    warnings.append('未找到可用日志数据源，将跳过日志采集。')
+        else:
+            warnings.append('未选择可观测服务，将跳过服务日志和指标采集。')
+
+        ci_cd_items = []
+        ci_cd_labels = {
+            'pipeline_run': '流水线运行摘要',
+            'failed_nodes': '失败节点',
+            'node_logs': '节点日志',
+            'approval_records': '审批记录',
+            'related_alerts': '关联告警',
+            'ansible_execution': 'Ansible 执行摘要',
+            'ansible_task_logs': 'Ansible TaskLog',
+        }
+        for key, label in ci_cd_labels.items():
+            enabled = collection.get(key, False)
+            ci_cd_items.append({'key': key, 'label': label, 'enabled': bool(enabled)})
+
+        return Response({
+            'ok': True,
+            'template': {
+                'id': template.id,
+                'scope': template.scope,
+                'code': template.code,
+                'name': template.name,
+                'project': template.project_id,
+                'target_type': (template.content or {}).get('target_type'),
+            } if template else None,
+            'target': {
+                'project': data.get('project'),
+                'pipeline_run_id': data.get('pipeline_run_id'),
+                'pipeline_node_run_id': data.get('pipeline_node_run_id'),
+                'ansible_execution_id': data.get('ansible_execution_id'),
+            },
+            'time_range': {'start': start.isoformat(), 'end': end.isoformat()},
+            'service': {
+                'id': service.id,
+                'name': service.name,
+                'code': service.code,
+                'project': service.project_id,
+            } if service else None,
+            'service_match': service_match,
+            'collection': {
+                'metrics': {
+                    'enabled': bool(collect_metrics),
+                    'datasources': [self._datasource_summary(item) for item in metric_datasources],
+                    'skipped_reason': metric_skipped_reason,
+                },
+                'logs': {
+                    'enabled': bool(collect_service_logs),
+                    'datasources': [self._datasource_summary(item) for item in log_datasources],
+                    'skipped_reason': log_skipped_reason,
+                },
+                'ci_cd_context': ci_cd_items,
+                'ansflow_events': {'enabled': True, 'items': ['alerts', 'pipeline_runs', 'ansible_executions', 'approval_tickets']},
+            },
+            'warnings': warnings,
+        }, status=status.HTTP_200_OK)
+
+    def _preview_time_window_from_payload(self, data):
+        raw_time = data.get('diagnosis_time')
+        center = parse_datetime(raw_time) if raw_time else None
+        if center is None:
+            center = timezone.now()
+        elif timezone.is_naive(center):
+            center = timezone.make_aware(center, timezone.get_current_timezone())
+        window_minutes = min(max(int(data.get('window_minutes') or 10), 1), 120)
+        delta = timedelta(minutes=window_minutes)
+        return center - delta, center + delta
+
+    def _datasource_summary(self, datasource):
+        return {
+            'id': datasource.id,
+            'name': datasource.name,
+            'kind': datasource.kind,
+            'provider': datasource.provider,
+            'type': datasource.type,
+        }
+
     def _prepare_template_diagnosis_payload(self, data):
         from apps.pipeline_management.models import PipelineNodeRun, PipelineRun
 

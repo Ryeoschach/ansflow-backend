@@ -746,6 +746,42 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(str(run.query_params['pipeline_run_id']), str(pipeline_run.id))
         self.assertEqual(str(run.query_params['pipeline_node_run_id']), str(node_run.id))
 
+    def test_diagnosis_preview_resolves_template_targets_and_datasources(self):
+        DiagnosisTemplate.objects.create(
+            scope='global',
+            code='preview_template',
+            name='采集预览模板',
+            category='ci_cd',
+            content={
+                'target_type': 'pipeline_run',
+                'context_collection': {'metrics': True, 'service_logs': True, 'pipeline_run': True},
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        )
+        _, pipeline_run, node_run = self._create_failed_pipeline_node()
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-runs-preview')
+
+        response = client.post(url, {
+            'title': '采集预览',
+            'project': self.project.id,
+            'service': self.service.id,
+            'template_code': 'preview_template',
+            'pipeline_node_run_id': node_run.id,
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['ok'])
+        self.assertEqual(response.data['template']['code'], 'preview_template')
+        self.assertEqual(str(response.data['target']['pipeline_run_id']), str(pipeline_run.id))
+        self.assertEqual(response.data['service']['code'], 'order-api')
+        self.assertEqual(response.data['collection']['metrics']['datasources'][0]['id'], self.metric_ds.id)
+        self.assertEqual(response.data['collection']['logs']['datasources'][0]['id'], self.log_ds.id)
+        self.assertTrue(any(item['key'] == 'pipeline_run' for item in response.data['collection']['ci_cd_context']))
+
     @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
     def test_diagnosis_create_with_template_code_prefers_project_template(self, mock_delay):
         project_template = DiagnosisTemplate.objects.create(
