@@ -743,6 +743,8 @@ class SREObservabilityTestCase(TestCase):
         run = DiagnosisRun.objects.get(id=response.data['id'])
         self.assertEqual(run.template_id, template.id)
         self.assertEqual(run.query_params['template_snapshot']['code'], 'ci_pipeline_failure')
+        self.assertIn('collection_plan', run.query_params)
+        self.assertEqual(str(run.query_params['collection_plan']['target']['pipeline_run_id']), str(pipeline_run.id))
         self.assertEqual(str(run.query_params['pipeline_run_id']), str(pipeline_run.id))
         self.assertEqual(str(run.query_params['pipeline_node_run_id']), str(node_run.id))
 

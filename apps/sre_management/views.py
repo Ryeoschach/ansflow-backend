@@ -672,13 +672,14 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='preview')
     def preview(self, request):
-        from .tasks import _select_log_datasources, _select_metric_datasources, _template_collection_config
-
         data = request.data.copy()
         error = self._prepare_template_diagnosis_payload(data)
         if error:
             return error
+        return Response(self._build_collection_plan(data), status=status.HTTP_200_OK)
 
+    def _build_collection_plan(self, data):
+        from .tasks import _select_log_datasources, _select_metric_datasources, _template_collection_config
         warnings = []
         template = DiagnosisTemplate.objects.filter(id=data.get('template')).first() if data.get('template') else None
         template_snapshot = template.to_snapshot() if template else None
@@ -732,7 +733,7 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             enabled = collection.get(key, False)
             ci_cd_items.append({'key': key, 'label': label, 'enabled': bool(enabled)})
 
-        return Response({
+        return {
             'ok': True,
             'template': {
                 'id': template.id,
@@ -771,7 +772,7 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 'ansflow_events': {'enabled': True, 'items': ['alerts', 'pipeline_runs', 'ansible_executions', 'approval_tickets']},
             },
             'warnings': warnings,
-        }, status=status.HTTP_200_OK)
+        }
 
     def _preview_time_window_from_payload(self, data):
         raw_time = data.get('diagnosis_time')
@@ -874,6 +875,11 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         instance = serializer.save(**save_kwargs)
         query_params = dict(instance.query_params or {})
         request_data = getattr(self, '_prepared_diagnosis_payload', self.request.data)
+        plan_data = request_data.copy()
+        if instance.project_id and plan_data.get('project') in (None, ''):
+            plan_data['project'] = instance.project_id
+        if instance.service_id:
+            plan_data['service'] = instance.service_id
         for key in ('pipeline_run_id', 'pipeline_node_run_id', 'ansible_execution_id'):
             value = request_data.get(key)
             if value not in (None, ''):
@@ -882,6 +888,7 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             query_params['template_snapshot'] = template.to_snapshot()
         if service_match is not None:
             query_params['service_match'] = service_match
+        query_params['collection_plan'] = self._build_collection_plan(plan_data)
         if query_params != (instance.query_params or {}):
             instance.query_params = query_params
             instance.save(update_fields=['query_params'])
