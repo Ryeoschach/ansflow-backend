@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.ai_engine.models import AIPromptTemplate
+from apps.pipeline_management.models import Pipeline, PipelineNodeRun, PipelineRun
 from apps.rbac_permission.models import Project
 from apps.sre_management.diagnosis_utils import extract_log_highlights, match_services_for_alert
 from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService
@@ -41,6 +42,28 @@ class SREObservabilityTestCase(TestCase):
             metric_label_selector={'job': 'order-api'},
             log_label_selector={'service': 'order-api'},
         )
+
+    def _create_failed_pipeline_node(self, project=None, node_type='build'):
+        pipeline = Pipeline.objects.create(
+            name=f'诊断流水线-{timezone.now().timestamp()}',
+            project=project or self.project,
+            creator=self.user,
+            graph_data={'nodes': [], 'edges': []},
+        )
+        run = PipelineRun.objects.create(
+            pipeline=pipeline,
+            status='failed',
+            trigger_user=self.user,
+        )
+        node = PipelineNodeRun.objects.create(
+            run=run,
+            node_id='node-build',
+            node_type=node_type,
+            node_label='构建节点',
+            status='failed',
+            logs='ERROR build failed',
+        )
+        return pipeline, run, node
 
     @patch('utils.config_manager.ConfigCache.get')
     @patch('apps.sre_management.views.cache.add')
@@ -447,6 +470,7 @@ class SREObservabilityTestCase(TestCase):
     @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
     def test_diagnosis_create_with_template_saves_snapshot_and_targets(self, mock_delay):
         template = DiagnosisTemplate.objects.get(code='ci_pipeline_failure', scope='global')
+        _, pipeline_run, node_run = self._create_failed_pipeline_node()
         client = APIClient()
         client.force_authenticate(self.user)
         url = reverse('sre-diagnosis-runs-list')
@@ -455,8 +479,8 @@ class SREObservabilityTestCase(TestCase):
             'title': '模板化流水线诊断',
             'project': self.project.id,
             'template': template.id,
-            'pipeline_run_id': 123,
-            'pipeline_node_run_id': 456,
+            'pipeline_run_id': pipeline_run.id,
+            'pipeline_node_run_id': node_run.id,
             'diagnosis_time': timezone.now().isoformat(),
             'window_minutes': 10,
         }, format='json')
@@ -465,8 +489,76 @@ class SREObservabilityTestCase(TestCase):
         run = DiagnosisRun.objects.get(id=response.data['id'])
         self.assertEqual(run.template_id, template.id)
         self.assertEqual(run.query_params['template_snapshot']['code'], 'ci_pipeline_failure')
-        self.assertEqual(str(run.query_params['pipeline_run_id']), '123')
-        self.assertEqual(str(run.query_params['pipeline_node_run_id']), '456')
+        self.assertEqual(str(run.query_params['pipeline_run_id']), str(pipeline_run.id))
+        self.assertEqual(str(run.query_params['pipeline_node_run_id']), str(node_run.id))
+
+    @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
+    def test_diagnosis_create_with_template_code_prefers_project_template(self, mock_delay):
+        project_template = DiagnosisTemplate.objects.create(
+            scope='project',
+            project=self.project,
+            code='ci_pipeline_failure',
+            name='项目流水线失败诊断',
+            category='ci_cd',
+            content={'target_type': 'pipeline_run'},
+        )
+        _, pipeline_run, node_run = self._create_failed_pipeline_node()
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-runs-list')
+
+        response = client.post(url, {
+            'title': '按编码创建模板诊断',
+            'template_code': 'ci_pipeline_failure',
+            'pipeline_run_id': pipeline_run.id,
+            'pipeline_node_run_id': node_run.id,
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        run = DiagnosisRun.objects.get(id=response.data['id'])
+        self.assertEqual(run.template_id, project_template.id)
+        self.assertEqual(run.project_id, self.project.id)
+
+    @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
+    def test_diagnosis_create_infers_pipeline_run_from_node_run(self, mock_delay):
+        _, pipeline_run, node_run = self._create_failed_pipeline_node()
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-runs-list')
+
+        response = client.post(url, {
+            'title': '节点推导流水线诊断',
+            'template_code': 'ci_pipeline_failure',
+            'pipeline_node_run_id': node_run.id,
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        run = DiagnosisRun.objects.get(id=response.data['id'])
+        self.assertEqual(str(run.query_params['pipeline_run_id']), str(pipeline_run.id))
+        self.assertEqual(run.project_id, self.project.id)
+
+    def test_diagnosis_create_rejects_node_run_pipeline_mismatch(self):
+        _, first_run, node_run = self._create_failed_pipeline_node()
+        _, second_run, _ = self._create_failed_pipeline_node()
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-runs-list')
+
+        response = client.post(url, {
+            'title': '节点流水线不匹配',
+            'template_code': 'ci_pipeline_failure',
+            'pipeline_run_id': second_run.id,
+            'pipeline_node_run_id': node_run.id,
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(PipelineRun.objects.get(id=first_run.id).id, first_run.id)
 
     @patch('apps.sre_management.observability.get_metric_adapter')
     @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')

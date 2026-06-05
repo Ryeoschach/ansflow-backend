@@ -658,6 +658,68 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         'diagnosis_time': ['gte', 'lte'],
     }
 
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        error = self._prepare_template_diagnosis_payload(data)
+        if error:
+            return error
+        self._prepared_diagnosis_payload = data
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def _prepare_template_diagnosis_payload(self, data):
+        from apps.pipeline_management.models import PipelineNodeRun, PipelineRun
+
+        pipeline_run = None
+        node_run = None
+        pipeline_run_id = data.get('pipeline_run_id')
+        pipeline_node_run_id = data.get('pipeline_node_run_id')
+
+        if pipeline_node_run_id not in (None, ''):
+            node_run = PipelineNodeRun.objects.select_related('run', 'run__pipeline').filter(id=pipeline_node_run_id).first()
+            if not node_run:
+                return Response({'pipeline_node_run_id': 'Pipeline node run not found.'}, status=status.HTTP_400_BAD_REQUEST)
+            if pipeline_run_id not in (None, '') and str(node_run.run_id) != str(pipeline_run_id):
+                return Response({'pipeline_node_run_id': 'Pipeline node run does not belong to pipeline_run_id.'}, status=status.HTTP_400_BAD_REQUEST)
+            pipeline_run = node_run.run
+            data['pipeline_run_id'] = node_run.run_id
+        elif pipeline_run_id not in (None, ''):
+            pipeline_run = PipelineRun.objects.select_related('pipeline').filter(id=pipeline_run_id).first()
+            if not pipeline_run:
+                return Response({'pipeline_run_id': 'Pipeline run not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if pipeline_run and getattr(pipeline_run.pipeline, 'project_id', None):
+            project_id = pipeline_run.pipeline.project_id
+            if data.get('project') in (None, ''):
+                data['project'] = project_id
+            elif str(data.get('project')) != str(project_id):
+                return Response({'project': 'Project does not match the pipeline run project.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        template_code = data.get('template_code')
+        if template_code and not data.get('template'):
+            project_id = data.get('project')
+            template = None
+            if project_id not in (None, ''):
+                template = DiagnosisTemplate.objects.filter(
+                    scope='project',
+                    project_id=project_id,
+                    code=template_code,
+                    is_active=True,
+                ).first()
+            if not template:
+                template = DiagnosisTemplate.objects.filter(
+                    scope='global',
+                    code=template_code,
+                    is_active=True,
+                ).first()
+            if not template:
+                return Response({'template_code': 'Active diagnosis template not found.'}, status=status.HTTP_400_BAD_REQUEST)
+            data['template'] = template.id
+        return None
+
     def perform_create(self, serializer):
         alert = serializer.validated_data.get('alert')
         service = serializer.validated_data.get('service')
@@ -675,8 +737,9 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
         instance = serializer.save(**save_kwargs)
         query_params = dict(instance.query_params or {})
+        request_data = getattr(self, '_prepared_diagnosis_payload', self.request.data)
         for key in ('pipeline_run_id', 'pipeline_node_run_id', 'ansible_execution_id'):
-            value = self.request.data.get(key)
+            value = request_data.get(key)
             if value not in (None, ''):
                 query_params[key] = value
         if template:
