@@ -92,6 +92,7 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
         scope = attrs.get('scope', getattr(self.instance, 'scope', 'global'))
         project = attrs.get('project', getattr(self.instance, 'project', None))
         code = attrs.get('code', getattr(self.instance, 'code', None))
+        content = attrs.get('content', getattr(self.instance, 'content', {}) or {})
         if scope == 'project' and not project:
             raise serializers.ValidationError({'project': 'Project template requires project.'})
         if scope == 'global':
@@ -103,6 +104,24 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
                 queryset = queryset.exclude(id=self.instance.id)
             if queryset.exists():
                 raise serializers.ValidationError({'code': 'Template code already exists in this scope.'})
+        if not isinstance(content, dict):
+            raise serializers.ValidationError({'content': 'Template content must be an object.'})
+        target_type = content.get('target_type')
+        allowed_target_types = {'pipeline_run', 'ansible_execution', 'service_regression'}
+        if target_type not in allowed_target_types:
+            raise serializers.ValidationError({'content': 'Template target_type is required and must be valid.'})
+        context_collection = content.get('context_collection', {})
+        if context_collection and not isinstance(context_collection, dict):
+            raise serializers.ValidationError({'content': 'Template context_collection must be an object.'})
+        prompt_template = content.get('prompt_template')
+        if not isinstance(prompt_template, str) or '{diagnosis_context}' not in prompt_template:
+            raise serializers.ValidationError({'content': 'Template prompt_template must include {diagnosis_context}.'})
+        log_keywords = content.get('log_keywords', [])
+        if log_keywords and not isinstance(log_keywords, list):
+            raise serializers.ValidationError({'content': 'Template log_keywords must be a list.'})
+        report_schema = content.get('report_schema', {})
+        if report_schema and not isinstance(report_schema, dict):
+            raise serializers.ValidationError({'content': 'Template report_schema must be an object.'})
         return attrs
 
 

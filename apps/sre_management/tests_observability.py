@@ -460,6 +460,44 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertTrue(DiagnosisTemplate.objects.filter(id=template.id).exists())
 
+    def test_diagnosis_template_requires_supported_target_type(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.post(url, {
+            'scope': 'global',
+            'code': 'invalid_target_template',
+            'name': '非法目标模板',
+            'category': 'ci_cd',
+            'content': {
+                'target_type': 'unknown',
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('content', response.data['message'])
+
+    def test_diagnosis_template_prompt_must_include_context_placeholder(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-templates-list')
+
+        response = client.post(url, {
+            'scope': 'global',
+            'code': 'invalid_prompt_template',
+            'name': '非法 Prompt 模板',
+            'category': 'ci_cd',
+            'content': {
+                'target_type': 'pipeline_run',
+                'prompt_template': '{prefix}\n缺少上下文占位符',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('content', response.data['message'])
+
     def test_project_template_overrides_global_template_in_list(self):
         DiagnosisTemplate.objects.create(
             scope='project',
