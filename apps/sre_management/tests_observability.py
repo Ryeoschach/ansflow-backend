@@ -14,6 +14,7 @@ from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTempla
 from apps.sre_management.observability import get_log_adapter
 from apps.sre_management.rule_templates import render_template
 from apps.sre_management.tasks import run_timepoint_diagnosis
+from apps.task_management.models import AnsibleExecution, AnsibleTask
 
 
 class SREObservabilityTestCase(TestCase):
@@ -64,6 +65,21 @@ class SREObservabilityTestCase(TestCase):
             logs='ERROR build failed',
         )
         return pipeline, run, node
+
+    def _create_ansible_execution(self):
+        task = AnsibleTask.objects.create(
+            name='诊断 Ansible 任务',
+            project=self.project,
+            task_type='cmd',
+            content='uptime',
+            creator=self.user,
+        )
+        return AnsibleExecution.objects.create(
+            task=task,
+            status='failed',
+            executor=self.user,
+            from_pipeline=True,
+        )
 
     @patch('utils.config_manager.ConfigCache.get')
     @patch('apps.sre_management.views.cache.add')
@@ -540,6 +556,29 @@ class SREObservabilityTestCase(TestCase):
         run = DiagnosisRun.objects.get(id=response.data['id'])
         self.assertEqual(str(run.query_params['pipeline_run_id']), str(pipeline_run.id))
         self.assertEqual(run.project_id, self.project.id)
+
+    @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
+    def test_diagnosis_create_infers_ansible_execution_from_node_output(self, mock_delay):
+        execution = self._create_ansible_execution()
+        _, pipeline_run, node_run = self._create_failed_pipeline_node(node_type='ansible')
+        node_run.output_data = {'ansible_execution_id': execution.id, 'status': 'failed'}
+        node_run.save(update_fields=['output_data'])
+        client = APIClient()
+        client.force_authenticate(self.user)
+        url = reverse('sre-diagnosis-runs-list')
+
+        response = client.post(url, {
+            'title': 'Ansible 节点自动关联诊断',
+            'template_code': 'ci_ansible_failure',
+            'pipeline_node_run_id': node_run.id,
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        run = DiagnosisRun.objects.get(id=response.data['id'])
+        self.assertEqual(str(run.query_params['pipeline_run_id']), str(pipeline_run.id))
+        self.assertEqual(str(run.query_params['ansible_execution_id']), str(execution.id))
 
     def test_diagnosis_create_rejects_node_run_pipeline_mismatch(self):
         _, first_run, node_run = self._create_failed_pipeline_node()

@@ -686,6 +686,10 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 return Response({'pipeline_node_run_id': 'Pipeline node run does not belong to pipeline_run_id.'}, status=status.HTTP_400_BAD_REQUEST)
             pipeline_run = node_run.run
             data['pipeline_run_id'] = node_run.run_id
+            if data.get('ansible_execution_id') in (None, '') and node_run.node_type in ('ansible', 'host_deploy'):
+                ansible_execution_id = self._extract_ansible_execution_id(node_run.output_data)
+                if ansible_execution_id not in (None, ''):
+                    data['ansible_execution_id'] = ansible_execution_id
         elif pipeline_run_id not in (None, ''):
             pipeline_run = PipelineRun.objects.select_related('pipeline').filter(id=pipeline_run_id).first()
             if not pipeline_run:
@@ -718,6 +722,15 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             if not template:
                 return Response({'template_code': 'Active diagnosis template not found.'}, status=status.HTTP_400_BAD_REQUEST)
             data['template'] = template.id
+        return None
+
+    def _extract_ansible_execution_id(self, output_data):
+        if not isinstance(output_data, dict):
+            return None
+        for key in ('ansible_execution_id', 'ansibleExecutionId', 'execution_id'):
+            value = output_data.get(key)
+            if value not in (None, ''):
+                return value
         return None
 
     def perform_create(self, serializer):
