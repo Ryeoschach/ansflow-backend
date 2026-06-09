@@ -8,6 +8,7 @@ from .diagnosis_collectors import (
     DiagnosisEvidenceBuilder,
     template_collection_config,
 )
+from .diagnosis_prompt import DiagnosisPromptContextBuilder
 from apps.ai_engine.rag_service import RAGService
 from django.utils import timezone
 
@@ -981,7 +982,6 @@ def export_alert_report_task(user_id, start_time_str, end_time_str):
 @shared_task(name="apps.sre_management.tasks.run_timepoint_diagnosis", bind=True, max_retries=2)
 def run_timepoint_diagnosis(self, diagnosis_id):
     """异步执行时间点诊断。"""
-    import json
     from .diagnosis_utils import extract_log_highlights, extract_structured_report
     from .observability import get_log_adapter, get_metric_adapter
 
@@ -1074,7 +1074,14 @@ def run_timepoint_diagnosis(self, diagnosis_id):
         context['structured_report'] = {}
 
         rag_service = RAGService()
-        prompt_context = json.dumps(context, ensure_ascii=False, default=str)[:24000]
+        prompt_context, prompt_context_summary = DiagnosisPromptContextBuilder().build(context)
+        context['collection_summary']['prompt_context'] = prompt_context_summary
+        if prompt_context_summary['compressed']:
+            context['warnings'].append(
+                "发送给 AI 的诊断上下文已压缩："
+                f"{prompt_context_summary['original_chars']} -> {prompt_context_summary['final_chars']} 字符，"
+                f"裁剪或去重 {prompt_context_summary['removed_count']} 项。"
+            )
         prompt_vars = {
             'prefix': rag_service.personality.get('prefix', ''),
             'diagnosis_context': prompt_context,

@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -14,6 +15,7 @@ from apps.sre_management.diagnosis_collectors import (
     CiCdContextCollector,
     DiagnosisEvidenceBuilder,
 )
+from apps.sre_management.diagnosis_prompt import DiagnosisPromptContextBuilder
 from apps.sre_management.diagnosis_utils import build_evidence_index, extract_log_highlights, match_services_for_alert
 from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService
 from apps.sre_management.observability import get_log_adapter
@@ -167,6 +169,73 @@ class SREObservabilityTestCase(TestCase):
 
         self.assertEqual(evidence, build_evidence_index(context))
         self.assertEqual([item['ref'] for item in evidence], ['LOG-1', f'metric:{self.metric_ds.id}:1'])
+
+    def test_prompt_context_builder_keeps_valid_json_and_prioritizes_evidence(self):
+        high_priority_message = 'critical timeout ' + ('x' * 900)
+        context = {
+            'diagnosis': {'id': 1, 'title': '超大上下文诊断'},
+            'project': {'id': self.project.id, 'name': self.project.name},
+            'template': {'code': 'ci_pipeline_failure'},
+            'service': {'id': self.service.id, 'code': self.service.code},
+            'warnings': [],
+            'collection_summary': {},
+            'log_highlights': [],
+            'log_contexts': [{
+                'datasource': {'id': self.log_ds.id, 'name': self.log_ds.name},
+                'query': '{service="order-api"}',
+                'items': [{'message': 'raw log ' + ('y' * 2000)} for _ in range(20)],
+                'highlights': [
+                    {
+                        'evidence_id': f'log:{self.log_ds.id}:{index}',
+                        'message': high_priority_message if index == 0 else f'warning {index} ' + ('z' * 900),
+                        'score': 100 if index == 0 else index,
+                    }
+                    for index in range(20)
+                ],
+            }],
+            'metric_contexts': [{
+                'datasource': {'id': self.metric_ds.id, 'name': self.metric_ds.name},
+                'metrics': [
+                    {
+                        'name': f'metric_{index}',
+                        'query': f'metric_{index}{{service="order-api"}}',
+                        'result': [{'value': 'm' * 1000} for _ in range(10)],
+                    }
+                    for index in range(10)
+                ],
+            }],
+            'ansflow_events': {'alerts': [], 'pipeline_runs': [], 'ansible_executions': [], 'approval_tickets': []},
+            'ci_cd_context': {},
+            'evidence_index': [
+                {
+                    'ref': f'LOG-{index + 1}',
+                    'type': 'log',
+                    'title': f'Log {index + 1}',
+                    'summary': high_priority_message if index == 0 else f'warning {index}',
+                    'raw': {'score': 100 if index == 0 else index, 'payload': 'r' * 2000},
+                }
+                for index in range(20)
+            ],
+        }
+
+        prompt_context, summary = DiagnosisPromptContextBuilder(max_chars=5000).build(context)
+        parsed = json.loads(prompt_context)
+
+        self.assertLessEqual(len(prompt_context), 5000)
+        self.assertIn('critical timeout', parsed['logs']['highlights'][0]['message'])
+        self.assertNotIn('"raw"', prompt_context)
+        self.assertTrue(summary['compressed'])
+        self.assertTrue(summary['truncated'])
+        self.assertGreater(summary['removed_count'], 0)
+        self.assertEqual(summary['budget_chars'], 5000)
+
+        minimal_prompt, minimal_summary = DiagnosisPromptContextBuilder(max_chars=1000).build({
+            **context,
+            'source_alert': {'labels': {f'label_{index}': 'v' * 5000 for index in range(50)}},
+        })
+        json.loads(minimal_prompt)
+        self.assertLessEqual(len(minimal_prompt), 1000)
+        self.assertEqual(minimal_summary['budget_chars'], 1000)
 
     @patch('utils.config_manager.ConfigCache.get')
     @patch('apps.sre_management.views.cache.add')
@@ -375,6 +444,11 @@ class SREObservabilityTestCase(TestCase):
         self.assertEqual(run.context_snapshot['metric_contexts'][0]['datasource']['id'], self.metric_ds.id)
         self.assertEqual(run.context_snapshot['collection_summary']['metrics']['status'], 'success')
         self.assertEqual(run.context_snapshot['collection_summary']['logs']['status'], 'success')
+        self.assertEqual(run.context_snapshot['collection_summary']['prompt_context']['status'], 'success')
+        self.assertLessEqual(
+            run.context_snapshot['collection_summary']['prompt_context']['final_chars'],
+            run.context_snapshot['collection_summary']['prompt_context']['budget_chars'],
+        )
         self.assertEqual(run.context_snapshot['log_contexts'][0]['datasource']['id'], self.log_ds.id)
         self.assertEqual(run.context_snapshot['structured_report']['summary'], '订单服务异常')
         self.assertEqual(run.context_snapshot['evidence_index'][0]['ref'], 'LOG-1')

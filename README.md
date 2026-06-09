@@ -70,7 +70,7 @@ POST /api/v1/sre/diagnosis-templates/{id}/run/
 ```
 
 这些接口用于数据源能力发现、服务映射日志预览和指标预览，便于在时间点诊断前验证标签选择器、字段映射和响应映射是否正确。
-诊断模板接口用于维护全局/项目级场景诊断包。模板可配置 CI/CD、Ansible、服务日志、服务指标、告警和审批等上下文采集策略；运行时会保存模板快照，并把多日志源、多指标源归一为 `log_contexts`、`metric_contexts` 和统一 `evidence_index`。详细使用说明见 AnsFlow Web 文档门户。
+诊断模板接口用于维护全局/项目级场景诊断包。模板可配置 CI/CD、Ansible、服务日志、服务指标、告警和审批等上下文采集策略；运行时会保存模板快照，并把多日志源、多指标源归一为 `log_contexts`、`metric_contexts` 和统一 `evidence_index`。发送给 AI 的上下文会按证据优先级和分类预算压缩为完整 JSON，原始采集结果仍完整保存在 `context_snapshot`，压缩统计记录在 `collection_summary.prompt_context`。详细使用说明见 AnsFlow Web 文档门户。
 
 ## License
 
