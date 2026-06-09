@@ -13,7 +13,7 @@
 AnsFlow Backend 是 AnsFlow 的 Django 服务端，负责 REST API、WebSocket 实时推送、Celery 异步任务、SmartRBAC 权限、AI/RAG 编排、SRE 自愈以及 Ansible/Kubernetes 执行能力。
 
 - 产品展示与完整文档：[https://ansflow.cyfee.com](https://ansflow.cyfee.com)
-- SRE 诊断中心支持模板化诊断、多日志源/多指标源采集、CI/CD 与 Ansible 上下文分析，并提供服务映射的日志/指标查询预览接口。
+- SRE 诊断中心支持模板版本与回滚、CI/CD/Ansible/Kubernetes/主机/JVM 场景、多源采集、时间线与相关性分析、用户反馈、故障回放和质量度量。
 
 ### GitHub 仓库
 - 门户网站：[Ryeoschach/ansflow-web](https://github.com/Ryeoschach/ansflow-web)
@@ -67,12 +67,19 @@ POST /api/v1/sre/observed-services/{id}/preview-logs/
 POST /api/v1/sre/observed-services/{id}/preview-metrics/
 GET  /api/v1/sre/diagnosis-templates/
 POST /api/v1/sre/diagnosis-templates/{id}/run/
+GET  /api/v1/sre/diagnosis-templates/{id}/versions/
+POST /api/v1/sre/diagnosis-templates/{id}/rollback/
+POST /api/v1/sre/diagnosis-runs/{id}/feedback/
+POST /api/v1/sre/diagnosis-runs/{id}/compare/
+POST /api/v1/sre/diagnosis-runs/{id}/create-replay-case/
+GET  /api/v1/sre/diagnosis-replay-cases/
+GET  /api/v1/sre/diagnosis-quality/
 ```
 
 这些接口用于数据源能力发现、服务映射日志预览和指标预览，便于在时间点诊断前验证标签选择器、字段映射和响应映射是否正确。
 诊断模板接口用于维护全局/项目级场景诊断包。模板可配置 CI/CD、Ansible、服务日志、服务指标、告警和审批等上下文采集策略；运行时会保存模板快照，并把多日志源、多指标源归一为 `log_contexts`、`metric_contexts` 和统一 `evidence_index`。上下文会递归脱敏并移除重复的供应商原始响应，日志生成模式聚类，指标生成样本数、极值、最新值和变化率摘要。发送给 AI 的上下文按证据优先级和分类预算压缩为完整 JSON，压缩统计记录在 `collection_summary.prompt_context`。
 
-诊断运行使用轻量列表和独立详情接口，支持 Celery 幂等、自动重试、超时任务恢复和历史数据保留。默认保留 90 天，可通过 `SRE_DIAGNOSIS_RETENTION_DAYS` 调整；超时阈值由 `SRE_DIAGNOSIS_STALE_MINUTES` 控制。观测数据源出站请求默认阻止私网、环回和云元数据地址，私有生产端点应显式加入 `SRE_OBSERVABILITY_ALLOWED_HOSTS`。详细使用说明见 AnsFlow Web 文档门户。
+诊断运行使用轻量列表和独立详情接口，支持采集器并发与失败隔离、Celery 幂等重试、AI 超时/熔断、超时任务恢复和历史数据保留。默认保留 90 天，可通过 `SRE_DIAGNOSIS_RETENTION_DAYS` 调整；AI 超时和熔断由 `SRE_DIAGNOSIS_AI_TIMEOUT_SECONDS`、`SRE_DIAGNOSIS_AI_CIRCUIT_FAILURES`、`SRE_DIAGNOSIS_AI_CIRCUIT_SECONDS` 控制，Kubernetes 只读采集超时由 `SRE_DIAGNOSIS_K8S_TIMEOUT_SECONDS` 控制。可通过 `SRE_DIAGNOSIS_EXTRA_COLLECTORS` 注册实现统一 `collect(run, start, end, template_snapshot)` 接口的只读扩展采集器。观测数据源出站请求默认阻止私网、环回和云元数据地址，私有生产端点应显式加入 `SRE_OBSERVABILITY_ALLOWED_HOSTS`。详细使用说明见 AnsFlow Web 文档门户。
 
 ## License
 

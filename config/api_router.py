@@ -22,6 +22,8 @@ from apps.ai_engine.views import (
 from apps.sre_management.views import (
     AlertEventViewSet,
     AlertRuleTemplateViewSet,
+    DiagnosisQualityViewSet,
+    DiagnosisReplayCaseViewSet,
     DiagnosisRunViewSet,
     DiagnosisTemplateViewSet,
     ObservabilityDataSourceViewSet,
@@ -94,6 +96,8 @@ router.register(r'sre/observability-datasources', ObservabilityDataSourceViewSet
 router.register(r'sre/observed-services', ObservedServiceViewSet, basename='sre-observed-services')
 router.register(r'sre/diagnosis-templates', DiagnosisTemplateViewSet, basename='sre-diagnosis-templates')
 router.register(r'sre/diagnosis-runs', DiagnosisRunViewSet, basename='sre-diagnosis-runs')
+router.register(r'sre/diagnosis-replay-cases', DiagnosisReplayCaseViewSet, basename='sre-diagnosis-replay-cases')
+router.register(r'sre/diagnosis-quality', DiagnosisQualityViewSet, basename='sre-diagnosis-quality')
 router.register(r'sre/alert-rule-templates', AlertRuleTemplateViewSet, basename='sre-alert-rule-templates')
 
 # Task Pulse

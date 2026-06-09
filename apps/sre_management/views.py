@@ -6,12 +6,28 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import PermissionDenied
 from django.core.cache import cache
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import extend_schema
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
-from .models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService, SelfHealingPolicy
+from .models import (
+    AlertEvent,
+    DiagnosisFeedback,
+    DiagnosisReplayCase,
+    DiagnosisReplayResult,
+    DiagnosisRun,
+    DiagnosisTemplate,
+    DiagnosisTemplateVersion,
+    ObservabilityDataSource,
+    ObservedService,
+    SelfHealingPolicy,
+)
+from .diagnosis_quality import (
+    create_template_version,
+    diagnosis_quality_summary,
+)
+from .diagnosis_security import redact_sensitive_data
 from .diagnosis_utils import match_services_for_alert
 from .observability import get_datasource_capabilities, get_log_adapter, get_metric_adapter, get_observability_adapter
 from .rule_templates import list_templates, render_template
@@ -22,7 +38,12 @@ from .serializers import (
     AlertRuleTemplateSerializer,
     DiagnosisRunSerializer,
     DiagnosisRunListSerializer,
+    DiagnosisFeedbackSerializer,
+    DiagnosisReplayCaseSerializer,
+    DiagnosisReplayCaseListSerializer,
+    DiagnosisReplayResultSerializer,
     DiagnosisTemplateSerializer,
+    DiagnosisTemplateVersionSerializer,
     ObservabilityDataSourceSerializer,
     ObservedServiceSerializer,
     SelfHealingPolicySerializer,
@@ -778,6 +799,12 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 'pipeline_run_id': data.get('pipeline_run_id'),
                 'pipeline_node_run_id': data.get('pipeline_node_run_id'),
                 'ansible_execution_id': data.get('ansible_execution_id'),
+                'host_id': data.get('host_id'),
+                'k8s_cluster_id': data.get('k8s_cluster_id'),
+                'namespace': data.get('namespace'),
+                'workload_kind': data.get('workload_kind'),
+                'workload_name': data.get('workload_name'),
+                'jvm_instance': data.get('jvm_instance'),
             },
             'time_range': {'start': start.isoformat(), 'end': end.isoformat()},
             'service': {
@@ -825,6 +852,8 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         }
 
     def _prepare_template_diagnosis_payload(self, data):
+        from apps.host_management.models import Host
+        from apps.k8s_management.models import K8sCluster
         from apps.pipeline_management.models import PipelineNodeRun, PipelineRun
         from apps.task_management.models import AnsibleExecution
 
@@ -910,6 +939,30 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 return Response({'service': 'Active observed service not found.'}, status=status.HTTP_400_BAD_REQUEST)
             if str(service.project_id) != str(data.get('project')):
                 return Response({'service': 'Observed service does not belong to the diagnosis project.'}, status=status.HTTP_400_BAD_REQUEST)
+            if data.get('k8s_cluster_id') in (None, '') and service.k8s_cluster_id:
+                data['k8s_cluster_id'] = service.k8s_cluster_id
+            if data.get('namespace') in (None, '') and service.namespace:
+                data['namespace'] = service.namespace
+
+        host_id = data.get('host_id')
+        if host_id not in (None, '') and not Host.objects.filter(
+            id=host_id,
+            project_id=data.get('project'),
+        ).exists():
+            return Response(
+                {'host_id': 'Host does not belong to the diagnosis project.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cluster_id = data.get('k8s_cluster_id')
+        if cluster_id not in (None, '') and not K8sCluster.objects.filter(
+            id=cluster_id,
+            project_id=data.get('project'),
+        ).exists():
+            return Response(
+                {'k8s_cluster_id': 'Kubernetes cluster does not belong to the diagnosis project.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         alert_id = data.get('alert')
         if alert_id not in (None, ''):
@@ -927,6 +980,10 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             'pipeline_run': ('pipeline_run_id', pipeline_run_id or data.get('pipeline_run_id')),
             'ansible_execution': ('ansible_execution_id', data.get('ansible_execution_id')),
             'service_regression': ('service', data.get('service')),
+            'alert_service': ('service', data.get('service') or data.get('alert')),
+            'k8s_workload': ('k8s_cluster_id', data.get('k8s_cluster_id')),
+            'host_runtime': ('host_id', data.get('host_id') or data.get('service')),
+            'jvm_runtime': ('service', data.get('service')),
         }
         if target_type in required_targets:
             field, value = required_targets[target_type]
@@ -966,7 +1023,17 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             plan_data['project'] = instance.project_id
         if instance.service_id:
             plan_data['service'] = instance.service_id
-        for key in ('pipeline_run_id', 'pipeline_node_run_id', 'ansible_execution_id'):
+        for key in (
+            'pipeline_run_id',
+            'pipeline_node_run_id',
+            'ansible_execution_id',
+            'host_id',
+            'k8s_cluster_id',
+            'namespace',
+            'workload_kind',
+            'workload_name',
+            'jvm_instance',
+        ):
             value = request_data.get(key)
             if value not in (None, ''):
                 query_params[key] = value
@@ -1011,6 +1078,75 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             obj.save(update_fields=['status', 'error_message'])
         return Response({'message': 'Diagnosis retry submitted'}, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['get', 'post'], url_path='feedback')
+    def feedback(self, request, pk=None):
+        run = self.get_object()
+        if request.method == 'GET':
+            feedback = DiagnosisFeedback.objects.filter(run=run, user=request.user).first()
+            if not feedback:
+                return Response(None, status=status.HTTP_200_OK)
+            return Response(DiagnosisFeedbackSerializer(feedback).data)
+        feedback = DiagnosisFeedback.objects.filter(run=run, user=request.user).first()
+        serializer = DiagnosisFeedbackSerializer(
+            feedback,
+            data=request.data,
+            partial=bool(feedback),
+            context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(run=run, user=request.user)
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK if feedback else status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['post'], url_path='compare')
+    def compare(self, request, pk=None):
+        current = self.get_object()
+        other_id = request.data.get('other_run_id')
+        if not other_id:
+            return Response({'other_run_id': 'This field is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        other = self.get_queryset().filter(id=other_id).first()
+        if not other:
+            return Response({'other_run_id': 'Diagnosis run not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        def report(run):
+            return (run.context_snapshot or {}).get('structured_report') or {}
+
+        current_report = report(current)
+        other_report = report(other)
+        current_refs = {item.get('ref') for item in (current.context_snapshot or {}).get('evidence_index') or [] if item.get('ref')}
+        other_refs = {item.get('ref') for item in (other.context_snapshot or {}).get('evidence_index') or [] if item.get('ref')}
+        return Response({
+            'current': DiagnosisRunListSerializer(current).data,
+            'other': DiagnosisRunListSerializer(other).data,
+            'quality_delta': round((current.quality_score or 0) - (other.quality_score or 0), 2),
+            'confidence_delta': round((current.confidence_score or 0) - (other.confidence_score or 0), 4),
+            'evidence': {
+                'added': sorted(current_refs - other_refs),
+                'removed': sorted(other_refs - current_refs),
+                'shared': sorted(current_refs & other_refs),
+            },
+            'reports': {
+                'current': current_report,
+                'other': other_report,
+            },
+        })
+
+    @action(detail=True, methods=['post'], url_path='create-replay-case')
+    def create_replay_case(self, request, pk=None):
+        run = self.get_object()
+        payload = request.data.copy()
+        payload.setdefault('project', run.project_id)
+        payload.setdefault('source_run', run.id)
+        payload.setdefault('template', run.template_id)
+        payload.setdefault('name', f'{run.title} Replay')
+        payload.setdefault('fixture_context', redact_sensitive_data(run.context_snapshot or {}))
+        serializer = DiagnosisReplayCaseSerializer(data=payload, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        case = serializer.save(created_by=request.user)
+        return Response(DiagnosisReplayCaseSerializer(case).data, status=status.HTTP_201_CREATED)
+
 
 @extend_schema(tags=["SRE 诊断模板"])
 class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
@@ -1051,9 +1187,28 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
             raise PermissionDenied('Only platform administrators can create global diagnosis templates.')
         project = getattr(self.request, 'project', None)
         if scope == 'project':
-            serializer.save(is_builtin=False, project=project)
+            template = serializer.save(is_builtin=False, project=project)
         else:
-            serializer.save(is_builtin=False)
+            template = serializer.save(is_builtin=False)
+        create_template_version(template, self.request.user, 'Initial version')
+
+    def perform_update(self, serializer):
+        template = serializer.instance
+        versioned_fields = {'name', 'description', 'category', 'content'}
+        has_versioned_change = any(
+            field in serializer.validated_data
+            and serializer.validated_data[field] != getattr(template, field)
+            for field in versioned_fields
+        )
+        if has_versioned_change:
+            serializer.validated_data['version'] = template.version + 1
+        template = serializer.save()
+        if has_versioned_change:
+            create_template_version(
+                template,
+                self.request.user,
+                self.request.data.get('change_summary') or 'Template updated',
+            )
 
     def update(self, request, *args, **kwargs):
         template = self.get_object()
@@ -1100,7 +1255,66 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         template = serializer.save(is_builtin=False)
+        create_template_version(template, request.user, f'Copied from {source.code}')
         return Response(self.get_serializer(template).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='versions')
+    def versions(self, request, pk=None):
+        template = self.get_object()
+        queryset = template.versions.select_related('created_by').all()
+        return Response(DiagnosisTemplateVersionSerializer(queryset, many=True).data)
+
+    @action(detail=True, methods=['post'], url_path='rollback')
+    def rollback(self, request, pk=None):
+        template = self.get_object()
+        self._ensure_template_mutable(template)
+        if template.is_builtin:
+            return Response(
+                {'error': 'Built-in templates cannot be rolled back. Copy them before editing.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        version_number = request.data.get('version')
+        version = template.versions.filter(version=version_number).first()
+        if not version:
+            return Response({'version': 'Template version not found.'}, status=status.HTTP_404_NOT_FOUND)
+        with transaction.atomic():
+            template.version += 1
+            template.name = version.name
+            template.description = version.description
+            template.category = version.category
+            template.content = version.content
+            template.save(update_fields=[
+                'version', 'name', 'description', 'category', 'content', 'update_time',
+            ])
+            create_template_version(
+                template,
+                request.user,
+                f'Rolled back from version {version.version}',
+            )
+        return Response(self.get_serializer(template).data)
+
+    @action(detail=True, methods=['post'], url_path='publish')
+    def publish(self, request, pk=None):
+        template = self.get_object()
+        self._ensure_template_mutable(template)
+        template.lifecycle_status = 'published'
+        template.is_active = True
+        template.save(update_fields=['lifecycle_status', 'is_active', 'update_time'])
+        return Response(self.get_serializer(template).data)
+
+    @action(detail=True, methods=['post'], url_path='deprecate')
+    def deprecate(self, request, pk=None):
+        template = self.get_object()
+        self._ensure_template_mutable(template)
+        if template.is_builtin:
+            return Response(
+                {'error': 'Built-in templates can be disabled but not deprecated.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        template.lifecycle_status = 'deprecated'
+        template.is_active = False
+        template.save(update_fields=['lifecycle_status', 'is_active', 'update_time'])
+        return Response(self.get_serializer(template).data)
 
     @action(detail=True, methods=['post'], url_path='run')
     def run(self, request, pk=None):
@@ -1119,6 +1333,85 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         view.perform_create(serializer)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(tags=["SRE 诊断回放"])
+class DiagnosisReplayCaseViewSet(DataScopeMixin, viewsets.ModelViewSet):
+    queryset = DiagnosisReplayCase.objects.select_related(
+        'project', 'template', 'source_run', 'created_by',
+    ).prefetch_related('results')
+    serializer_class = DiagnosisReplayCaseSerializer
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:diagnosis"
+    resource_type = "sre"
+    resource_owner_field = "created_by"
+    filterset_fields = {
+        'project': ['exact'],
+        'template': ['exact'],
+        'is_active': ['exact'],
+    }
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return DiagnosisReplayCaseListSerializer
+        return DiagnosisReplayCaseSerializer
+
+    def get_queryset(self):
+        queryset = self.queryset
+        project = getattr(self.request, 'project', None)
+        if project:
+            return queryset.filter(project=project)
+        if not self.request.user.is_superuser:
+            return queryset.none()
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=['post'], url_path='run')
+    def run(self, request, pk=None):
+        case = self.get_object()
+        result = DiagnosisReplayResult.objects.create(
+            case=case,
+            template_version=getattr(case.template, 'version', None),
+            executed_by=request.user,
+        )
+        from .tasks import run_diagnosis_replay
+        transaction.on_commit(lambda: run_diagnosis_replay.delay(result.id))
+        return Response(
+            DiagnosisReplayResultSerializer(result).data,
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=['get'], url_path='results')
+    def results(self, request, pk=None):
+        case = self.get_object()
+        return Response(DiagnosisReplayResultSerializer(
+            case.results.select_related('executed_by').all(),
+            many=True,
+        ).data)
+
+
+@extend_schema(tags=["SRE 诊断质量"])
+class DiagnosisQualityViewSet(viewsets.ViewSet):
+    permission_classes = [SmartRBACPermission]
+    resource_code = "sre:diagnosis"
+    resource_type = "sre"
+
+    def list(self, request):
+        project = getattr(request, 'project', None)
+        if not project and not request.user.is_superuser:
+            return Response(
+                {'error': 'An active project is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        project_id = request.query_params.get('project') or getattr(project, 'id', None)
+        if project and project_id and str(project_id) != str(project.id):
+            return Response(
+                {'project': 'Project must match the active workspace.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(diagnosis_quality_summary(project_id=project_id))
 
 
 @extend_schema(tags=["SRE 告警规则模板"])

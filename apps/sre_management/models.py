@@ -186,6 +186,15 @@ class DiagnosisTemplate(BaseModel):
     )
     CATEGORY_CHOICES = (
         ('ci_cd', 'CI/CD 发布诊断'),
+        ('service', '服务运行诊断'),
+        ('kubernetes', 'Kubernetes 诊断'),
+        ('host', '主机运行诊断'),
+        ('jvm', 'JVM 应用诊断'),
+    )
+    LIFECYCLE_CHOICES = (
+        ('draft', '草稿'),
+        ('published', '已发布'),
+        ('deprecated', '已废弃'),
     )
 
     scope = models.CharField(max_length=20, choices=SCOPE_CHOICES, default='global', verbose_name="模板范围")
@@ -197,6 +206,13 @@ class DiagnosisTemplate(BaseModel):
     content = JSONField(default=dict, blank=True, verbose_name="模板内容")
     is_builtin = models.BooleanField(default=False, verbose_name="是否内置")
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
+    version = models.PositiveIntegerField(default=1, verbose_name="当前版本")
+    lifecycle_status = models.CharField(
+        max_length=20,
+        choices=LIFECYCLE_CHOICES,
+        default='published',
+        verbose_name="生命周期状态",
+    )
 
     class Meta:
         db_table = 'sre_diagnosis_template'
@@ -231,6 +247,8 @@ class DiagnosisTemplate(BaseModel):
             'content': self.content,
             'is_builtin': self.is_builtin,
             'is_active': self.is_active,
+            'version': self.version,
+            'lifecycle_status': self.lifecycle_status,
             'version_time': self.update_time.isoformat() if self.update_time else None,
         }
 
@@ -269,6 +287,9 @@ class DiagnosisRun(BaseModel):
     heartbeat_at = models.DateTimeField(null=True, blank=True, verbose_name="任务心跳时间")
     started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
+    evidence_coverage = models.FloatField(default=0, verbose_name="证据覆盖率")
+    confidence_score = models.FloatField(default=0, verbose_name="综合置信度")
+    quality_score = models.FloatField(default=0, verbose_name="诊断质量分")
 
     class Meta:
         db_table = 'sre_diagnosis_run'
@@ -283,3 +304,151 @@ class DiagnosisRun(BaseModel):
 
     def __str__(self):
         return self.title
+
+
+class DiagnosisTemplateVersion(BaseModel):
+    """诊断模板不可变版本快照。"""
+
+    template = models.ForeignKey(
+        DiagnosisTemplate,
+        on_delete=models.CASCADE,
+        related_name='versions',
+        verbose_name="诊断模板",
+    )
+    version = models.PositiveIntegerField(verbose_name="版本号")
+    name = models.CharField(max_length=120, verbose_name="模板名称")
+    description = models.TextField(blank=True, null=True, verbose_name="模板描述")
+    category = models.CharField(max_length=30, choices=DiagnosisTemplate.CATEGORY_CHOICES)
+    content = JSONField(default=dict, blank=True, verbose_name="模板内容快照")
+    change_summary = models.CharField(max_length=255, blank=True, null=True, verbose_name="变更说明")
+    created_by = models.ForeignKey(
+        'rbac_permission.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='diagnosis_template_versions',
+    )
+
+    class Meta:
+        db_table = 'sre_diagnosis_template_version'
+        ordering = ['-version']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['template', 'version'],
+                name='uniq_diagnosis_template_version',
+            ),
+        ]
+
+
+class DiagnosisFeedback(BaseModel):
+    """用户对诊断准确性和可执行性的质量反馈。"""
+
+    run = models.ForeignKey(
+        DiagnosisRun,
+        on_delete=models.CASCADE,
+        related_name='feedbacks',
+        verbose_name="诊断任务",
+    )
+    user = models.ForeignKey(
+        'rbac_permission.User',
+        on_delete=models.CASCADE,
+        related_name='diagnosis_feedbacks',
+    )
+    accuracy_rating = models.PositiveSmallIntegerField(verbose_name="准确性评分")
+    evidence_rating = models.PositiveSmallIntegerField(verbose_name="证据有效性评分")
+    actionability_rating = models.PositiveSmallIntegerField(verbose_name="建议可执行性评分")
+    root_cause_correct = models.BooleanField(null=True, blank=True, verbose_name="根因是否正确")
+    recommendation_adopted = models.BooleanField(null=True, blank=True, verbose_name="建议是否采纳")
+    corrected_root_cause = models.TextField(blank=True, null=True, verbose_name="人工修正根因")
+    comment = models.TextField(blank=True, null=True, verbose_name="反馈备注")
+
+    class Meta:
+        db_table = 'sre_diagnosis_feedback'
+        ordering = ['-create_time']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['run', 'user'],
+                name='uniq_diagnosis_feedback_run_user',
+            ),
+        ]
+
+
+class DiagnosisReplayCase(BaseModel):
+    """用于 Prompt、模板和分析逻辑回归的故障回放用例。"""
+
+    project = models.ForeignKey(
+        'rbac_permission.Project',
+        on_delete=models.CASCADE,
+        related_name='diagnosis_replay_cases',
+    )
+    name = models.CharField(max_length=160, verbose_name="用例名称")
+    description = models.TextField(blank=True, null=True)
+    template = models.ForeignKey(
+        DiagnosisTemplate,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='replay_cases',
+    )
+    source_run = models.ForeignKey(
+        DiagnosisRun,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='replay_cases',
+    )
+    fixture_context = JSONField(default=dict, verbose_name="脱敏回放上下文")
+    expected = JSONField(default=dict, blank=True, verbose_name="预期根因、证据和阈值")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'rbac_permission.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='diagnosis_replay_cases',
+    )
+
+    class Meta:
+        db_table = 'sre_diagnosis_replay_case'
+        ordering = ['-create_time']
+        indexes = [
+            models.Index(
+                fields=['project', 'is_active'],
+                name='sre_replay_project_active_idx',
+            ),
+        ]
+
+
+class DiagnosisReplayResult(BaseModel):
+    """单次故障回放评估结果。"""
+
+    case = models.ForeignKey(
+        DiagnosisReplayCase,
+        on_delete=models.CASCADE,
+        related_name='results',
+    )
+    template_version = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=(('pending', '待执行'), ('running', '执行中'), ('passed', '通过'), ('failed', '失败')),
+        default='pending',
+    )
+    score = models.FloatField(default=0)
+    passed = models.BooleanField(default=False)
+    structured_report = JSONField(default=dict, blank=True)
+    ai_result = models.TextField(blank=True, null=True)
+    evaluation = JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, null=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    executed_by = models.ForeignKey(
+        'rbac_permission.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='diagnosis_replay_results',
+    )
+
+    class Meta:
+        db_table = 'sre_diagnosis_replay_result'
+        ordering = ['-create_time']

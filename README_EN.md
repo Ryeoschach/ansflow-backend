@@ -13,7 +13,7 @@ English | [中文说明](./README.md)
 AnsFlow Backend is the Django service layer for AnsFlow, providing REST APIs, WebSocket streams, Celery tasks, SmartRBAC permissions, AI/RAG orchestration, SRE self-healing, and Ansible/Kubernetes execution.
 
 - Product site and full documentation: [https://ansflow.cyfee.com](https://ansflow.cyfee.com)
-- SRE Diagnosis Center supports template-based diagnosis, multi-source log and metric collection, CI/CD and Ansible context analysis, plus log/metric query preview APIs for service mappings.
+- SRE Diagnosis Center supports versioned templates, CI/CD/Ansible/Kubernetes/host/JVM scenarios, multi-source collection, incident timelines, correlation, feedback, replay, and quality metrics.
 
 ### GitHub Repositories
 - Portal Web: [Ryeoschach/ansflow-web](https://github.com/Ryeoschach/ansflow-web)
@@ -67,9 +67,13 @@ POST /api/v1/sre/observed-services/{id}/preview-logs/
 POST /api/v1/sre/observed-services/{id}/preview-metrics/
 GET  /api/v1/sre/diagnosis-templates/
 POST /api/v1/sre/diagnosis-templates/{id}/run/
+GET  /api/v1/sre/diagnosis-templates/{id}/versions/
+POST /api/v1/sre/diagnosis-runs/{id}/feedback/
+GET  /api/v1/sre/diagnosis-replay-cases/
+GET  /api/v1/sre/diagnosis-quality/
 ```
 
-These endpoints are used for datasource capability discovery, service log preview, and metric preview before running a timepoint diagnosis.
+These endpoints cover datasource preview, versioned diagnosis templates, user feedback, redacted replay cases, and project quality summaries. Diagnosis collectors run independently, while AI calls have configurable timeout and circuit-breaker protection.
 Diagnosis templates maintain global/project scenario packages. A template can configure CI/CD, Ansible, service log, service metric, alert, and approval context collection; each run stores a template snapshot and normalizes multi-source logs and metrics into `log_contexts`, `metric_contexts`, and a unified `evidence_index`. See the AnsFlow Web documentation portal for the full workflow.
 
 ## License

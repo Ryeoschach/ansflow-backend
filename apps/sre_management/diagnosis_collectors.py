@@ -458,4 +458,35 @@ class DiagnosisEvidenceBuilder:
                 'raw': item,
             })
 
+        runtime = context.get('runtime_context') or {}
+        for index, item in enumerate(runtime.get('hosts') or [], start=1):
+            evidence.append({
+                'ref': f'HOST-{index}',
+                'type': 'host',
+                'title': item.get('hostname') or f"Host #{item.get('id')}",
+                'summary': f"status={item.get('status')}, os={item.get('os_type')}",
+                'source': item.get('private_ip') or item.get('ip_address'),
+                'raw': item,
+            })
+        for index, item in enumerate(runtime.get('pods') or [], start=1):
+            evidence.append({
+                'ref': f'K8S-POD-{index}',
+                'type': 'k8s_pod',
+                'title': item.get('name') or 'Pod',
+                'summary': f"status={item.get('status')}, restarts={item.get('restarts')}",
+                'timestamp': item.get('creation_timestamp'),
+                'source': item.get('namespace'),
+                'raw': item,
+            })
+        for index, item in enumerate(runtime.get('k8s_events') or [], start=1):
+            evidence.append({
+                'ref': f'K8S-EVENT-{index}',
+                'type': 'k8s_event',
+                'title': item.get('reason') or item.get('object') or 'Kubernetes event',
+                'summary': item.get('message'),
+                'timestamp': item.get('last_timestamp') or item.get('first_timestamp'),
+                'source': item.get('namespace'),
+                'raw': item,
+            })
+
         return evidence

@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.ai_engine.models import AIPromptTemplate
+from apps.k8s_management.models import K8sCluster
 from apps.pipeline_management.models import Pipeline, PipelineNodeRun, PipelineRun
 from apps.rbac_permission.models import Project
 from apps.sre_management.diagnosis_collectors import (
@@ -18,7 +19,16 @@ from apps.sre_management.diagnosis_collectors import (
 from apps.sre_management.diagnosis_prompt import DiagnosisPromptContextBuilder
 from apps.sre_management.diagnosis_security import redact_sensitive_data
 from apps.sre_management.diagnosis_utils import build_evidence_index, extract_log_highlights, match_services_for_alert
-from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService
+from apps.sre_management.models import (
+    AlertEvent,
+    DiagnosisFeedback,
+    DiagnosisReplayCase,
+    DiagnosisRun,
+    DiagnosisTemplate,
+    DiagnosisTemplateVersion,
+    ObservabilityDataSource,
+    ObservedService,
+)
 from apps.sre_management.observability import ObservabilityAdapterError, get_log_adapter, validate_observability_url
 from apps.sre_management.rule_templates import render_template
 from apps.sre_management.tasks import run_timepoint_diagnosis
@@ -876,7 +886,9 @@ class SREObservabilityTestCase(TestCase):
         response = client.get(url, {'project': self.project.id, 'page_size': 100})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['total'], 3)
+        matching = [item for item in response.data['results'] if item['code'] == 'ci_pipeline_failure']
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]['scope'], 'project')
         self.assertTrue(DiagnosisTemplate.objects.filter(
             scope='project',
             project=self.project,
@@ -1138,6 +1150,116 @@ class SREObservabilityTestCase(TestCase):
         self.assertNotIn('hunter2', result['output'])
         self.assertNotIn('abc123', result['output'])
 
+    def test_template_versions_are_created_and_can_be_rolled_back(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+        create_response = client.post(reverse('sre-diagnosis-templates-list'), {
+            'scope': 'global',
+            'code': 'versioned_diagnosis',
+            'name': 'Version One',
+            'category': 'service',
+            'content': {
+                'target_type': 'alert_service',
+                'prompt_template': '{prefix}\n{diagnosis_context}',
+            },
+        }, format='json')
+        self.assertEqual(create_response.status_code, 201)
+        template_id = create_response.data['id']
+        self.assertTrue(DiagnosisTemplateVersion.objects.filter(template_id=template_id, version=1).exists())
+
+        update_response = client.patch(
+            reverse('sre-diagnosis-templates-detail', args=[template_id]),
+            {'name': 'Version Two'},
+            format='json',
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.data['version'], 2)
+
+        rollback_response = client.post(
+            reverse('sre-diagnosis-templates-rollback', args=[template_id]),
+            {'version': 1},
+            format='json',
+        )
+        self.assertEqual(rollback_response.status_code, 200)
+        self.assertEqual(rollback_response.data['name'], 'Version One')
+        self.assertEqual(rollback_response.data['version'], 3)
+
+    def test_diagnosis_feedback_updates_quality_summary(self):
+        run = DiagnosisRun.objects.create(
+            title='Quality Feedback',
+            project=self.project,
+            status='success',
+            diagnosis_time=timezone.now(),
+            quality_score=82,
+            confidence_score=0.8,
+            evidence_coverage=0.75,
+            created_by=self.user,
+        )
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.post(reverse('sre-diagnosis-runs-feedback', args=[run.id]), {
+            'accuracy_rating': 4,
+            'evidence_rating': 5,
+            'actionability_rating': 4,
+            'root_cause_correct': True,
+            'recommendation_adopted': True,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(DiagnosisFeedback.objects.filter(run=run, user=self.user).count(), 1)
+
+        summary = client.get(reverse('sre-diagnosis-quality-list'), {'project': self.project.id})
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.data['feedback']['total'], 1)
+        self.assertEqual(summary.data['feedback']['root_cause_accuracy'], 100)
+
+    @patch('apps.sre_management.tasks.run_diagnosis_replay.delay')
+    def test_run_can_be_saved_as_redacted_replay_and_executed(self, mock_delay):
+        run = DiagnosisRun.objects.create(
+            title='Replay Source',
+            project=self.project,
+            diagnosis_time=timezone.now(),
+            context_snapshot={'headers': {'Authorization': 'Bearer secret'}, 'structured_report': {'summary': 'x'}},
+            created_by=self.user,
+        )
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.post(
+            reverse('sre-diagnosis-runs-create-replay-case', args=[run.id]),
+            {'expected': {'root_cause_keywords': ['database']}},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        case = DiagnosisReplayCase.objects.get(id=response.data['id'])
+        self.assertEqual(case.fixture_context['headers']['Authorization'], '******')
+
+        with self.captureOnCommitCallbacks(execute=True):
+            run_response = client.post(
+                reverse('sre-diagnosis-replay-cases-run', args=[case.id]),
+                {},
+                format='json',
+            )
+        self.assertEqual(run_response.status_code, 202)
+        mock_delay.assert_called_once()
+
+    @patch('apps.sre_management.tasks.run_timepoint_diagnosis.delay')
+    def test_k8s_runtime_target_rejects_cross_project_cluster(self, mock_delay):
+        other_project = Project.objects.create(name='Other', code='other', owner=self.user)
+        cluster = K8sCluster.objects.create(name='other-cluster', project=other_project)
+        template = DiagnosisTemplate.objects.get(code='k8s_workload_failure', scope='global')
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.post(reverse('sre-diagnosis-runs-list'), {
+            'title': 'Cross Project Cluster',
+            'project': self.project.id,
+            'template': template.id,
+            'k8s_cluster_id': cluster.id,
+            'namespace': 'default',
+            'diagnosis_time': timezone.now().isoformat(),
+            'window_minutes': 10,
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        mock_delay.assert_not_called()
+
     @override_settings(
         SRE_OBSERVABILITY_ALLOWED_HOSTS=[],
         SRE_OBSERVABILITY_ALLOW_PRIVATE_NETWORKS=False,
@@ -1151,7 +1273,7 @@ class SREObservabilityTestCase(TestCase):
         with self.assertRaises(ObservabilityAdapterError):
             validate_observability_url('http://internal.example/metrics')
 
-    @patch('apps.sre_management.tasks.AnsFlowEventCollector.collect_into')
+    @patch('apps.sre_management.tasks.AnsFlowEventCollector.collect')
     @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
     def test_internal_collector_failure_degrades_without_failing_run(self, mock_chain_factory, mock_collect):
         mock_collect.side_effect = RuntimeError('collector unavailable')

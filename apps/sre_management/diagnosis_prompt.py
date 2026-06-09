@@ -41,6 +41,24 @@ class DiagnosisPromptContextBuilder:
         compact_context['metrics'] = self._build_metrics(context, counts)
         compact_context['ci_cd_context'] = self._build_ci_cd_context(context, counts)
         compact_context['ansflow_events'] = self._build_ansflow_events(context, counts)
+        compact_context['runtime_context'] = self._compact_value(
+            context.get('runtime_context'),
+            max_depth=4,
+            max_items=30,
+            max_string=700,
+        )
+        compact_context['timeline'] = self._compact_value(
+            context.get('timeline'),
+            max_depth=3,
+            max_items=80,
+            max_string=700,
+        )
+        compact_context['correlation_analysis'] = self._compact_value(
+            context.get('correlation_analysis'),
+            max_depth=4,
+            max_items=30,
+            max_string=700,
+        )
 
         prompt_context = self._serialize(compact_context)
         prompt_context = self._enforce_final_budget(compact_context, counts, prompt_context)

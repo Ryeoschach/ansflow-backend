@@ -1,8 +1,12 @@
 from rest_framework import serializers
 from .models import (
     AlertEvent,
+    DiagnosisFeedback,
+    DiagnosisReplayCase,
+    DiagnosisReplayResult,
     DiagnosisRun,
     DiagnosisTemplate,
+    DiagnosisTemplateVersion,
     ObservabilityDataSource,
     ObservedService,
     SelfHealingPolicy,
@@ -111,7 +115,7 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = DiagnosisTemplate
         fields = '__all__'
-        read_only_fields = ['is_builtin']
+        read_only_fields = ['is_builtin', 'version']
 
     def validate(self, attrs):
         scope = attrs.get('scope', getattr(self.instance, 'scope', 'global'))
@@ -139,7 +143,15 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
         if not isinstance(content, dict):
             raise serializers.ValidationError({'content': 'Template content must be an object.'})
         target_type = content.get('target_type')
-        allowed_target_types = {'pipeline_run', 'ansible_execution', 'service_regression'}
+        allowed_target_types = {
+            'pipeline_run',
+            'ansible_execution',
+            'service_regression',
+            'alert_service',
+            'k8s_workload',
+            'host_runtime',
+            'jvm_runtime',
+        }
         if target_type not in allowed_target_types:
             raise serializers.ValidationError({'content': 'Template target_type is required and must be valid.'})
         context_collection = content.get('context_collection', {})
@@ -189,6 +201,112 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class DiagnosisTemplateVersionSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = DiagnosisTemplateVersion
+        fields = '__all__'
+        read_only_fields = ['template', 'version', 'created_by']
+
+
+class DiagnosisFeedbackSerializer(serializers.ModelSerializer):
+    user_username = serializers.CharField(source='user.username', read_only=True)
+
+    class Meta:
+        model = DiagnosisFeedback
+        fields = '__all__'
+        read_only_fields = ['run', 'user']
+
+    def validate(self, attrs):
+        for field in ('accuracy_rating', 'evidence_rating', 'actionability_rating'):
+            value = attrs.get(field, getattr(self.instance, field, None))
+            if value is None or not 1 <= int(value) <= 5:
+                raise serializers.ValidationError({field: 'Rating must be between 1 and 5.'})
+        return attrs
+
+
+class DiagnosisReplayResultSerializer(serializers.ModelSerializer):
+    executed_by_username = serializers.CharField(source='executed_by.username', read_only=True)
+
+    class Meta:
+        model = DiagnosisReplayResult
+        fields = '__all__'
+        read_only_fields = [
+            'case', 'template_version', 'status', 'score', 'passed',
+            'structured_report', 'ai_result', 'evaluation', 'error_message',
+            'started_at', 'finished_at', 'executed_by',
+        ]
+
+
+class DiagnosisReplayCaseSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    template_name = serializers.CharField(source='template.name', read_only=True)
+    source_run_title = serializers.CharField(source='source_run.title', read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+    latest_result = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DiagnosisReplayCase
+        fields = '__all__'
+        read_only_fields = ['created_by']
+
+    def get_latest_result(self, obj):
+        result = obj.results.order_by('-create_time').first()
+        return DiagnosisReplayResultSerializer(result).data if result else None
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        request_project = getattr(request, 'project', None) if request else None
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        source_run = attrs.get('source_run', getattr(self.instance, 'source_run', None))
+        template = attrs.get('template', getattr(self.instance, 'template', None))
+        if request_project:
+            if project and project.id != request_project.id:
+                raise serializers.ValidationError({'project': 'Project must match the active workspace.'})
+            attrs['project'] = request_project
+            project = request_project
+        if source_run and project and source_run.project_id != project.id:
+            raise serializers.ValidationError({'source_run': 'Source run does not belong to the replay project.'})
+        if template and template.scope == 'project' and project and template.project_id != project.id:
+            raise serializers.ValidationError({'template': 'Template does not belong to the replay project.'})
+        fixture_context = attrs.get('fixture_context', getattr(self.instance, 'fixture_context', None))
+        if not fixture_context and source_run:
+            attrs['fixture_context'] = redact_sensitive_data(source_run.context_snapshot or {})
+            fixture_context = attrs['fixture_context']
+        if not fixture_context:
+            raise serializers.ValidationError({'fixture_context': 'Replay context or source_run is required.'})
+        expected = attrs.get('expected', getattr(self.instance, 'expected', None)) or {}
+        if source_run and not expected:
+            report = (source_run.context_snapshot or {}).get('structured_report') or {}
+            causes = report.get('possible_causes') or []
+            attrs['expected'] = {
+                'root_cause_keywords': [
+                    item.get('title')
+                    for item in causes
+                    if isinstance(item, dict) and item.get('title')
+                ],
+                'evidence_refs': sorted({
+                    str(ref)
+                    for item in causes
+                    if isinstance(item, dict)
+                    for ref in item.get('evidence_refs') or []
+                }),
+                'minimum_score': 60,
+            }
+        return attrs
+
+
+class DiagnosisReplayCaseListSerializer(DiagnosisReplayCaseSerializer):
+    class Meta(DiagnosisReplayCaseSerializer.Meta):
+        fields = [
+            'id', 'project', 'project_name', 'name', 'description',
+            'template', 'template_name', 'source_run', 'source_run_title',
+            'is_active', 'created_by', 'created_by_username', 'latest_result',
+            'create_time', 'update_time',
+        ]
+
+
 class DiagnosisRunSerializer(serializers.ModelSerializer):
     project_name = serializers.CharField(source='project.name', read_only=True)
     service_name = serializers.CharField(source='service.name', read_only=True)
@@ -203,6 +321,7 @@ class DiagnosisRunSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'status', 'context_snapshot', 'ai_result', 'error_message',
             'started_at', 'finished_at', 'created_by',
+            'evidence_coverage', 'confidence_score', 'quality_score',
         ]
 
     def validate(self, attrs):
@@ -244,6 +363,7 @@ class DiagnosisRunListSerializer(serializers.ModelSerializer):
             'trigger_type', 'status', 'diagnosis_time', 'window_minutes',
             'error_message', 'created_by_username', 'started_at', 'finished_at',
             'celery_task_id', 'attempt_count', 'heartbeat_at',
+            'evidence_coverage', 'confidence_score', 'quality_score',
             'create_time', 'update_time',
         ]
 
