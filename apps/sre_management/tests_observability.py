@@ -9,7 +9,12 @@ from rest_framework.test import APIClient
 from apps.ai_engine.models import AIPromptTemplate
 from apps.pipeline_management.models import Pipeline, PipelineNodeRun, PipelineRun
 from apps.rbac_permission.models import Project
-from apps.sre_management.diagnosis_utils import extract_log_highlights, match_services_for_alert
+from apps.sre_management.diagnosis_collectors import (
+    AnsFlowEventCollector,
+    CiCdContextCollector,
+    DiagnosisEvidenceBuilder,
+)
+from apps.sre_management.diagnosis_utils import build_evidence_index, extract_log_highlights, match_services_for_alert
 from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService
 from apps.sre_management.observability import get_log_adapter
 from apps.sre_management.rule_templates import render_template
@@ -80,6 +85,88 @@ class SREObservabilityTestCase(TestCase):
             executor=self.user,
             from_pipeline=True,
         )
+
+    def test_ansflow_event_collector_preserves_event_groups_and_summary(self):
+        _, pipeline_run, _ = self._create_failed_pipeline_node()
+        diagnosis = DiagnosisRun.objects.create(
+            title='事件采集器诊断',
+            project=self.project,
+            diagnosis_time=timezone.now(),
+            created_by=self.user,
+        )
+        context = {
+            'ansflow_events': {},
+            'collection_summary': {'ansflow_events': {'status': 'pending', 'count': 0}},
+        }
+
+        AnsFlowEventCollector().collect_into(
+            context,
+            diagnosis,
+            timezone.now() - timezone.timedelta(minutes=1),
+            timezone.now() + timezone.timedelta(minutes=1),
+        )
+
+        self.assertEqual(
+            set(context['ansflow_events']),
+            {'alerts', 'pipeline_runs', 'ansible_executions', 'approval_tickets'},
+        )
+        self.assertEqual(context['ansflow_events']['pipeline_runs'][0]['id'], pipeline_run.id)
+        self.assertEqual(context['collection_summary']['ansflow_events']['status'], 'success')
+        self.assertEqual(
+            context['collection_summary']['ansflow_events']['count'],
+            sum(len(items) for items in context['ansflow_events'].values()),
+        )
+
+    def test_ci_cd_context_collector_preserves_pipeline_and_log_shape(self):
+        template = DiagnosisTemplate.objects.get(code='ci_pipeline_failure', scope='global')
+        _, pipeline_run, node_run = self._create_failed_pipeline_node()
+        diagnosis = DiagnosisRun.objects.create(
+            title='CI/CD 采集器诊断',
+            project=self.project,
+            template=template,
+            diagnosis_time=timezone.now(),
+            query_params={
+                'pipeline_run_id': pipeline_run.id,
+                'pipeline_node_run_id': node_run.id,
+                'template_snapshot': template.to_snapshot(),
+            },
+            created_by=self.user,
+        )
+        context = {
+            'ci_cd_context': {},
+            'collection_summary': {'ci_cd_context': {'status': 'skipped', 'count': 0}},
+        }
+
+        CiCdContextCollector().collect_into(
+            context,
+            diagnosis,
+            timezone.now() - timezone.timedelta(minutes=1),
+            timezone.now() + timezone.timedelta(minutes=1),
+            template.to_snapshot(),
+        )
+
+        ci_cd_context = context['ci_cd_context']
+        self.assertEqual(ci_cd_context['pipeline_run']['id'], pipeline_run.id)
+        self.assertEqual(ci_cd_context['failed_nodes'][0]['id'], node_run.id)
+        self.assertEqual(ci_cd_context['node_log_highlights'][0]['line'], 'ERROR build failed')
+        self.assertEqual(ci_cd_context['node_log_highlights'][0]['node_run_id'], node_run.id)
+        self.assertEqual(context['collection_summary']['ci_cd_context']['status'], 'success')
+
+    def test_diagnosis_evidence_builder_keeps_legacy_utility_compatible(self):
+        context = {
+            'log_highlights': [{'message': 'timeout', 'service': 'order-api'}],
+            'metric_contexts': [{
+                'datasource': {'id': self.metric_ds.id, 'name': self.metric_ds.name},
+                'metrics': [{'name': 'up', 'query': 'up'}],
+            }],
+            'ansflow_events': {},
+            'ci_cd_context': {},
+        }
+
+        evidence = DiagnosisEvidenceBuilder().build(context)
+
+        self.assertEqual(evidence, build_evidence_index(context))
+        self.assertEqual([item['ref'] for item in evidence], ['LOG-1', f'metric:{self.metric_ds.id}:1'])
 
     @patch('utils.config_manager.ConfigCache.get')
     @patch('apps.sre_management.views.cache.add')
