@@ -13,12 +13,13 @@ class GlobalJSONRenderer(JSONRenderer):
             # 如果 data 里包含 results 字段，说明它是经过自定义分页类包装的
             if isinstance(data, dict) and 'results' in data:
                 # 把 results 里面的数据取出来给 data
-                results = data.pop('results')
+                pagination_data = dict(data)
+                results = pagination_data.pop('results')
                 res_data = {
                     'code': response.status_code,
                     'message': 'success' if response.status_code < 400 else 'error',
                     'data': results,
-                    **data  # 把总条数、页码等其他分页元数据也平级放进去
+                    **pagination_data  # 把总条数、页码等其他分页元数据也平级放进去
                 }
                 return super().render(res_data, accepted_media_type, renderer_context)
             if isinstance(data, dict) and all(k in data for k in ('code', 'message', 'data')):

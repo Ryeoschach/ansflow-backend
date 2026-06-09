@@ -120,8 +120,8 @@ class AuditLogMiddleware(MiddlewareMixin):
             body_bytes = getattr(request, '_cached_body', b'')
             if body_bytes:
                 req_body = json.loads(body_bytes.decode('utf-8'))
-                if 'password' in req_body: req_body['password'] = '******'
-                req_data = req_body
+                from apps.sre_management.diagnosis_security import redact_sensitive_data
+                req_data = redact_sensitive_data(req_body)
             else:
                 req_data = request.POST.dict() or {}
         except Exception:

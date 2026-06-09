@@ -289,6 +289,19 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 # 开启扩展结果模式，数据库记录 task_name、args、kwargs 等额外信息
 CELERY_RESULT_EXTENDED = True
 
+# Observability outbound request protection. Internal Compose service names are
+# explicitly allowed; add private production endpoints through the environment.
+SRE_OBSERVABILITY_ALLOWED_HOSTS = env.list(
+    'SRE_OBSERVABILITY_ALLOWED_HOSTS',
+    default=['victoriametrics', 'victorialogs', 'loki', 'elasticsearch', 'logs-gateway'],
+)
+SRE_OBSERVABILITY_ALLOW_PRIVATE_NETWORKS = env.bool(
+    'SRE_OBSERVABILITY_ALLOW_PRIVATE_NETWORKS',
+    default=False,
+)
+SRE_DIAGNOSIS_RETENTION_DAYS = env('SRE_DIAGNOSIS_RETENTION_DAYS', default=90, cast=int)
+SRE_DIAGNOSIS_STALE_MINUTES = env('SRE_DIAGNOSIS_STALE_MINUTES', default=30, cast=int)
+
 # 开启事件广播 (TaskPulse 核心配置)
 CELERY_SEND_EVENTS = True
 CELERY_TASK_SEND_SENT_EVENT = True
@@ -358,6 +371,14 @@ CELERY_BEAT_SCHEDULE = {
     'cleanup-expired-ai-drafts-daily': {
         'task': 'apps.pipeline_management.tasks.cleanup_expired_ai_drafts',
         'schedule': 86400.0,  # 每天执行一次 (24小时)
+    },
+    'recover-stale-sre-diagnoses-every-10m': {
+        'task': 'apps.sre_management.tasks.recover_stale_diagnosis_runs',
+        'schedule': 600.0,
+    },
+    'cleanup-sre-diagnoses-daily': {
+        'task': 'apps.sre_management.tasks.cleanup_expired_diagnosis_runs',
+        'schedule': 86400.0,
     },
 }
 # 允许携带 Cookie

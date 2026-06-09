@@ -4,6 +4,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import PermissionDenied
 from django.core.cache import cache
 from django.db import models
 from django.utils import timezone
@@ -20,6 +21,7 @@ from .serializers import (
     AlertRuleTemplateRenderSerializer,
     AlertRuleTemplateSerializer,
     DiagnosisRunSerializer,
+    DiagnosisRunListSerializer,
     DiagnosisTemplateSerializer,
     ObservabilityDataSourceSerializer,
     ObservedServiceSerializer,
@@ -543,10 +545,22 @@ class ObservedServiceViewSet(DataScopeMixin, viewsets.ModelViewSet):
         'is_active': ['exact'],
     }
 
+    def get_queryset(self):
+        queryset = self.queryset
+        project = getattr(self.request, 'project', None)
+        if project:
+            return queryset.filter(project=project)
+        return queryset if self.request.user.is_superuser else queryset.none()
+
     @action(detail=False, methods=['get'], url_path='match-alert')
     def match_alert(self, request):
         alert_id = request.query_params.get('alert_id')
         project_id = request.query_params.get('project')
+        active_project = getattr(request, 'project', None)
+        if active_project:
+            if project_id not in (None, '') and str(project_id) != str(active_project.id):
+                return Response({'project': 'Project must match the active workspace.'}, status=status.HTTP_400_BAD_REQUEST)
+            project_id = active_project.id
         if not alert_id:
             return Response({'error': 'alert_id is required'}, status=status.HTTP_400_BAD_REQUEST)
         alert = AlertEvent.objects.filter(id=alert_id).first()
@@ -657,6 +671,22 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         'alert': ['exact'],
         'diagnosis_time': ['gte', 'lte'],
     }
+
+    def get_queryset(self):
+        queryset = self.queryset
+        project = getattr(self.request, 'project', None)
+        if project:
+            queryset = queryset.filter(project=project)
+        elif not self.request.user.is_superuser:
+            queryset = queryset.none()
+        if self.action == 'list':
+            queryset = queryset.defer('query_params', 'context_snapshot', 'ai_result')
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return DiagnosisRunListSerializer
+        return DiagnosisRunSerializer
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
@@ -796,9 +826,16 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
     def _prepare_template_diagnosis_payload(self, data):
         from apps.pipeline_management.models import PipelineNodeRun, PipelineRun
+        from apps.task_management.models import AnsibleExecution
 
         pipeline_run = None
         node_run = None
+        request_project = getattr(self.request, 'project', None)
+        requested_project_id = data.get('project')
+        if request_project:
+            if requested_project_id not in (None, '') and str(requested_project_id) != str(request_project.id):
+                return Response({'project': 'Project must match the active workspace.'}, status=status.HTTP_400_BAD_REQUEST)
+            data['project'] = request_project.id
         pipeline_run_id = data.get('pipeline_run_id')
         pipeline_node_run_id = data.get('pipeline_node_run_id')
 
@@ -826,6 +863,18 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             elif str(data.get('project')) != str(project_id):
                 return Response({'project': 'Project does not match the pipeline run project.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        ansible_execution_id = data.get('ansible_execution_id')
+        if ansible_execution_id not in (None, ''):
+            execution = AnsibleExecution.objects.select_related('task').filter(id=ansible_execution_id).first()
+            if not execution:
+                return Response({'ansible_execution_id': 'Ansible execution not found.'}, status=status.HTTP_400_BAD_REQUEST)
+            execution_project_id = execution.task.project_id
+            if data.get('project') not in (None, '') and str(execution_project_id) != str(data.get('project')):
+                return Response(
+                    {'ansible_execution_id': 'Ansible execution does not belong to the diagnosis project.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         template_code = data.get('template_code')
         if template_code and not data.get('template'):
             project_id = data.get('project')
@@ -846,6 +895,43 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
             if not template:
                 return Response({'template_code': 'Active diagnosis template not found.'}, status=status.HTTP_400_BAD_REQUEST)
             data['template'] = template.id
+
+        template_id = data.get('template')
+        template = DiagnosisTemplate.objects.filter(id=template_id, is_active=True).first() if template_id else None
+        if template_id and not template:
+            return Response({'template': 'Active diagnosis template not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        if template and template.scope == 'project' and str(template.project_id) != str(data.get('project')):
+            return Response({'template': 'Project template does not belong to the diagnosis project.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        service_id = data.get('service')
+        if service_id not in (None, ''):
+            service = ObservedService.objects.filter(id=service_id, is_active=True).first()
+            if not service:
+                return Response({'service': 'Active observed service not found.'}, status=status.HTTP_400_BAD_REQUEST)
+            if str(service.project_id) != str(data.get('project')):
+                return Response({'service': 'Observed service does not belong to the diagnosis project.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        alert_id = data.get('alert')
+        if alert_id not in (None, ''):
+            alert = AlertEvent.objects.filter(id=alert_id).first()
+            if not alert:
+                return Response({'alert': 'Alert event not found.'}, status=status.HTTP_400_BAD_REQUEST)
+            alert_project = (alert.labels or {}).get('project_id') or (alert.labels or {}).get('project')
+            project = getattr(request_project, 'code', None)
+            allowed_project_values = {str(data.get('project')), str(project)}
+            if alert_project not in (None, '') and str(alert_project) not in allowed_project_values:
+                return Response({'alert': 'Alert event does not belong to the diagnosis project.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        target_type = (template.content or {}).get('target_type') if template else None
+        required_targets = {
+            'pipeline_run': ('pipeline_run_id', pipeline_run_id or data.get('pipeline_run_id')),
+            'ansible_execution': ('ansible_execution_id', data.get('ansible_execution_id')),
+            'service_regression': ('service', data.get('service')),
+        }
+        if target_type in required_targets:
+            field, value = required_targets[target_type]
+            if value in (None, ''):
+                return Response({field: f'{field} is required for target_type={target_type}.'}, status=status.HTTP_400_BAD_REQUEST)
         return None
 
     def _extract_ansible_execution_id(self, output_data):
@@ -892,9 +978,9 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
         if query_params != (instance.query_params or {}):
             instance.query_params = query_params
             instance.save(update_fields=['query_params'])
-        from .tasks import run_timepoint_diagnosis
+        from .tasks import enqueue_diagnosis_run
         try:
-            run_timepoint_diagnosis.delay(instance.id)
+            enqueue_diagnosis_run(instance)
         except Exception as task_exc:
             logger.warning("[SRE Diagnosis] Failed to enqueue diagnosis task: %s", task_exc)
             instance.status = 'failed'
@@ -904,13 +990,20 @@ class DiagnosisRunViewSet(DataScopeMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='retry')
     def retry(self, request, pk=None):
         obj = self.get_object()
+        if obj.status == 'running':
+            return Response(
+                {'error': 'A running diagnosis cannot be retried.'},
+                status=status.HTTP_409_CONFLICT,
+            )
         obj.status = 'pending'
         obj.error_message = None
         obj.trigger_type = 'retry'
-        obj.save(update_fields=['status', 'error_message', 'trigger_type'])
-        from .tasks import run_timepoint_diagnosis
+        obj.finished_at = None
+        obj.celery_task_id = None
+        obj.save(update_fields=['status', 'error_message', 'trigger_type', 'finished_at', 'celery_task_id'])
+        from .tasks import enqueue_diagnosis_run
         try:
-            run_timepoint_diagnosis.delay(obj.id)
+            enqueue_diagnosis_run(obj)
         except Exception as task_exc:
             logger.warning("[SRE Diagnosis] Failed to enqueue diagnosis retry: %s", task_exc)
             obj.status = 'failed'
@@ -935,7 +1028,12 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
     }
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = self.queryset
+        active_project = getattr(self.request, 'project', None)
+        if active_project:
+            queryset = queryset.filter(models.Q(scope='global') | models.Q(project=active_project))
+        elif not self.request.user.is_superuser:
+            return queryset.none()
         project_id = self.request.query_params.get('project')
         include_inactive = self.request.query_params.get('include_inactive') in ('1', 'true', 'True')
         if not include_inactive:
@@ -948,10 +1046,18 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save(is_builtin=False)
+        scope = serializer.validated_data.get('scope', 'global')
+        if scope == 'global' and not self.request.user.is_superuser:
+            raise PermissionDenied('Only platform administrators can create global diagnosis templates.')
+        project = getattr(self.request, 'project', None)
+        if scope == 'project':
+            serializer.save(is_builtin=False, project=project)
+        else:
+            serializer.save(is_builtin=False)
 
     def update(self, request, *args, **kwargs):
         template = self.get_object()
+        self._ensure_template_mutable(template)
         if template.is_builtin:
             allowed = {'is_active'}
             if any(key not in allowed for key in request.data.keys()):
@@ -960,6 +1066,7 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         template = self.get_object()
+        self._ensure_template_mutable(template)
         if template.is_builtin:
             allowed = {'is_active'}
             if any(key not in allowed for key in request.data.keys()):
@@ -968,16 +1075,21 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         template = self.get_object()
+        self._ensure_template_mutable(template)
         if template.is_builtin:
             return Response({'error': 'Built-in templates cannot be deleted. Disable or copy them instead.'}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
+
+    def _ensure_template_mutable(self, template):
+        if template.scope == 'global' and not self.request.user.is_superuser:
+            raise PermissionDenied('Only platform administrators can modify global diagnosis templates.')
 
     @action(detail=True, methods=['post'], url_path='copy')
     def copy(self, request, pk=None):
         source = self.get_object()
         data = {
             'scope': request.data.get('scope') or 'project',
-            'project': request.data.get('project') or source.project_id,
+            'project': getattr(getattr(request, 'project', None), 'id', None),
             'code': request.data.get('code') or source.code,
             'name': request.data.get('name') or f"{source.name} Copy",
             'description': request.data.get('description') or source.description,
@@ -997,10 +1109,14 @@ class DiagnosisTemplateViewSet(DataScopeMixin, viewsets.ModelViewSet):
         payload['template'] = template.id
         if not payload.get('title'):
             payload['title'] = template.name
-        serializer = DiagnosisRunSerializer(data=payload, context={'request': request})
-        serializer.is_valid(raise_exception=True)
         view = DiagnosisRunViewSet()
         view.request = request
+        error = view._prepare_template_diagnosis_payload(payload)
+        if error:
+            return error
+        view._prepared_diagnosis_payload = payload
+        serializer = DiagnosisRunSerializer(data=payload, context={'request': request})
+        serializer.is_valid(raise_exception=True)
         view.perform_create(serializer)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 

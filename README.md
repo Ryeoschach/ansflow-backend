@@ -70,7 +70,9 @@ POST /api/v1/sre/diagnosis-templates/{id}/run/
 ```
 
 这些接口用于数据源能力发现、服务映射日志预览和指标预览，便于在时间点诊断前验证标签选择器、字段映射和响应映射是否正确。
-诊断模板接口用于维护全局/项目级场景诊断包。模板可配置 CI/CD、Ansible、服务日志、服务指标、告警和审批等上下文采集策略；运行时会保存模板快照，并把多日志源、多指标源归一为 `log_contexts`、`metric_contexts` 和统一 `evidence_index`。发送给 AI 的上下文会按证据优先级和分类预算压缩为完整 JSON，原始采集结果仍完整保存在 `context_snapshot`，压缩统计记录在 `collection_summary.prompt_context`。详细使用说明见 AnsFlow Web 文档门户。
+诊断模板接口用于维护全局/项目级场景诊断包。模板可配置 CI/CD、Ansible、服务日志、服务指标、告警和审批等上下文采集策略；运行时会保存模板快照，并把多日志源、多指标源归一为 `log_contexts`、`metric_contexts` 和统一 `evidence_index`。上下文会递归脱敏并移除重复的供应商原始响应，日志生成模式聚类，指标生成样本数、极值、最新值和变化率摘要。发送给 AI 的上下文按证据优先级和分类预算压缩为完整 JSON，压缩统计记录在 `collection_summary.prompt_context`。
+
+诊断运行使用轻量列表和独立详情接口，支持 Celery 幂等、自动重试、超时任务恢复和历史数据保留。默认保留 90 天，可通过 `SRE_DIAGNOSIS_RETENTION_DAYS` 调整；超时阈值由 `SRE_DIAGNOSIS_STALE_MINUTES` 控制。观测数据源出站请求默认阻止私网、环回和云元数据地址，私有生产端点应显式加入 `SRE_OBSERVABILITY_ALLOWED_HOSTS`。详细使用说明见 AnsFlow Web 文档门户。
 
 ## License
 

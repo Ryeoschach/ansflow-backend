@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.db.models import Q
+
 from .models import AlertEvent
+from .diagnosis_security import redact_sensitive_data, redact_sensitive_text
 
 
 def template_collection_config(template_snapshot: dict[str, Any] | None) -> dict[str, Any]:
@@ -35,6 +38,29 @@ def _highlight_text_lines(text: Any, keywords: list[str], limit: int = 30) -> li
     return highlights
 
 
+def _project_alert_filter(project) -> Q:
+    if not project:
+        return Q(pk__in=[])
+    return (
+        Q(labels__project_id=project.id)
+        | Q(labels__project_id=str(project.id))
+        | Q(labels__project=project.code)
+        | Q(labels__project_code=project.code)
+    )
+
+
+def _project_approval_filter(project) -> Q:
+    if not project:
+        return Q(pk__in=[])
+    return (
+        Q(payload__project=project.id)
+        | Q(payload__project=str(project.id))
+        | Q(payload__project_id=project.id)
+        | Q(payload__project_id=str(project.id))
+        | Q(payload__project_code=project.code)
+    )
+
+
 class AnsFlowEventCollector:
     def collect(self, run, start, end) -> dict[str, list[dict[str, Any]]]:
         from apps.approval_center.models import ApprovalTicket
@@ -43,8 +69,13 @@ class AnsFlowEventCollector:
 
         pipeline_filter = {'pipeline__project_id': run.project_id} if run.project_id else {}
         ansible_filter = {'task__project_id': run.project_id} if run.project_id else {}
+        alerts = AlertEvent.objects.filter(create_time__range=(start, end))
+        approvals = ApprovalTicket.objects.filter(create_time__range=(start, end))
+        if run.project_id:
+            alerts = alerts.filter(_project_alert_filter(run.project))
+            approvals = approvals.filter(_project_approval_filter(run.project))
         return {
-            'alerts': list(AlertEvent.objects.filter(create_time__range=(start, end)).values(
+            'alerts': list(alerts.values(
                 'id', 'alert_name', 'severity', 'status', 'source', 'labels', 'annotations',
                 'healing_status', 'create_time',
             )[:20]),
@@ -60,9 +91,7 @@ class AnsFlowEventCollector:
             ).values(
                 'id', 'task_id', 'status', 'create_time', 'update_time',
             )[:20]),
-            'approval_tickets': list(ApprovalTicket.objects.filter(
-                create_time__range=(start, end),
-            ).values(
+            'approval_tickets': list(approvals.values(
                 'id', 'title', 'status', 'resource_type', 'create_time', 'audit_time',
             )[:20]),
         }
@@ -105,6 +134,7 @@ class CiCdContextCollector:
             'ansible_task_logs': [],
             'ansible_task_log_highlights': [],
             'approval_records': [],
+            'related_alerts': [],
             'collection_summary': {
                 'pipeline_run': {'status': 'skipped', 'count': 0},
                 'failed_nodes': {'status': 'skipped', 'count': 0},
@@ -112,6 +142,7 @@ class CiCdContextCollector:
                 'ansible_execution': {'status': 'skipped', 'count': 0},
                 'ansible_task_logs': {'status': 'skipped', 'count': 0},
                 'approval_records': {'status': 'skipped', 'count': 0},
+                'related_alerts': {'status': 'skipped', 'count': 0},
             },
         }
 
@@ -120,9 +151,15 @@ class CiCdContextCollector:
         node_run_id = query_params.get('pipeline_node_run_id')
         ansible_execution_id = query_params.get('ansible_execution_id')
         if pipeline_run_id:
-            pipeline_run = PipelineRun.objects.select_related('pipeline').filter(id=pipeline_run_id).first()
+            pipeline_run = PipelineRun.objects.select_related('pipeline').filter(
+                id=pipeline_run_id,
+                pipeline__project_id=run.project_id,
+            ).first()
         elif node_run_id:
-            node_run = PipelineNodeRun.objects.select_related('run', 'run__pipeline').filter(id=node_run_id).first()
+            node_run = PipelineNodeRun.objects.select_related('run', 'run__pipeline').filter(
+                id=node_run_id,
+                run__pipeline__project_id=run.project_id,
+            ).first()
             pipeline_run = node_run.run if node_run else None
 
         if pipeline_run and collection.get('pipeline_run', True):
@@ -135,7 +172,7 @@ class CiCdContextCollector:
                 'start_time': pipeline_run.start_time,
                 'end_time': pipeline_run.end_time,
                 'create_time': pipeline_run.create_time,
-                'extra_vars': pipeline_run.extra_vars,
+                'extra_vars': redact_sensitive_data(pipeline_run.extra_vars),
             }
             context['collection_summary']['pipeline_run'] = {'status': 'success', 'count': 1}
 
@@ -146,13 +183,17 @@ class CiCdContextCollector:
             elif pipeline_run:
                 node_queryset = node_queryset.filter(run=pipeline_run, status='failed')
             else:
-                node_queryset = node_queryset.filter(create_time__range=(start, end), status='failed')
+                node_queryset = node_queryset.filter(
+                    create_time__range=(start, end),
+                    status='failed',
+                    run__pipeline__project_id=run.project_id,
+                )
             failed_nodes = list(node_queryset.values(
                 'id', 'run_id', 'node_id', 'node_type', 'node_label', 'status',
                 'approval_time', 'approval_comment', 'start_time', 'end_time', 'create_time',
                 'output_data',
             )[:20])
-            context['failed_nodes'] = failed_nodes
+            context['failed_nodes'] = redact_sensitive_data(failed_nodes)
             context['collection_summary']['failed_nodes'] = {
                 'status': 'success',
                 'count': len(failed_nodes),
@@ -161,7 +202,11 @@ class CiCdContextCollector:
             if collection.get('node_logs', True):
                 log_nodes = PipelineNodeRun.objects.filter(id__in=[item['id'] for item in failed_nodes])
                 for node in log_nodes:
-                    for item in _highlight_text_lines(node.logs, keywords, limit=10):
+                    for item in _highlight_text_lines(
+                        redact_sensitive_text(node.logs),
+                        keywords,
+                        limit=10,
+                    ):
                         item.update({
                             'node_run_id': node.id,
                             'node_id': node.node_id,
@@ -174,15 +219,18 @@ class CiCdContextCollector:
                 }
 
         if collection.get('ansible_execution') and ansible_execution_id:
-            execution = AnsibleExecution.objects.select_related('task').filter(id=ansible_execution_id).first()
+            execution = AnsibleExecution.objects.select_related('task').filter(
+                id=ansible_execution_id,
+                task__project_id=run.project_id,
+            ).first()
             if execution:
                 context['ansible_execution'] = {
                     'id': execution.id,
                     'task_id': execution.task_id,
                     'task_name': getattr(execution.task, 'name', None),
                     'status': execution.status,
-                    'result_summary': execution.result_summary,
-                    'extra_vars_snapshot': execution.extra_vars_snapshot,
+                    'result_summary': redact_sensitive_data(execution.result_summary),
+                    'extra_vars_snapshot': redact_sensitive_data(execution.extra_vars_snapshot),
                     'start_time': execution.start_time,
                     'end_time': execution.end_time,
                     'create_time': execution.create_time,
@@ -192,9 +240,13 @@ class CiCdContextCollector:
                     logs = list(TaskLog.objects.filter(execution=execution).values(
                         'id', 'host', 'output', 'create_time',
                     )[:50])
-                    context['ansible_task_logs'] = logs
+                    context['ansible_task_logs'] = redact_sensitive_data(logs)
                     for log in logs:
-                        for item in _highlight_text_lines(log.get('output'), keywords, limit=5):
+                        for item in _highlight_text_lines(
+                            redact_sensitive_text(log.get('output')),
+                            keywords,
+                            limit=5,
+                        ):
                             item.update({
                                 'id': log.get('id'),
                                 'host': log.get('host'),
@@ -207,7 +259,9 @@ class CiCdContextCollector:
                     }
 
         if collection.get('approval_records', True):
-            approvals = ApprovalTicket.objects.filter(create_time__range=(start, end))
+            approvals = ApprovalTicket.objects.filter(
+                create_time__range=(start, end),
+            ).filter(_project_approval_filter(run.project))
             if pipeline_run:
                 approvals = approvals.filter(
                     Q(target_id=str(pipeline_run.id)) | Q(title__icontains=str(pipeline_run.id)),
@@ -218,6 +272,23 @@ class CiCdContextCollector:
             context['collection_summary']['approval_records'] = {
                 'status': 'success',
                 'count': len(context['approval_records']),
+            }
+
+        if collection.get('related_alerts', True):
+            alerts = AlertEvent.objects.filter(
+                create_time__range=(start, end),
+            ).filter(_project_alert_filter(run.project))
+            if run.alert_id:
+                alerts = AlertEvent.objects.filter(
+                    Q(id=run.alert_id) | Q(id__in=alerts.values('id')),
+                )
+            context['related_alerts'] = redact_sensitive_data(list(alerts.values(
+                'id', 'alert_name', 'severity', 'status', 'source',
+                'labels', 'annotations', 'healing_status', 'create_time',
+            )[:20]))
+            context['collection_summary']['related_alerts'] = {
+                'status': 'success',
+                'count': len(context['related_alerts']),
             }
 
         return context
@@ -362,6 +433,17 @@ class DiagnosisEvidenceBuilder:
                 'summary': item.get('line') or item.get('output'),
                 'timestamp': item.get('create_time'),
                 'source': item.get('host'),
+                'raw': item,
+            })
+
+        for index, item in enumerate(ci_cd_context.get('related_alerts') or [], start=1):
+            evidence.append({
+                'ref': f'RELATED-ALERT-{index}',
+                'type': 'alert',
+                'title': item.get('alert_name') or 'Related alert',
+                'summary': f"{item.get('severity')} / {item.get('status')}",
+                'timestamp': item.get('create_time'),
+                'source': item.get('source'),
                 'raw': item,
             })
 

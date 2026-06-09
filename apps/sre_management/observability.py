@@ -3,9 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 from copy import deepcopy
+import ipaddress
+import socket
 from urllib.parse import urljoin
+from urllib.parse import urlparse
 
 import requests
+from django.conf import settings
 
 from .models import ObservabilityDataSource, ObservedService
 
@@ -14,7 +18,51 @@ class ObservabilityAdapterError(ValueError):
     """Raised when a datasource cannot be queried by the configured adapter."""
 
 
+BLOCKED_METADATA_IPS = {
+    ipaddress.ip_address('169.254.169.254'),
+    ipaddress.ip_address('100.100.100.200'),
+}
+
+
+def validate_observability_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        raise ObservabilityAdapterError('Observability datasource URL must use http or https.')
+    hostname = parsed.hostname.lower().rstrip('.')
+    allowed_hosts = {
+        str(item).lower().rstrip('.')
+        for item in getattr(settings, 'SRE_OBSERVABILITY_ALLOWED_HOSTS', [])
+    }
+    if hostname in allowed_hosts:
+        return
+    try:
+        addresses = {
+            ipaddress.ip_address(item[4][0])
+            for item in socket.getaddrinfo(hostname, parsed.port or 80, type=socket.SOCK_STREAM)
+        }
+    except (socket.gaierror, ValueError) as exc:
+        raise ObservabilityAdapterError(f'Observability datasource host cannot be resolved: {hostname}') from exc
+    for address in addresses:
+        if address in BLOCKED_METADATA_IPS or address.is_link_local:
+            raise ObservabilityAdapterError('Cloud metadata and link-local addresses are not allowed.')
+        if (
+            address.is_private or address.is_loopback or address.is_reserved
+        ) and not getattr(settings, 'SRE_OBSERVABILITY_ALLOW_PRIVATE_NETWORKS', False):
+            raise ObservabilityAdapterError(
+                f'Private observability host {hostname} is not in SRE_OBSERVABILITY_ALLOWED_HOSTS.',
+            )
+
+
+def _request(method: str, url: str, **kwargs):
+    validate_observability_url(url)
+    kwargs.setdefault('allow_redirects', False)
+    return requests.request(method, url, **kwargs)
+
+
 def _api_url(base_url: str, path: str) -> str:
+    parsed_path = urlparse(path)
+    if parsed_path.scheme or parsed_path.netloc:
+        raise ObservabilityAdapterError('Observability API path must be relative to the datasource base URL.')
     return urljoin(base_url.rstrip('/') + '/', path.lstrip('/'))
 
 
@@ -132,7 +180,7 @@ class BaseObservabilityAdapter:
 class VictoriaMetricsAdapter(BaseObservabilityAdapter):
     def test_connection(self) -> dict[str, Any]:
         url = _api_url(self.datasource.base_url, '/api/v1/query')
-        response = requests.get(url, params=self._query_params({'query': 'up'}), **self._request_kwargs())
+        response = _request('GET', url, params=self._query_params({'query': 'up'}), **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
@@ -157,7 +205,8 @@ class VictoriaMetricsAdapter(BaseObservabilityAdapter):
             if not query:
                 continue
             url = _api_url(self.datasource.base_url, '/api/v1/query_range')
-            response = requests.get(
+            response = _request(
+                'GET',
                 url,
                 params=self._query_params({
                     'query': query,
@@ -180,7 +229,7 @@ class VictoriaMetricsAdapter(BaseObservabilityAdapter):
 class VictoriaLogsAdapter(BaseObservabilityAdapter):
     def test_connection(self) -> dict[str, Any]:
         url = _api_url(self.datasource.base_url, '/select/logsql/query')
-        response = requests.get(url, params=self._query_params({'query': '*', 'limit': 1}), **self._request_kwargs())
+        response = _request('GET', url, params=self._query_params({'query': '*', 'limit': 1}), **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
@@ -188,7 +237,8 @@ class VictoriaLogsAdapter(BaseObservabilityAdapter):
         selector = _label_selector(service.log_label_selector)
         query = service.log_query or selector or '*'
         url = _api_url(self.datasource.base_url, '/select/logsql/query')
-        response = requests.get(
+        response = _request(
+            'GET',
             url,
             params=self._query_params({
                 'query': query,
@@ -206,14 +256,15 @@ class VictoriaLogsAdapter(BaseObservabilityAdapter):
 class LokiLogAdapter(BaseObservabilityAdapter):
     def test_connection(self) -> dict[str, Any]:
         url = _api_url(self.datasource.base_url, '/ready')
-        response = requests.get(url, **self._request_kwargs())
+        response = _request('GET', url, **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
     def query_logs(self, service: ObservedService, start: datetime, end: datetime, limit: int = 200) -> dict[str, Any]:
         query = service.log_query or _label_selector(service.log_label_selector) or '{}'
         url = _api_url(self.datasource.base_url, '/loki/api/v1/query_range')
-        response = requests.get(
+        response = _request(
+            'GET',
             url,
             params=self._query_params({
                 'query': query,
@@ -231,7 +282,7 @@ class LokiLogAdapter(BaseObservabilityAdapter):
 class ElasticsearchLogAdapter(BaseObservabilityAdapter):
     def test_connection(self) -> dict[str, Any]:
         url = _api_url(self.datasource.base_url, '/')
-        response = requests.get(url, **self._request_kwargs())
+        response = _request('GET', url, **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
@@ -257,7 +308,7 @@ class ElasticsearchLogAdapter(BaseObservabilityAdapter):
             },
         }
         url = _api_url(self.datasource.base_url, f'/{index}/_search')
-        response = requests.post(url, json=body, **self._request_kwargs())
+        response = _request('POST', url, json=body, **self._request_kwargs())
         response.raise_for_status()
         payload = _response_payload(response)
         return _log_result(self.datasource, query_text, payload)
@@ -268,7 +319,7 @@ class GenericHttpLogAdapter(BaseObservabilityAdapter):
         config = self.datasource.query_config or {}
         path = config.get('health_path') or config.get('path') or '/'
         method = str(config.get('method') or 'GET').upper()
-        response = requests.request(method, _api_url(self.datasource.base_url, path), **self._request_kwargs())
+        response = _request(method, _api_url(self.datasource.base_url, path), **self._request_kwargs())
         response.raise_for_status()
         return {'ok': True, 'status_code': response.status_code, 'provider': self.datasource.provider}
 
@@ -289,7 +340,7 @@ class GenericHttpLogAdapter(BaseObservabilityAdapter):
         body = config.get('body')
         if isinstance(body, (dict, list, str)):
             body = _render_mapping(body, template_context)
-        response = requests.request(
+        response = _request(
             method,
             _api_url(self.datasource.base_url, path),
             params=self._query_params(params) if method == 'GET' else self._query_params({}),
@@ -347,15 +398,13 @@ def _log_result(datasource: ObservabilityDataSource, query: str, payload: Any) -
         },
         'query': query,
         'items': normalized,
-        'result': payload,
     }
 
 
 def _normalize_log_item(item: Any, field_mapping: dict[str, str]) -> dict[str, Any]:
-    raw = item
     source = item.get('_source') if isinstance(item, dict) and isinstance(item.get('_source'), dict) else item
     if not isinstance(source, dict):
-        return {'timestamp': None, 'level': None, 'message': str(source), 'service': None, 'instance': None, 'labels': {}, 'raw': raw}
+        return {'timestamp': None, 'level': None, 'message': str(source), 'service': None, 'instance': None, 'labels': {}}
     return {
         'timestamp': _get_path(source, field_mapping.get('timestamp')) or source.get('timestamp') or source.get('@timestamp'),
         'level': _get_path(source, field_mapping.get('level')) or source.get('level') or source.get('severity'),
@@ -363,7 +412,6 @@ def _normalize_log_item(item: Any, field_mapping: dict[str, str]) -> dict[str, A
         'service': _get_path(source, field_mapping.get('service')) or source.get('service') or source.get('app'),
         'instance': _get_path(source, field_mapping.get('instance')) or source.get('instance') or source.get('host') or source.get('pod'),
         'labels': _get_path(source, field_mapping.get('labels')) or source.get('labels') or {},
-        'raw': raw,
     }
 
 

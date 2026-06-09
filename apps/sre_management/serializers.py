@@ -7,6 +7,8 @@ from .models import (
     ObservedService,
     SelfHealingPolicy,
 )
+from .diagnosis_security import merge_redacted_secrets, redact_sensitive_data
+from .observability import validate_observability_url
 
 class AlertEventSerializer(serializers.ModelSerializer):
     is_auto_execute = serializers.SerializerMethodField()
@@ -64,7 +66,20 @@ class ObservabilityDataSourceSerializer(serializers.ModelSerializer):
         if not attrs.get('kind'):
             current_kind = getattr(self.instance, 'kind', None)
             attrs['kind'] = current_kind or ('metric' if provider == 'victoriametrics' else 'log')
+        if 'query_config' in attrs and self.instance:
+            attrs['query_config'] = merge_redacted_secrets(
+                attrs['query_config'],
+                self.instance.query_config or {},
+            )
+        base_url = attrs.get('base_url', getattr(self.instance, 'base_url', None))
+        if base_url:
+            validate_observability_url(base_url)
         return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['query_config'] = redact_sensitive_data(data.get('query_config') or {})
+        return data
 
 
 class ObservedServiceSerializer(serializers.ModelSerializer):
@@ -79,6 +94,16 @@ class ObservedServiceSerializer(serializers.ModelSerializer):
         model = ObservedService
         fields = '__all__'
 
+    def validate(self, attrs):
+        request = self.context.get('request')
+        request_project = getattr(request, 'project', None) if request else None
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        if request_project:
+            if project and project.id != request_project.id:
+                raise serializers.ValidationError({'project': 'Project must match the active workspace.'})
+            attrs['project'] = request_project
+        return attrs
+
 
 class DiagnosisTemplateSerializer(serializers.ModelSerializer):
     project_name = serializers.CharField(source='project.name', read_only=True)
@@ -91,6 +116,13 @@ class DiagnosisTemplateSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         scope = attrs.get('scope', getattr(self.instance, 'scope', 'global'))
         project = attrs.get('project', getattr(self.instance, 'project', None))
+        request = self.context.get('request')
+        request_project = getattr(request, 'project', None) if request else None
+        if scope == 'project' and request_project:
+            if project and project.id != request_project.id:
+                raise serializers.ValidationError({'project': 'Project must match the active workspace.'})
+            attrs['project'] = request_project
+            project = request_project
         code = attrs.get('code', getattr(self.instance, 'code', None))
         content = attrs.get('content', getattr(self.instance, 'content', {}) or {})
         if scope == 'project' and not project:
@@ -171,6 +203,48 @@ class DiagnosisRunSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'status', 'context_snapshot', 'ai_result', 'error_message',
             'started_at', 'finished_at', 'created_by',
+        ]
+
+    def validate(self, attrs):
+        project = attrs.get('project', getattr(self.instance, 'project', None))
+        service = attrs.get('service', getattr(self.instance, 'service', None))
+        template = attrs.get('template', getattr(self.instance, 'template', None))
+        request = self.context.get('request')
+        request_project = getattr(request, 'project', None) if request else None
+
+        if request_project and project and project.id != request_project.id:
+            raise serializers.ValidationError({'project': 'Project must match the active workspace.'})
+        if request_project and not project:
+            attrs['project'] = request_project
+            project = request_project
+        if service and project and service.project_id != project.id:
+            raise serializers.ValidationError({'service': 'Observed service does not belong to the diagnosis project.'})
+        if template and template.scope == 'project':
+            if not project or template.project_id != project.id:
+                raise serializers.ValidationError({'template': 'Project template does not belong to the diagnosis project.'})
+        window_minutes = attrs.get('window_minutes', getattr(self.instance, 'window_minutes', 10))
+        if not 1 <= window_minutes <= 120:
+            raise serializers.ValidationError({'window_minutes': 'Window minutes must be between 1 and 120.'})
+        return attrs
+
+
+class DiagnosisRunListSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    service_name = serializers.CharField(source='service.name', read_only=True)
+    alert_name = serializers.CharField(source='alert.alert_name', read_only=True)
+    template_name = serializers.CharField(source='template.name', read_only=True)
+    template_code = serializers.CharField(source='template.code', read_only=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = DiagnosisRun
+        fields = [
+            'id', 'title', 'project', 'project_name', 'service', 'service_name',
+            'alert', 'alert_name', 'template', 'template_name', 'template_code',
+            'trigger_type', 'status', 'diagnosis_time', 'window_minutes',
+            'error_message', 'created_by_username', 'started_at', 'finished_at',
+            'celery_task_id', 'attempt_count', 'heartbeat_at',
+            'create_time', 'update_time',
         ]
 
 

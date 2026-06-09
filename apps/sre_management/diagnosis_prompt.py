@@ -148,7 +148,16 @@ class DiagnosisPromptContextBuilder:
             },
         )
         self._record_count(counts, 'raw_log_items', raw_log_items, 0)
-        return {'sources': sources, 'highlights': included}
+        return {
+            'sources': sources,
+            'clusters': self._compact_value(
+                context.get('log_clusters') or [],
+                max_depth=3,
+                max_items=20,
+                max_string=700,
+            ),
+            'highlights': included,
+        }
 
     def _build_metrics(
         self,
@@ -181,6 +190,7 @@ class DiagnosisPromptContextBuilder:
                 'name': item.get('name'),
                 'query': self._compact_string(item.get('query'), 700),
                 'datasource': self._compact_value(item.get('_datasource') or item.get('datasource')),
+                'summary': self._compact_value(item.get('summary')),
                 'result': self._compact_value(item.get('result'), max_depth=3, max_items=5, max_string=500),
             },
         )
@@ -256,6 +266,7 @@ class DiagnosisPromptContextBuilder:
                 counts,
                 lambda item: self._compact_value(item, max_depth=2, max_items=8, max_string=500),
             ),
+            'related_alerts': self._compact_value(ci_cd.get('related_alerts'), max_depth=3, max_items=10),
             'collection_summary': self._compact_value(ci_cd.get('collection_summary')),
         }
 

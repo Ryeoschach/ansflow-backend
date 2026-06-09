@@ -2,7 +2,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -16,9 +16,10 @@ from apps.sre_management.diagnosis_collectors import (
     DiagnosisEvidenceBuilder,
 )
 from apps.sre_management.diagnosis_prompt import DiagnosisPromptContextBuilder
+from apps.sre_management.diagnosis_security import redact_sensitive_data
 from apps.sre_management.diagnosis_utils import build_evidence_index, extract_log_highlights, match_services_for_alert
 from apps.sre_management.models import AlertEvent, DiagnosisRun, DiagnosisTemplate, ObservabilityDataSource, ObservedService
-from apps.sre_management.observability import get_log_adapter
+from apps.sre_management.observability import ObservabilityAdapterError, get_log_adapter, validate_observability_url
 from apps.sre_management.rule_templates import render_template
 from apps.sre_management.tasks import run_timepoint_diagnosis
 from apps.task_management.models import AnsibleExecution, AnsibleTask
@@ -1073,3 +1074,115 @@ class SREObservabilityTestCase(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, 'success')
         self.assertIn('诊断模板 Prompt 格式化失败', ''.join(run.context_snapshot['warnings']))
+
+    def test_diagnosis_list_omits_heavy_context_fields(self):
+        DiagnosisRun.objects.create(
+            title='轻量列表诊断',
+            project=self.project,
+            diagnosis_time=timezone.now(),
+            query_params={'secret': 'large'},
+            context_snapshot={'logs': ['large']},
+            ai_result='large result',
+            created_by=self.user,
+        )
+        client = APIClient()
+        client.force_authenticate(self.user)
+
+        response = client.get(reverse('sre-diagnosis-runs-list'))
+
+        self.assertEqual(response.status_code, 200)
+        items = response.data['results']
+        item = items[0]
+        self.assertNotIn('query_params', item)
+        self.assertNotIn('context_snapshot', item)
+        self.assertNotIn('ai_result', item)
+
+    def test_ci_cd_fallback_failed_nodes_are_project_scoped(self):
+        _, own_run, own_node = self._create_failed_pipeline_node()
+        other_project = Project.objects.create(name='其他项目', code='other', owner=self.user)
+        _, _, other_node = self._create_failed_pipeline_node(project=other_project)
+        diagnosis = DiagnosisRun.objects.create(
+            title='项目隔离诊断',
+            project=self.project,
+            diagnosis_time=timezone.now(),
+            created_by=self.user,
+        )
+        snapshot = {
+            'content': {
+                'context_collection': {
+                    'failed_nodes': True,
+                    'node_logs': True,
+                    'pipeline_run': False,
+                },
+            },
+        }
+
+        context = CiCdContextCollector().collect(
+            diagnosis,
+            own_run.create_time - timezone.timedelta(minutes=1),
+            own_run.create_time + timezone.timedelta(minutes=1),
+            snapshot,
+        )
+
+        ids = {item['id'] for item in context['failed_nodes']}
+        self.assertIn(own_node.id, ids)
+        self.assertNotIn(other_node.id, ids)
+
+    def test_recursive_redaction_masks_nested_and_inline_secrets(self):
+        result = redact_sensitive_data({
+            'headers': {'Authorization': 'Bearer top-secret'},
+            'output': 'password=hunter2 token:abc123',
+        })
+
+        self.assertEqual(result['headers']['Authorization'], '******')
+        self.assertNotIn('hunter2', result['output'])
+        self.assertNotIn('abc123', result['output'])
+
+    @override_settings(
+        SRE_OBSERVABILITY_ALLOWED_HOSTS=[],
+        SRE_OBSERVABILITY_ALLOW_PRIVATE_NETWORKS=False,
+    )
+    @patch('apps.sre_management.observability.socket.getaddrinfo')
+    def test_observability_url_blocks_private_networks(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (2, 1, 6, '', ('127.0.0.1', 80)),
+        ]
+
+        with self.assertRaises(ObservabilityAdapterError):
+            validate_observability_url('http://internal.example/metrics')
+
+    @patch('apps.sre_management.tasks.AnsFlowEventCollector.collect_into')
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_internal_collector_failure_degrades_without_failing_run(self, mock_chain_factory, mock_collect):
+        mock_collect.side_effect = RuntimeError('collector unavailable')
+        chain = MagicMock()
+        chain.invoke.return_value = '诊断结论：内部事件暂不可用。'
+        mock_chain_factory.return_value = chain
+        run = DiagnosisRun.objects.create(
+            title='采集器降级诊断',
+            project=self.project,
+            diagnosis_time=timezone.now(),
+            created_by=self.user,
+        )
+
+        run_timepoint_diagnosis(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'success')
+        self.assertEqual(run.context_snapshot['collection_summary']['ansflow_events']['status'], 'failed')
+        self.assertIn('AnsFlow 内部事件采集失败', ''.join(run.context_snapshot['warnings']))
+
+    @patch('apps.ai_engine.rag_service.RAGService.get_chat_chain')
+    def test_completed_diagnosis_ignores_duplicate_task(self, mock_chain_factory):
+        run = DiagnosisRun.objects.create(
+            title='已完成诊断',
+            project=self.project,
+            status='success',
+            diagnosis_time=timezone.now(),
+            ai_result='done',
+            created_by=self.user,
+        )
+
+        run_timepoint_diagnosis(run.id)
+
+        mock_chain_factory.assert_not_called()

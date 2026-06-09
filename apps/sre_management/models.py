@@ -200,7 +200,18 @@ class DiagnosisTemplate(BaseModel):
 
     class Meta:
         db_table = 'sre_diagnosis_template'
-        unique_together = ('scope', 'project', 'code')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['code'],
+                condition=models.Q(scope='global'),
+                name='uniq_global_diagnosis_template_code',
+            ),
+            models.UniqueConstraint(
+                fields=['project', 'code'],
+                condition=models.Q(scope='project'),
+                name='uniq_project_diagnosis_template_code',
+            ),
+        ]
         verbose_name = "诊断模板"
         verbose_name_plural = verbose_name
         ordering = ['scope', 'project_id', 'code']
@@ -253,6 +264,9 @@ class DiagnosisRun(BaseModel):
     ai_result = models.TextField(blank=True, null=True, verbose_name="AI 诊断结果")
     error_message = models.TextField(blank=True, null=True, verbose_name="错误信息")
     created_by = models.ForeignKey('rbac_permission.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='diagnosis_runs', verbose_name="创建人")
+    celery_task_id = models.CharField(max_length=128, null=True, blank=True, db_index=True, verbose_name="Celery 任务 ID")
+    attempt_count = models.PositiveIntegerField(default=0, verbose_name="执行尝试次数")
+    heartbeat_at = models.DateTimeField(null=True, blank=True, verbose_name="任务心跳时间")
     started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="结束时间")
 
@@ -261,6 +275,11 @@ class DiagnosisRun(BaseModel):
         verbose_name = "时间点诊断"
         verbose_name_plural = verbose_name
         ordering = ['-create_time']
+        indexes = [
+            models.Index(fields=['project', '-create_time'], name='sre_diag_project_created_idx'),
+            models.Index(fields=['status', '-create_time'], name='sre_diag_status_created_idx'),
+            models.Index(fields=['diagnosis_time'], name='sre_diag_time_idx'),
+        ]
 
     def __str__(self):
         return self.title
