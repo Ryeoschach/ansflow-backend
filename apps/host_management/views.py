@@ -83,7 +83,7 @@ from apps.host_management.filters import HostFilter, ResourcePoolFilter
 from apps.host_management.tasks import verify_platform_connectivity, sync_platform_assets, check_host_baseline
 
 
-class HostBaselineViewSet(viewsets.ModelViewSet):
+class HostBaselineViewSet(DataScopeMixin, viewsets.ModelViewSet):
     """
     主机基线管理
     """
@@ -91,6 +91,15 @@ class HostBaselineViewSet(viewsets.ModelViewSet):
     serializer_class = HostBaselineSerializer
     permission_classes = [SmartRBACPermission]
     resource_code = 'resource:baselines'
+    resource_type = 'resource_pool'
+    resource_lookup_field = 'resource_pool_id'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        project = getattr(self.request, 'project', None)
+        if project:
+            queryset = queryset.filter(resource_pool__project=project)
+        return queryset
 
     @action(detail=True, methods=['post'])
     def check(self, request, pk=None):
@@ -131,7 +140,7 @@ class HostViewSet(DataScopeMixin, viewsets.ModelViewSet):
                 # 使用 Serializer 验证单条数据
                 serializer = self.get_serializer(data=item)
                 serializer.is_valid(raise_exception=True)
-                serializer.save()
+                serializer.save(project=getattr(request, 'project', None))
                 success_count += 1
             except Exception as e:
                 errors.append(f"第 {index+1} 条记录错误: {str(e)}")
@@ -166,12 +175,15 @@ class ResourcePoolViewSet(DataScopeMixin, viewsets.ModelViewSet):
         serializer.save(project=getattr(self.request, 'project', None))
 
 
-class PlatformViewSet(viewsets.ModelViewSet):
+class PlatformViewSet(DataScopeMixin, viewsets.ModelViewSet):
     queryset = Platform.objects.all()
     serializer_class = PlatformSerializer
     permission_classes = [SmartRBACPermission]
 
     resource_code = 'resource:platforms'
+
+    def perform_create(self, serializer):
+        serializer.save(project=getattr(self.request, 'project', None))
 
     @action(detail=True, methods=['post'])
     def sync_assets(self, request, pk=None):
@@ -179,8 +191,11 @@ class PlatformViewSet(viewsets.ModelViewSet):
         触发资产同步任务
         """
         platform = self.get_object()
-        result = sync_platform_assets(platform.id)
-        return Response({"message": result})
+        task = sync_platform_assets.delay(platform.id)
+        return Response(
+            {"message": "资产同步任务已下发", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
     @action(detail=True, methods=['post'])
     def verify_connectivity(self, request, pk=None):
@@ -188,14 +203,11 @@ class PlatformViewSet(viewsets.ModelViewSet):
         手动验证指定平台的连通性
         """
         platform = self.get_object()
-        # 立即执行验证任务
-        # 测试阶段为同步运行(Todo: 后面改为异步 verify_platform_connectivity.delay(platform.id))。
-        verify_platform_connectivity(platform.id)
-        
-        # 重新获取对象返回最新状态
-        platform.refresh_from_db()
-        serializer = self.get_serializer(platform)
-        return Response(serializer.data)
+        task = verify_platform_connectivity.delay(platform.id)
+        return Response(
+            {"message": "连通性验证任务已下发", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class ComplianceFrameworkViewSet(viewsets.ModelViewSet):

@@ -1,12 +1,12 @@
 import json
 import threading
 from channels.generic.websocket import AsyncWebsocketConsumer
-from asgiref.sync import sync_to_async, async_to_sync
+from asgiref.sync import async_to_sync
 from kubernetes import client as k8s_client
 from kubernetes.stream import stream
-from .models import K8sCluster
 from .utils.k8s_helper import get_k8s_client
 from urllib.parse import parse_qs
+from utils.websocket_auth import authenticate_websocket, authorize_k8s_cluster
 
 class K8sTerminalConsumer(AsyncWebsocketConsumer):
     def __init__(self, *args, **kwargs):
@@ -27,10 +27,19 @@ class K8sTerminalConsumer(AsyncWebsocketConsumer):
         self.container = params.get('container', [None])[0]
 
         # 3. 鉴权
-        try:
-            self.cluster = await sync_to_async(K8sCluster.objects.get)(id=self.cluster_id)
-        except K8sCluster.DoesNotExist:
-            await self.close()
+        self.user = await authenticate_websocket(self.scope)
+        if not self.user:
+            await self.close(code=4001)
+            return
+        project_id = params.get('project_id', [None])[0]
+        self.cluster = await authorize_k8s_cluster(
+            self.user,
+            self.cluster_id,
+            project_id,
+            permission_code='k8s:cluster:pod_exec',
+        )
+        if not self.cluster:
+            await self.close(code=4003)
             return
 
         await self.accept()
@@ -123,10 +132,19 @@ class K8sLogConsumer(AsyncWebsocketConsumer):
         self.container = params.get('container', [None])[0]
         self.tail_lines = int(params.get('tail_lines', [100])[0])
 
-        try:
-            self.cluster = await sync_to_async(K8sCluster.objects.get)(id=self.cluster_id)
-        except K8sCluster.DoesNotExist:
-            await self.close()
+        self.user = await authenticate_websocket(self.scope)
+        if not self.user:
+            await self.close(code=4001)
+            return
+        project_id = params.get('project_id', [None])[0]
+        self.cluster = await authorize_k8s_cluster(
+            self.user,
+            self.cluster_id,
+            project_id,
+            permission_code='k8s:cluster:resources_view',
+        )
+        if not self.cluster:
+            await self.close(code=4003)
             return
 
         await self.accept()

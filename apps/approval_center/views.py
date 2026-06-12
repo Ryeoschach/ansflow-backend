@@ -2,6 +2,8 @@ from rest_framework import viewsets, mixins, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.utils import timezone
+from django.db import transaction
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 
 from .models import ApprovalPolicy, ApprovalTicket, ApprovalResource
@@ -10,6 +12,20 @@ from .engine import ProxyApprovalEngine
 from .registry import approval_registry
 
 from utils.rbac_permission import SmartRBACPermission, DataScopeMixin
+
+
+def user_matches_approver_roles(user, policy):
+    if user.is_superuser or not policy:
+        return True
+    required_role_ids = set(policy.approver_roles.values_list('id', flat=True))
+    if not required_role_ids:
+        return True
+
+    user_role_ids = set()
+    for role in user.roles.all():
+        user_role_ids.add(role.id)
+        user_role_ids.update(role._get_all_ids('parents'))
+    return bool(user_role_ids & required_role_ids)
 
 @extend_schema_view(
     list=extend_schema(summary="查看审批策略列表"),
@@ -76,7 +92,12 @@ class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
     """
     审批总控台: 这里只允许列表查看，拦截通过/拒绝通过特有接口操作
     """
-    queryset = ApprovalTicket.objects.all().select_related('submitter', 'approver').order_by('-create_time')
+    queryset = ApprovalTicket.objects.all().select_related(
+        'submitter',
+        'approver',
+        'policy',
+        'project',
+    ).order_by('-create_time')
     serializer_class = ApprovalTicketSerializer
     filterset_fields = ['status', 'resource_type', 'submitter__username']
     
@@ -100,7 +121,16 @@ class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
         
         if not user or not user.is_authenticated:
             return qs.none()
-            
+
+        project = getattr(self.request, 'project', None)
+        if project:
+            if user.is_superuser:
+                qs = qs.filter(Q(project=project) | Q(project__isnull=True))
+            else:
+                qs = qs.filter(
+                    Q(project=project) | Q(project__isnull=True, submitter=user)
+                )
+
         if user.is_superuser:
             return qs
             
@@ -120,11 +150,37 @@ class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
         """
         核心API：点击同意放行！支持对失败的工单进行重试。
         """
-        ticket = self.get_object()
-        if ticket.status not in ['pending', 'failed']:
-            return Response({"detail": "该审批单当前状态不支持放行操作！"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # 将工单状态扭转之前，强行路由执行！！
+        with transaction.atomic():
+            ticket = ApprovalTicket.objects.select_for_update().select_related('policy').get(
+                pk=self.get_object().pk
+            )
+            if ticket.status not in ['pending', 'failed']:
+                return Response({"detail": "该审批单当前状态不支持放行操作！"}, status=status.HTTP_400_BAD_REQUEST)
+            if ticket.expires_at and ticket.expires_at <= timezone.now():
+                ticket.status = 'canceled'
+                ticket.remark = '审批已超时，挂起请求不再允许执行。'
+                ticket.audit_time = timezone.now()
+                ticket.save(update_fields=['status', 'remark', 'audit_time'])
+                return Response({"detail": "该审批单已过期。"}, status=status.HTTP_400_BAD_REQUEST)
+            if not user_matches_approver_roles(request.user, ticket.policy):
+                return Response({"detail": "当前用户不属于该策略指定的审批角色。"}, status=status.HTTP_403_FORBIDDEN)
+            if (
+                ticket.request_fingerprint
+                and ApprovalTicket.objects.filter(
+                    request_fingerprint=ticket.request_fingerprint,
+                    status__in=['pending', 'approved'],
+                ).exclude(pk=ticket.pk).exists()
+            ):
+                return Response(
+                    {"detail": "相同请求已有待处理审批单，不能重复放行。"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            ticket.status = 'approved'
+            ticket.approver = request.user
+            ticket.audit_time = timezone.now()
+            ticket.save(update_fields=['status', 'approver', 'audit_time'])
+
         ProxyApprovalEngine.resume_execution(ticket, request.user)
         
         # 刷新实例拿最新状态
@@ -149,17 +205,21 @@ class ApprovalTicketViewSet(viewsets.ReadOnlyModelViewSet):
         """
         驳回审批，永久废弃这笔被拦截的 API 请求载荷。
         """
-        ticket = self.get_object()
-        if ticket.status != 'pending':
-            return Response({"detail": "非待办单据无法操作。"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        remark = request.data.get('remark', '主管已否决本次高危操作！详情请线下联络。')
-        
-        ticket.status = 'rejected'
-        ticket.approver = request.user
-        ticket.audit_time = timezone.now()
-        ticket.remark = remark
-        ticket.save()
+        with transaction.atomic():
+            ticket = ApprovalTicket.objects.select_for_update().select_related('policy').get(
+                pk=self.get_object().pk
+            )
+            if ticket.status != 'pending':
+                return Response({"detail": "非待办单据无法操作。"}, status=status.HTTP_400_BAD_REQUEST)
+            if not user_matches_approver_roles(request.user, ticket.policy):
+                return Response({"detail": "当前用户不属于该策略指定的审批角色。"}, status=status.HTTP_403_FORBIDDEN)
+
+            remark = request.data.get('remark', '主管已否决本次高危操作！详情请线下联络。')
+            ticket.status = 'rejected'
+            ticket.approver = request.user
+            ticket.audit_time = timezone.now()
+            ticket.remark = remark
+            ticket.save()
 
         # --- 🚀 触发审批结果通知 ---
         from apps.system_management.notifiers import notify_approval_result

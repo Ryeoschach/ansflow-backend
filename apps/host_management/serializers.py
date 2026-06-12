@@ -44,9 +44,27 @@ class HostSerializer(serializers.ModelSerializer):
     env_color = serializers.CharField(source='env.color', read_only=True)
     credential_name = serializers.CharField(source='credential.name', read_only=True)
 
+    def validate(self, attrs):
+        project = getattr(self.context.get('request'), 'project', None)
+        if not project:
+            return attrs
+
+        platform = attrs.get('platform')
+        credential = attrs.get('credential')
+        if platform and platform.project_id not in (None, project.id):
+            raise serializers.ValidationError({
+                'platform': '所选平台不属于当前项目。'
+            })
+        if credential and credential.project_id not in (None, project.id):
+            raise serializers.ValidationError({
+                'credential': '所选凭据不属于当前项目。'
+            })
+        return attrs
+
     class Meta:
         model = Host
         fields = ['id', 'hostname', 'ports', 'ip_address', 'private_ip', 'os_type', 'cpu', 'memory', 'disk', 'status', 'env', 'platform', 'platform_name', 'env_name', 'env_color', 'credential', 'credential_name', 'project', 'create_time', 'update_time']
+        read_only_fields = ['project']
 
 
 class EnvironmentSerializer(serializers.ModelSerializer):
@@ -57,12 +75,18 @@ class EnvironmentSerializer(serializers.ModelSerializer):
 class PlatformSerializer(serializers.ModelSerializer):
     default_credential_name = serializers.CharField(source='default_credential.name', read_only=True)
 
+    def validate_default_credential(self, credential):
+        project = getattr(self.context.get('request'), 'project', None)
+        if project and credential and credential.project_id not in (None, project.id):
+            raise serializers.ValidationError('所选默认凭据不属于当前项目。')
+        return credential
+
     class Meta:
         model = Platform
         fields = ['id', 'name', 'type', 'access_key', 'secret_key', 'api_endpoint', 
                   'connectivity_status', 'last_verified_at', 'error_message', 'status', 
-                  'default_credential', 'default_credential_name', 'create_time', 'update_time']
-        read_only_fields = ['connectivity_status', 'last_verified_at', 'error_message']
+                  'default_credential', 'default_credential_name', 'project', 'create_time', 'update_time']
+        read_only_fields = ['connectivity_status', 'last_verified_at', 'error_message', 'project']
         extra_kwargs = {
             'access_key': {'write_only': True},
             'secret_key': {'write_only': True}  # 敏感信息不返回前端
@@ -72,9 +96,16 @@ class PlatformSerializer(serializers.ModelSerializer):
 class ResourceSerializer(serializers.ModelSerializer):
     host_details = HostSerializer(source='hosts', many=True, read_only=True)
 
+    def validate_hosts(self, hosts):
+        project = getattr(self.context.get('request'), 'project', None)
+        if project and any(host.project_id != project.id for host in hosts):
+            raise serializers.ValidationError('资源池只能包含当前项目的主机。')
+        return hosts
+
     class Meta:
         model = ResourcePool
-        fields = ['id', 'name', 'code', 'hosts', 'remark', 'create_time', 'update_time', 'host_details']
+        fields = ['id', 'name', 'code', 'hosts', 'remark', 'project', 'create_time', 'update_time', 'host_details']
+        read_only_fields = ['project']
 
 
 class HostBaselineSerializer(serializers.ModelSerializer):
@@ -82,6 +113,12 @@ class HostBaselineSerializer(serializers.ModelSerializer):
     主机基线序列化器
     """
     pool_name = serializers.ReadOnlyField(source='resource_pool.name')
+
+    def validate_resource_pool(self, resource_pool):
+        project = getattr(self.context.get('request'), 'project', None)
+        if project and resource_pool.project_id != project.id:
+            raise serializers.ValidationError('所选资源池不属于当前项目。')
+        return resource_pool
 
     class Meta:
         model = HostBaseline

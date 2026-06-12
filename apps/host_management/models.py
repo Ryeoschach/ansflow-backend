@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 from django.core.validators import RegexValidator
 from utils.base_model import BaseModel
 from utils.fields import EncryptedCharField, EncryptedTextField
@@ -65,6 +66,14 @@ class Platform(BaseModel):
 
     name = models.CharField(max_length=100, null=True, blank=True, verbose_name="平台名称")
     type = models.CharField(max_length=50, choices=PLATFORM_TYPES, default='vmware', null=True, blank=True, verbose_name="平台类型")
+    project = models.ForeignKey(
+        'rbac_permission.Project',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='platforms',
+        verbose_name="所属项目",
+    )
 
     # 云平台连接信息 (AccessKey/SecretKey/API Endpoint) - 已改为加密存储
     access_key = EncryptedCharField(max_length=255, blank=True, null=True, verbose_name="Access Key")
@@ -131,7 +140,7 @@ class Host(BaseModel):
         verbose_name="所属平台"
     )
 
-    hostname = models.CharField(max_length=128, unique=True, verbose_name="主机名")
+    hostname = models.CharField(max_length=128, verbose_name="主机名")
     ports = models.CharField(max_length=128, verbose_name="开放端口", blank=True, null=True)
     ip_address = models.GenericIPAddressField(verbose_name="外网IP", blank=True, null=True)
     private_ip = models.GenericIPAddressField(verbose_name="内网IP", blank=True, null=True)
@@ -161,6 +170,18 @@ class Host(BaseModel):
         verbose_name = "主机管理"
         verbose_name_plural = verbose_name
         ordering = ['-create_time']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'hostname'],
+                condition=Q(project__isnull=False),
+                name='uniq_host_project_hostname',
+            ),
+            models.UniqueConstraint(
+                fields=['project', 'private_ip'],
+                condition=Q(project__isnull=False, private_ip__isnull=False),
+                name='uniq_host_project_private_ip',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.hostname} - {self.private_ip or self.ip_address}"

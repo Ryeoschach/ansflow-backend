@@ -1,7 +1,10 @@
 from rest_framework.response import Response
 from rest_framework import status
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
+from datetime import timedelta
+import copy
+import hashlib
 from .models import ApprovalPolicy, ApprovalTicket
 import json
 import logging
@@ -27,10 +30,13 @@ class ProxyApprovalEngine:
             return False, None
 
         # 获取 Payload
-        raw_payload = request.data if hasattr(request, 'data') else request.POST.dict()
+        request_data = request.data if hasattr(request, 'data') else request.POST
+        if hasattr(request_data, 'dict'):
+            raw_payload = request_data.dict()
+        else:
+            raw_payload = copy.deepcopy(dict(request_data))
         if extra_context:
-            if isinstance(raw_payload, dict):
-                raw_payload.update(extra_context)
+            raw_payload.update(extra_context)
 
         # [优化 D] 提取 AI 确信标志
         is_ai_verified = raw_payload.get('ai_verified') is True
@@ -72,40 +78,93 @@ class ProxyApprovalEngine:
         if not matched_policy:
             return False, None
 
-        # 标记开发者标识（Creed's Integration）
-        if isinstance(raw_payload, dict):
-            raw_payload['_dev_ref'] = 'creed_sre_integration'
-            raw_payload['_matched_policy'] = matched_policy.name
+        raw_payload['_matched_policy'] = matched_policy.name
 
         url_path = request.get_full_path()
+        fingerprint_source = {
+            'submitter_id': request.user.id,
+            'project_id': getattr(getattr(request, 'project', None), 'id', None),
+            'resource_type': resource_type,
+            'target_id': target_id,
+            'method': request.method,
+            'url_path': url_path,
+            'payload': raw_payload,
+        }
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                fingerprint_source,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            ).encode('utf-8')
+        ).hexdigest()
+        now = timezone.now()
+        expires_at = now + timedelta(
+            minutes=matched_policy.approval_timeout_minutes
+        )
+
+        ApprovalTicket.objects.filter(
+            request_fingerprint=request_fingerprint,
+            status='pending',
+            expires_at__lte=now,
+        ).update(
+            status='canceled',
+            remark='审批已超时，挂起请求已自动失效。',
+            audit_time=now,
+        )
         
         # 生成挂起的工单
-        with transaction.atomic():
-            ticket = ApprovalTicket.objects.create(
-                title=f"申请: {action_title}",
-                submitter=request.user,
-                resource_type=resource_type,
-                target_id=target_id,
-                method=request.method,
-                url_path=url_path,
-                payload=raw_payload,
-                status='pending',
-                environment=environment if environment else ''
+        try:
+            with transaction.atomic():
+                ticket, created = ApprovalTicket.objects.get_or_create(
+                    request_fingerprint=request_fingerprint,
+                    status='pending',
+                    defaults={
+                        'title': f"申请: {action_title}",
+                        'submitter': request.user,
+                        'policy': matched_policy,
+                        'project': getattr(request, 'project', None),
+                        'resource_type': resource_type,
+                        'target_id': target_id,
+                        'method': request.method,
+                        'url_path': url_path,
+                        'payload': raw_payload,
+                        'environment': environment or '',
+                        'expires_at': expires_at,
+                    },
+                )
+        except IntegrityError:
+            ticket = ApprovalTicket.objects.filter(
+                request_fingerprint=request_fingerprint,
+                status__in=['pending', 'approved'],
+            ).first()
+            created = False
+
+        if ticket is None:
+            logger.error(
+                "Unable to resolve active approval ticket for fingerprint %s",
+                request_fingerprint,
+            )
+            return True, Response(
+                {"detail": "审批请求正在并发处理中，请稍后重试。"},
+                status=status.HTTP_409_CONFLICT,
             )
         
         # --- 触发外发告警推送 (通知拥有审批权限的人) ---
-        from apps.system_management.notifiers import notify_approval_requested
-        try:
-            notify_approval_requested(ticket)
-        except Exception:
-            pass # 异步解耦，保证通知不阻塞业务核心拦截逻辑
+        if created:
+            from apps.system_management.notifiers import notify_approval_requested
+            try:
+                notify_approval_requested(ticket)
+            except Exception:
+                pass
 
         # 向前端返回 202 Accepted 特殊码（表示收到了请求，但不会立即处理完它）
         res = Response({
             "code": 202,
             "message": "你的操作命中了运维安全阀！已为您自动提交审批。",
             "ticket_id": ticket.id,
-            "status": "pending_approval"
+            "status": "pending_approval",
+            "duplicate": not created,
         }, status=status.HTTP_202_ACCEPTED)
 
         return True, res
@@ -138,6 +197,7 @@ class ProxyApprovalEngine:
 
         # 保证底层执行记录、AuditLog 的人是真实的工单提交者，而不是审批权限的人！
         force_authenticate(request, user=ticket.submitter)
+        request.project = ticket.project
 
         # 打上内部通行标记，防止进入 ViewSet 里面的 intercept 再次被挂起造成死循环
         request._is_approved_execution = True
@@ -178,11 +238,18 @@ class ProxyApprovalEngine:
                         logger.info(f"Linked AlertEvent {alert_id} to new PipelineRun {run_id} after approval.")
                 except Exception as e:
                     logger.error(f"Failed to sync run_id back to alert: {str(e)}")
+
+            ticket.execution_status_code = response.status_code
+            response_data = response.data if hasattr(response, 'data') else {}
+            ticket.execution_response = json.loads(
+                json.dumps(response_data, ensure_ascii=False, default=str)
+            )
         
         except Exception as e:
             # 捕获视图层的严重 Python 异常
             ticket.status = 'failed'
             ticket.remark = f"代理唤醒底层视图时发生致命崩溃: {str(e)}"
+            ticket.execution_response = {'detail': str(e)}
             
         # 录入签批人并保存生命周期
         ticket.approver = approver_user

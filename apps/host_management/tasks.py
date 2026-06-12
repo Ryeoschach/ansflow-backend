@@ -1,5 +1,6 @@
 import logging
 import random
+import hashlib
 from celery import shared_task
 from django.utils import timezone
 from apps.host_management.models import Platform, Host, Environment
@@ -40,8 +41,9 @@ def verify_platform_connectivity(platform_id=None):
                     import socket
                     from urllib.parse import urlparse
                     endpoint = platform.api_endpoint
-                    host = urlparse(endpoint).hostname or endpoint.split(':')[0]
-                    port = 80
+                    parsed = urlparse(endpoint)
+                    host = parsed.hostname or endpoint.split(':')[0]
+                    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
                     socket.create_connection((host, port), timeout=5)
                     platform.connectivity_status = 1
                     platform.error_message = ""
@@ -66,7 +68,7 @@ def sync_platform_assets(platform_id):
     """
     具体的资产同步任务 (重构后：使用适配器模式)
     """
-    platform = Platform.objects.get(id=platform_id)
+    platform = Platform.objects.select_related('project').get(id=platform_id)
     provider = ProviderFactory.get_provider(
         platform.type, 
         platform.access_key, 
@@ -88,8 +90,13 @@ def sync_platform_assets(platform_id):
             default_env = Environment.objects.create(name="默认环境", code="default")
 
         for h_info in hosts_data:
+            private_ip = h_info.get('private_ip')
+            if not private_ip:
+                logger.warning("Skipping platform asset without private_ip: %s", h_info)
+                continue
             host, created = Host.objects.update_or_create(
-                private_ip=h_info['private_ip'],
+                project=platform.project,
+                private_ip=private_ip,
                 defaults={
                     'hostname': h_info['hostname'],
                     'ip_address': h_info.get('ip_address'),
@@ -98,6 +105,7 @@ def sync_platform_assets(platform_id):
                     'memory': h_info.get('memory', 1),
                     'env': default_env,
                     'platform': platform,
+                    'project': platform.project,
                     'status': h_info.get('status', 1)
                 }
             )
@@ -111,13 +119,13 @@ def sync_platform_assets(platform_id):
 @shared_task(name="check_host_connectivity")
 def check_host_connectivity():
     """
-    定期检查所有标记为“在线”的主机的 SSH 连通性
+    定期检查在线和故障主机的 SSH 连通性，允许故障主机自动恢复。
     """
     from apps.host_management.models import Host
     import paramiko
     import io
 
-    hosts = Host.objects.filter(status=1) # 仅检查在线主机
+    hosts = Host.objects.filter(status__in=[1, 2])
     checked_count = 0
     fail_count = 0
 
@@ -194,6 +202,7 @@ def check_host_baseline(baseline_id):
         name=f"BaselineCheck_{baseline.name}_{timezone.now().strftime('%Y%m%d%H%M')}",
         task_type='playbook',
         resource_pool=baseline.resource_pool,
+        project=baseline.resource_pool.project,
         content=baseline.check_playbook,
         creator=None, # 系统触发
         create_type='system'
@@ -227,10 +236,23 @@ def check_host_baseline(baseline_id):
         # 3. 产生告警
         alert = AlertEvent.objects.create(
             alert_name=f"基线巡检失败: {baseline.name}",
-            alert_level='critical',
-            service_name=baseline.resource_pool.name,
-            alert_content=f"资源池 {baseline.resource_pool.name} 未通过基线检查 {baseline.name}。\n日志摘要:\n{result.get('logs', '')[:1000]}",
-            status='active'
+            severity='critical',
+            source='other',
+            fingerprint=hashlib.sha256(
+                f"host-baseline:{baseline.id}:{execution.id}".encode()
+            ).hexdigest(),
+            labels={
+                'source': 'host_baseline',
+                'baseline_id': baseline.id,
+                'resource_pool_id': baseline.resource_pool_id,
+                'project_id': baseline.resource_pool.project_id,
+                'ansible_execution_id': execution.id,
+            },
+            annotations={
+                'summary': f"资源池 {baseline.resource_pool.name} 未通过基线检查 {baseline.name}",
+                'description': (result.get('logs') or result.get('msg') or '')[:1000],
+            },
+            status='firing'
         )
 
         # 4. 自动修复
@@ -240,15 +262,14 @@ def check_host_baseline(baseline_id):
                 name=f"BaselineRemediate_{baseline.name}_{timezone.now().strftime('%Y%m%d%H%M')}",
                 task_type='playbook',
                 resource_pool=baseline.resource_pool,
+                project=baseline.resource_pool.project,
                 content=baseline.remediate_playbook,
                 creator=None,
                 create_type='system'
             )
             fix_exec = AnsibleExecution.objects.create(task=fix_task, status='pending', from_pipeline=True)
             run_ansible_task.delay(fix_exec.id)
-            # 标记告警为正在处理
-            alert.status = 'acknowledged'
-            alert.save()
+            alert.healing_status = 'executing'
+            alert.save(update_fields=['healing_status', 'update_time'])
 
     return f"Baseline {baseline.name} check finished with status: {result.get('status')}"
-

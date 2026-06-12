@@ -1,4 +1,6 @@
 from django.db import models
+from django.db.models import Q
+from django.core.validators import MaxValueValidator, MinValueValidator
 from apps.rbac_permission.models import User, Role
 
 class ApprovalResource(models.Model):
@@ -43,6 +45,11 @@ class ApprovalPolicy(models.Model):
     auto_pass_if_ai_verified = models.BooleanField(default=False, verbose_name="AI确信时自动放行", help_text="若自愈系统标明此操作安全，则自动放行不阻断")
     
     approver_roles = models.ManyToManyField(Role, blank=True, verbose_name="指定的审批角色集合")
+    approval_timeout_minutes = models.PositiveIntegerField(
+        default=60,
+        validators=[MinValueValidator(1), MaxValueValidator(10080)],
+        verbose_name="审批超时分钟数",
+    )
     is_active = models.BooleanField(default=True, verbose_name="是否启用")
     create_time = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
 
@@ -70,6 +77,22 @@ class ApprovalTicket(models.Model):
     
     submitter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='submitted_approvals', verbose_name="发起人工号")
     approver = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_approvals', verbose_name="实际签署人")
+    policy = models.ForeignKey(
+        ApprovalPolicy,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='tickets',
+        verbose_name="命中的审批策略",
+    )
+    project = models.ForeignKey(
+        'rbac_permission.Project',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approval_tickets',
+        verbose_name="所属项目",
+    )
     
     # Payload 代理机制核心
     resource_type = models.CharField(max_length=100, verbose_name="目标组件", help_text="标记要请求哪个底层模块")
@@ -78,14 +101,33 @@ class ApprovalTicket(models.Model):
     url_path = models.CharField(max_length=255, verbose_name="拦截发往的 URL", help_text="通过这个端点，系统可以代替发起人放行请求")
     method = models.CharField(max_length=10, default='POST', verbose_name="HTTP动词")
     environment = models.CharField(max_length=100, null=True, blank=True, verbose_name="关联环境")
+    request_fingerprint = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
+        verbose_name="请求幂等指纹",
+    )
     
     # 追溯流言
     remark = models.TextField(null=True, blank=True, verbose_name="审批意见 / 为什么驳回")
     create_time = models.DateTimeField(auto_now_add=True, verbose_name="发起时间")
     audit_time = models.DateTimeField(null=True, blank=True, verbose_name="签批时间")
+    expires_at = models.DateTimeField(null=True, blank=True, verbose_name="审批过期时间")
+    execution_status_code = models.IntegerField(null=True, blank=True, verbose_name="底层响应状态码")
+    execution_response = models.JSONField(default=dict, blank=True, verbose_name="底层执行响应快照")
 
     class Meta:
         db_table = 'approval_ticket'
         verbose_name = '审批工单记录'
         verbose_name_plural = verbose_name
         ordering = ['-create_time']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['request_fingerprint'],
+                condition=Q(
+                    request_fingerprint__gt='',
+                    status__in=['pending', 'approved'],
+                ),
+                name='uniq_active_approval_fingerprint',
+            ),
+        ]

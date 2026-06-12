@@ -378,6 +378,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.pipeline_management.tasks.cleanup_expired_ai_drafts',
         'schedule': 86400.0,  # 每天执行一次 (24小时)
     },
+    'expire-approval-tickets-every-60s': {
+        'task': 'expire_approval_tickets',
+        'schedule': 60.0,
+    },
     'recover-stale-sre-diagnoses-every-10m': {
         'task': 'apps.sre_management.tasks.recover_stale_diagnosis_runs',
         'schedule': 600.0,
